@@ -1,6 +1,16 @@
 import type { CachedJumpServerAsset } from '../config/schema';
 import type { JumpServerAccountRef, JumpServerEndpoint, JumpServerSettingsWithPassword } from './types';
 
+type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
+
+interface ListPage {
+  results?: unknown[];
+  items?: unknown[];
+  data?: unknown[];
+  count?: number;
+  total?: number;
+}
+
 export const DEFAULT_CONNECT_OPTIONS = {
   charset: 'default',
   disableautohash: false,
@@ -116,5 +126,197 @@ export function buildConnectionTokenPayload(input: {
 }
 
 export class JumpServerClient {
-  constructor(private readonly settings: JumpServerSettingsWithPassword) {}
+  private authToken = '';
+  private readonly cookies = new Map<string, string>();
+  private readonly fetchImpl: FetchLike;
+
+  constructor(
+    private readonly settings: JumpServerSettingsWithPassword,
+    fetchImpl?: FetchLike
+  ) {
+    this.fetchImpl = fetchImpl ?? fetch;
+  }
+
+  async ensureAuthToken(): Promise<string> {
+    if (this.authToken) {
+      return this.authToken;
+    }
+    const response = await this.request('/api/v1/authentication/auth/', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ username: this.settings.username, password: this.settings.password })
+    }, false);
+    const body = await response.json() as { token?: unknown };
+    if (!body.token) {
+      throw new Error('JumpServer auth response did not include token.');
+    }
+    this.authToken = String(body.token);
+    return this.authToken;
+  }
+
+  async listAssets(input: { limit: number; offset: number }): Promise<CachedJumpServerAsset[]> {
+    await this.ensureAuthToken();
+    const response = await this.request(`/api/v1/perms/users/self/assets/?limit=${input.limit}&offset=${input.offset}`, {
+      headers: this.restHeaders()
+    });
+    const body = await response.json() as ListPage | unknown[];
+    const items = Array.isArray(body)
+      ? body
+      : Array.isArray(body.results)
+        ? body.results
+        : Array.isArray(body.items)
+          ? body.items
+          : Array.isArray(body.data)
+            ? body.data
+            : [];
+    return items
+      .filter((item): item is Record<string, any> => Boolean(item && typeof item === 'object'))
+      .map((item) => normalizeJumpServerAsset(item));
+  }
+
+  async getAssetDetail(assetId: string): Promise<Record<string, any>> {
+    await this.ensureAuthToken();
+    const response = await this.request(`/api/v1/perms/users/self/assets/${encodeURIComponent(assetId)}/`, {
+      headers: this.restHeaders()
+    });
+    return await response.json() as Record<string, any>;
+  }
+
+  async createConnectionToken(input: { assetId: string; account: JumpServerAccountRef; protocol: 'ssh' }): Promise<{ id: string }> {
+    await this.ensureAuthToken();
+    const response = await this.request('/api/v1/authentication/connection-token/', {
+      method: 'POST',
+      headers: { ...this.restHeaders(), 'content-type': 'application/json' },
+      body: JSON.stringify(buildConnectionTokenPayload(input))
+    });
+    const body = await response.json() as { id?: unknown };
+    if (!body.id) {
+      throw new Error('JumpServer connection-token response did not include id.');
+    }
+    return { id: String(body.id) };
+  }
+
+  async getSmartEndpoint(tokenId: string): Promise<JumpServerEndpoint> {
+    await this.ensureAuthToken();
+    const response = await this.request(`/api/v1/terminal/endpoints/smart/?protocol=https&token=${encodeURIComponent(tokenId)}`, {
+      headers: this.restHeaders()
+    });
+    return await response.json() as JumpServerEndpoint;
+  }
+
+  async warmupKokoConnectPage(tokenId: string, timestamp = Date.now()): Promise<void> {
+    const loginPath = '/core/auth/login/?next=/koko/connect/';
+    const loginPage = await this.request(loginPath, {
+      headers: { Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' }
+    }, false);
+    const csrfToken = parseCsrfMiddlewareToken(await loginPage.text());
+
+    const body = new URLSearchParams({
+      csrfmiddlewaretoken: csrfToken,
+      username: this.settings.username,
+      password: this.settings.password,
+      auto_login: 'on'
+    });
+
+    const loginSubmit = await this.request(loginPath, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded',
+        Referer: `${buildOrigin(this.settings.baseUrl)}${loginPath}`,
+        Origin: buildOrigin(this.settings.baseUrl),
+        Cookie: this.cookieHeader()
+      },
+      body: body.toString(),
+      redirect: 'manual'
+    }, false);
+
+    let location = loginSubmit.headers.get('location');
+    for (let index = 0; index < 5 && location; index += 1) {
+      const redirectResponse = await this.request(location, { redirect: 'manual' }, false);
+      if (![301, 302, 303, 307, 308].includes(redirectResponse.status)) {
+        break;
+      }
+      location = redirectResponse.headers.get('location');
+    }
+
+    await this.request('/api/v1/users/profile/', { headers: { Accept: 'application/json' } }, false);
+    const connectResponse = await this.request(buildKokoConnectUrl(this.settings.baseUrl, tokenId, timestamp), {
+      headers: {
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        Cookie: this.cookieHeader()
+      },
+      redirect: 'manual'
+    }, false);
+    if ([301, 302, 303, 307, 308].includes(connectResponse.status)) {
+      throw new Error('KoKo web session is not authenticated.');
+    }
+    if (!connectResponse.ok) {
+      throw new Error(`KoKo connect warmup failed with HTTP ${connectResponse.status}.`);
+    }
+  }
+
+  cookieHeader(): string {
+    return Array.from(this.cookies.entries()).map(([key, value]) => `${key}=${value}`).join('; ');
+  }
+
+  restHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${this.authToken}`,
+      Accept: 'application/json'
+    };
+    if (this.settings.orgId) {
+      headers['X-JMS-ORG'] = this.settings.orgId;
+    }
+    return headers;
+  }
+
+  private async request(pathOrUrl: string, init: RequestInit = {}, requireOk = true): Promise<Response> {
+    const url = pathOrUrl.startsWith('http') ? pathOrUrl : `${buildOrigin(this.settings.baseUrl)}${pathOrUrl}`;
+    const headers = headersToRecord(init.headers);
+    const cookieHeader = this.cookieHeader();
+    if (cookieHeader && !hasHeader(headers, 'Cookie')) {
+      headers.Cookie = cookieHeader;
+    }
+    const response = await this.fetchImpl(url, { ...init, headers });
+    this.captureCookies(response);
+    if (requireOk && !response.ok) {
+      throw new Error(`JumpServer request failed with HTTP ${response.status}.`);
+    }
+    return response;
+  }
+
+  private captureCookies(response: Response): void {
+    const setCookie = response.headers.get('set-cookie');
+    if (!setCookie) {
+      return;
+    }
+    for (const rawCookie of splitSetCookieHeader(setCookie)) {
+      const [nameValue] = rawCookie.split(';');
+      const separator = nameValue.indexOf('=');
+      if (separator > 0) {
+        this.cookies.set(nameValue.slice(0, separator).trim(), nameValue.slice(separator + 1).trim());
+      }
+    }
+  }
+}
+
+function splitSetCookieHeader(value: string): string[] {
+  return value.split(/,(?=\s*[^;,]+=)/g).map((cookie) => cookie.trim()).filter(Boolean);
+}
+
+function headersToRecord(headers: HeadersInit | undefined): Record<string, string> {
+  if (!headers) {
+    return {};
+  }
+  if (headers instanceof Headers) {
+    return Object.fromEntries(headers.entries());
+  }
+  if (Array.isArray(headers)) {
+    return Object.fromEntries(headers);
+  }
+  return { ...headers };
+}
+
+function hasHeader(headers: Record<string, string>, name: string): boolean {
+  return Object.keys(headers).some((key) => key.toLowerCase() === name.toLowerCase());
 }
