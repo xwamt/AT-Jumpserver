@@ -124,6 +124,10 @@ export class JumpServerSession {
       this.input.events.status('Connected');
       return true;
     }
+    if (payload.type === 'PING') {
+      this.socket?.send(JSON.stringify({ id: payload.id || '', type: 'PONG', data: '' }));
+      return true;
+    }
     if (typeof payload.data === 'string' && payload.type === 'TERMINAL_DATA') {
       this.input.events.output(Buffer.from(payload.data, 'utf8'));
       return true;

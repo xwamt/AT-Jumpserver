@@ -81,6 +81,27 @@ describe('JumpServerSession', () => {
     expect(events.status).toHaveBeenCalledWith('Connected');
   });
 
+  it('handles KoKo PING heartbeats without writing JSON into the terminal', async () => {
+    const session = new JumpServerSession({
+      asset: { id: 'asset-1', name: 'web-1' },
+      client: client(socket),
+      events
+    });
+
+    await session.connect();
+    socket.emit('message', JSON.stringify({
+      id: 'ping-1',
+      type: 'PING',
+      data: '',
+      raw: null,
+      err: '',
+      prompt: ''
+    }));
+
+    expect(socket.sent.at(-1)).toBe(JSON.stringify({ id: 'ping-1', type: 'PONG', data: '' }));
+    expect(events.output).not.toHaveBeenCalled();
+  });
+
   it('maps webview input and resize to KoKo terminal messages', async () => {
     const session = new JumpServerSession({ asset: { id: 'asset-1', name: 'web-1' }, client: client(socket), events });
     await session.connect();
