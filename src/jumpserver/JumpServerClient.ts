@@ -1,7 +1,10 @@
 import type { CachedJumpServerAsset } from '../config/schema';
 import type { JumpServerAccountRef, JumpServerEndpoint, JumpServerSettingsWithPassword } from './types';
+import WebSocket from 'ws';
 
 type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
+export type KokoWebSocket = Pick<WebSocket, 'send' | 'close' | 'on'>;
+export type WebSocketFactory = (url: string, options: WebSocket.ClientOptions) => Promise<KokoWebSocket>;
 
 interface ListPage {
   results?: unknown[];
@@ -123,6 +126,15 @@ export function buildConnectionTokenPayload(input: {
     connect_method: 'web_cli',
     connect_options: DEFAULT_CONNECT_OPTIONS
   };
+}
+
+export async function defaultWebSocketFactory(url: string, options: WebSocket.ClientOptions): Promise<KokoWebSocket> {
+  const socket = new WebSocket(url, ['JMS-KOKO'], options);
+  await new Promise<void>((resolve, reject) => {
+    socket.once('open', resolve);
+    socket.once('error', reject);
+  });
+  return socket;
 }
 
 export class JumpServerClient {
@@ -253,6 +265,29 @@ export class JumpServerClient {
     if (!connectResponse.ok) {
       throw new Error(`KoKo connect warmup failed with HTTP ${connectResponse.status}.`);
     }
+  }
+
+  async openKokoWebSocket(input: {
+    endpoint: JumpServerEndpoint;
+    tokenId: string;
+    cols: number;
+    rows: number;
+    webSocketFactory?: WebSocketFactory;
+  }): Promise<KokoWebSocket> {
+    await this.warmupKokoConnectPage(input.tokenId);
+    const url = buildKokoWsUrl(this.settings.baseUrl, input.endpoint, input.tokenId);
+    const factory = input.webSocketFactory ?? defaultWebSocketFactory;
+    return factory(url, {
+      origin: buildOrigin(this.settings.baseUrl),
+      headers: {
+        Cookie: this.cookieHeader(),
+        'Cache-Control': 'no-cache',
+        Pragma: 'no-cache',
+        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+        'User-Agent': 'AT JumpServer Terminal'
+      },
+      rejectUnauthorized: this.settings.verifyTls
+    });
   }
 
   cookieHeader(): string {
