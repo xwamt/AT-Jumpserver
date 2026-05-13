@@ -55,7 +55,9 @@ export const window = {
 };
 
 export const workspace = {
-  getConfiguration: vi.fn()
+  getConfiguration: vi.fn(() => ({
+    get: <T>(_key: string, defaultValue: T): T => defaultValue
+  }))
 };
 
 export const commands = {
