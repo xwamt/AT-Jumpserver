@@ -1,0 +1,134 @@
+{
+  "name": "at-jumpserver-terminal",
+  "displayName": "AT JumpServer Terminal",
+  "description": "JumpServer-backed terminal for VS Code.",
+  "version": "0.1.0",
+  "publisher": "local",
+  "icon": "media/at-terminal-icon.png",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": [
+    "onStartupFinished",
+    "onView:jumpserverManager.assets"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "jumpserverManager",
+          "title": "AT JumpServer",
+          "icon": "media/at-terminal-activity.svg"
+        }
+      ]
+    },
+    "views": {
+      "jumpserverManager": [
+        {
+          "id": "jumpserverManager.assets",
+          "name": "Assets"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "jumpserverManager.configure",
+        "title": "JumpServer: Configure"
+      },
+      {
+        "command": "jumpserverManager.validate",
+        "title": "JumpServer: Validate Account"
+      },
+      {
+        "command": "jumpserverManager.refresh",
+        "title": "JumpServer: Refresh Assets"
+      },
+      {
+        "command": "jumpserverManager.connect",
+        "title": "JumpServer: Connect"
+      },
+      {
+        "command": "jumpserverManager.disconnect",
+        "title": "JumpServer: Disconnect"
+      },
+      {
+        "command": "jumpserverManager.reconnect",
+        "title": "JumpServer: Reconnect"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "jumpserverManager.configure",
+          "when": "view == jumpserverManager.assets",
+          "group": "navigation@1"
+        },
+        {
+          "command": "jumpserverManager.refresh",
+          "when": "view == jumpserverManager.assets",
+          "group": "navigation@2"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "jumpserverManager.connect",
+          "when": "view == jumpserverManager.assets && viewItem == jumpserverAsset",
+          "group": "inline@1"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "AT JumpServer Terminal",
+      "properties": {
+        "jumpserverManager.terminalFontSize": {
+          "type": "number",
+          "default": 14,
+          "minimum": 8
+        },
+        "jumpserverManager.terminalFontFamily": {
+          "type": "string",
+          "default": "Cascadia Code, Menlo, monospace"
+        },
+        "jumpserverManager.scrollback": {
+          "type": "number",
+          "default": 5000,
+          "minimum": 100
+        },
+        "jumpserverManager.semanticHighlight": {
+          "type": "boolean",
+          "default": true
+        },
+        "jumpserverManager.idleDisconnectMinutes": {
+          "type": "number",
+          "default": 60,
+          "minimum": 0
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "watch": "node esbuild.config.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/addon-web-links": "^0.11.0",
+    "@xterm/xterm": "^5.5.0",
+    "ws": "^8.18.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.0",
+    "@types/vscode": "^1.85.0",
+    "@types/ws": "^8.5.13",
+    "@vscode/test-electron": "^2.5.2",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  }
+}
