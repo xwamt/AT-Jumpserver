@@ -14,6 +14,8 @@ interface ListPage {
   total?: number;
 }
 
+type AssetPathMap = Map<string, string[]>;
+
 export const DEFAULT_CONNECT_OPTIONS = {
   charset: 'default',
   disableautohash: false,
@@ -218,6 +220,7 @@ export class JumpServerClient {
       headers: this.restHeaders()
     });
     const body = await response.json() as ListPage | unknown[];
+    const treePaths = await this.safeListAssetTreePaths();
     const items = Array.isArray(body)
       ? body
       : Array.isArray(body.results)
@@ -229,7 +232,16 @@ export class JumpServerClient {
             : [];
     return items
       .filter((item): item is Record<string, any> => Boolean(item && typeof item === 'object'))
-      .map((item) => normalizeJumpServerAsset(item));
+      .map((item) => normalizeJumpServerAsset(item))
+      .map((asset) => this.applyTreePath(asset, treePaths));
+  }
+
+  async listAssetTreePaths(): Promise<AssetPathMap> {
+    await this.ensureAuthToken();
+    const response = await this.request('/api/v1/perms/users/self/nodes/all-with-assets/tree/', {
+      headers: this.restHeaders()
+    });
+    return extractAssetTreePaths(await response.json());
   }
 
   async getAssetDetail(assetId: string): Promise<Record<string, any>> {
@@ -351,6 +363,26 @@ export class JumpServerClient {
     return headers;
   }
 
+  private async safeListAssetTreePaths(): Promise<AssetPathMap> {
+    try {
+      return await this.listAssetTreePaths();
+    } catch {
+      return new Map();
+    }
+  }
+
+  private applyTreePath(asset: CachedJumpServerAsset, treePaths: AssetPathMap): CachedJumpServerAsset {
+    const nodePath = treePaths.get(asset.id);
+    if (!nodePath || nodePath.length === 0) {
+      return asset;
+    }
+    return {
+      ...asset,
+      nodePath,
+      zoneName: asset.zoneName || nodePath.at(-1) || ''
+    };
+  }
+
   private async request(pathOrUrl: string, init: RequestInit = {}, requireOk = true): Promise<Response> {
     const url = pathOrUrl.startsWith('http') ? pathOrUrl : `${buildOrigin(this.settings.baseUrl)}${pathOrUrl}`;
     const headers = headersToRecord(init.headers);
@@ -379,6 +411,85 @@ export class JumpServerClient {
       }
     }
   }
+}
+
+export function extractAssetTreePaths(payload: unknown): AssetPathMap {
+  const paths: AssetPathMap = new Map();
+  for (const item of treeItems(payload)) {
+    walkAssetTreeNode(item, [], paths);
+  }
+  return paths;
+}
+
+function treeItems(payload: unknown): unknown[] {
+  if (Array.isArray(payload)) {
+    return payload;
+  }
+  if (!payload || typeof payload !== 'object') {
+    return [];
+  }
+  const record = payload as Record<string, unknown>;
+  for (const field of ['results', 'items', 'data', 'children']) {
+    if (Array.isArray(record[field])) {
+      return record[field];
+    }
+  }
+  return [payload];
+}
+
+function walkAssetTreeNode(node: unknown, parentPath: string[], paths: AssetPathMap): void {
+  if (!node || typeof node !== 'object') {
+    return;
+  }
+  const record = node as Record<string, unknown>;
+  if (isAssetTreeLeaf(record)) {
+    const id = stringField(record, ['id', 'key', 'value']);
+    if (id && parentPath.length > 0) {
+      paths.set(id, parentPath);
+    }
+    return;
+  }
+
+  const label = stringField(record, ['name', 'title', 'label', 'value']);
+  const currentPath = label ? [...parentPath, label] : parentPath;
+  for (const asset of treeItems(record.assets)) {
+    const id = asset && typeof asset === 'object'
+      ? stringField(asset as Record<string, unknown>, ['id', 'key', 'value'])
+      : '';
+    if (id && currentPath.length > 0) {
+      paths.set(id, currentPath);
+    }
+  }
+  for (const asset of treeItems(record.asset)) {
+    const id = asset && typeof asset === 'object'
+      ? stringField(asset as Record<string, unknown>, ['id', 'key', 'value'])
+      : '';
+    if (id && currentPath.length > 0) {
+      paths.set(id, currentPath);
+    }
+  }
+  for (const child of treeItems(record.children)) {
+    walkAssetTreeNode(child, currentPath, paths);
+  }
+}
+
+function isAssetTreeLeaf(record: Record<string, unknown>): boolean {
+  const meta = record.meta && typeof record.meta === 'object' ? record.meta as Record<string, unknown> : {};
+  const type = String(record.type || record.kind || record.node_type || meta.type || '').toLowerCase();
+  return record.is_asset === true || type === 'asset' || type === 'host';
+}
+
+function stringField(record: Record<string, unknown>, fields: string[]): string {
+  for (const field of fields) {
+    const value = record[field];
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+    if (typeof value === 'number') {
+      return String(value);
+    }
+  }
+  return '';
 }
 
 function splitSetCookieHeader(value: string): string[] {

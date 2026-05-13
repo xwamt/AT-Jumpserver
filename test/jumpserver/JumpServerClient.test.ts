@@ -137,7 +137,8 @@ describe('JumpServerClient REST flow', () => {
   it('authenticates and sends Bearer plus org headers when listing assets', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(jsonResponse({ token: 'bearer-1' }))
-      .mockResolvedValueOnce(jsonResponse({ results: [{ id: 'asset-1', name: 'web-1' }], count: 1 }));
+      .mockResolvedValueOnce(jsonResponse({ results: [{ id: 'asset-1', name: 'web-1' }], count: 1 }))
+      .mockResolvedValueOnce(jsonResponse([]));
     const client = new JumpServerClient({
       baseUrl: 'https://jumpserver.example.com',
       orgId: 'org-1',
@@ -161,6 +162,68 @@ describe('JumpServerClient REST flow', () => {
         'X-JMS-ORG': 'org-1'
       })
     }));
+    expect(fetchMock).toHaveBeenNthCalledWith(3, 'https://jumpserver.example.com/api/v1/perms/users/self/nodes/all-with-assets/tree/', expect.objectContaining({
+      headers: expect.objectContaining({
+        Authorization: 'Bearer bearer-1',
+        Accept: 'application/json',
+        'X-JMS-ORG': 'org-1'
+      })
+    }));
+  });
+
+  it('merges full JumpServer directory paths from the user asset tree endpoint', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ token: 'bearer-1' }))
+      .mockResolvedValueOnce(jsonResponse({
+        results: [{
+          id: 'asset-1',
+          name: 'gateway02',
+          address: '11.0.139.162',
+          nodes: [{ name: 'Middleware' }],
+          protocols: [{ name: 'ssh' }]
+        }]
+      }))
+      .mockResolvedValueOnce(jsonResponse([
+        {
+          id: 'node-default',
+          name: 'DEFAULT',
+          children: [
+            {
+              id: 'node-prod',
+              name: 'PROD',
+              children: [
+                {
+                  id: 'node-offline-prod',
+                  name: 'offline-prod',
+                  children: [
+                    {
+                      id: 'node-middleware',
+                      name: 'Middleware',
+                      assets: [{ id: 'asset-1', name: 'gateway02' }]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]));
+    const client = new JumpServerClient({
+      baseUrl: 'https://jumpserver.example.com',
+      orgId: '',
+      username: 'alan',
+      password: 'secret',
+      verifyTls: true,
+      connectTimeout: 30
+    }, fetchMock);
+
+    const assets = await client.listAssets({ limit: 200, offset: 0 });
+
+    expect(assets[0]).toMatchObject({
+      id: 'asset-1',
+      nodePath: ['DEFAULT', 'PROD', 'offline-prod', 'Middleware'],
+      zoneName: 'Middleware'
+    });
   });
 
   it('creates connection token and smart endpoint requests', async () => {
