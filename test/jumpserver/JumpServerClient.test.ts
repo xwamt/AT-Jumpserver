@@ -137,6 +137,7 @@ describe('JumpServerClient REST flow', () => {
   it('authenticates and sends Bearer plus org headers when listing assets', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(jsonResponse({ token: 'bearer-1' }))
+      .mockResolvedValueOnce(jsonResponse({ id: 'user-1' }))
       .mockResolvedValueOnce(jsonResponse({ results: [{ id: 'asset-1', name: 'web-1' }], count: 1 }))
       .mockResolvedValueOnce(jsonResponse([]));
     const client = new JumpServerClient({
@@ -155,14 +156,21 @@ describe('JumpServerClient REST flow', () => {
       method: 'POST',
       body: JSON.stringify({ username: 'alan', password: 'secret' })
     }));
-    expect(fetchMock).toHaveBeenNthCalledWith(2, 'https://jumpserver.example.com/api/v1/perms/users/self/assets/?limit=200&offset=0', expect.objectContaining({
+    expect(fetchMock).toHaveBeenNthCalledWith(2, 'https://jumpserver.example.com/api/v1/users/profile/', expect.objectContaining({
       headers: expect.objectContaining({
         Authorization: 'Bearer bearer-1',
         Accept: 'application/json',
         'X-JMS-ORG': 'org-1'
       })
     }));
-    expect(fetchMock).toHaveBeenNthCalledWith(3, 'https://jumpserver.example.com/api/v1/perms/users/self/nodes/all-with-assets/tree/', expect.objectContaining({
+    expect(fetchMock).toHaveBeenNthCalledWith(3, 'https://jumpserver.example.com/api/v1/perms/users/user-1/assets/?limit=200&offset=0', expect.objectContaining({
+      headers: expect.objectContaining({
+        Authorization: 'Bearer bearer-1',
+        Accept: 'application/json',
+        'X-JMS-ORG': 'org-1'
+      })
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(4, 'https://jumpserver.example.com/api/v1/perms/users/user-1/nodes/all-with-assets/tree/', expect.objectContaining({
       headers: expect.objectContaining({
         Authorization: 'Bearer bearer-1',
         Accept: 'application/json',
@@ -174,6 +182,7 @@ describe('JumpServerClient REST flow', () => {
   it('merges full JumpServer directory paths from the user asset tree endpoint', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(jsonResponse({ token: 'bearer-1' }))
+      .mockResolvedValueOnce(jsonResponse({ id: 'user-1' }))
       .mockResolvedValueOnce(jsonResponse({
         results: [{
           id: 'asset-1',
@@ -229,6 +238,7 @@ describe('JumpServerClient REST flow', () => {
   it('lists JumpServer nodes from the node tree endpoint before assets are synced', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(jsonResponse({ token: 'bearer-1' }))
+      .mockResolvedValueOnce(jsonResponse({ id: 'user-1' }))
       .mockResolvedValueOnce(jsonResponse([
         {
           id: 'node-default',
@@ -264,6 +274,8 @@ describe('JumpServerClient REST flow', () => {
     }, fetchMock);
 
     const nodes = await client.listAssetNodes();
+
+    expect(fetchMock).toHaveBeenNthCalledWith(3, 'https://jumpserver.example.com/api/v1/perms/users/user-1/nodes/all-with-assets/tree/', expect.any(Object));
 
     expect(nodes.map((node) => node.path)).toEqual([
       ['DEFAULT'],

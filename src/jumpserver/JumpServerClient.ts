@@ -187,6 +187,7 @@ export async function defaultWebSocketFactory(url: string, options: WebSocket.Cl
 
 export class JumpServerClient {
   private authToken = '';
+  private currentUserId = '';
   private readonly cookies = new Map<string, string>();
   private readonly fetchImpl: FetchLike;
 
@@ -216,7 +217,8 @@ export class JumpServerClient {
 
   async listAssets(input: { limit: number; offset: number }): Promise<CachedJumpServerAsset[]> {
     await this.ensureAuthToken();
-    const response = await this.request(`/api/v1/perms/users/self/assets/?limit=${input.limit}&offset=${input.offset}`, {
+    const userId = await this.getCurrentUserId();
+    const response = await this.request(`/api/v1/perms/users/${encodeURIComponent(userId)}/assets/?limit=${input.limit}&offset=${input.offset}`, {
       headers: this.restHeaders()
     });
     const body = await response.json() as ListPage | unknown[];
@@ -242,7 +244,8 @@ export class JumpServerClient {
 
   async listAssetNodes(): Promise<CachedJumpServerNode[]> {
     await this.ensureAuthToken();
-    const response = await this.request('/api/v1/perms/users/self/nodes/all-with-assets/tree/', {
+    const userId = await this.getCurrentUserId();
+    const response = await this.request(`/api/v1/perms/users/${encodeURIComponent(userId)}/nodes/all-with-assets/tree/`, {
       headers: this.restHeaders()
     });
     return extractAssetTreeNodes(await response.json());
@@ -250,7 +253,8 @@ export class JumpServerClient {
 
   async getAssetDetail(assetId: string): Promise<Record<string, any>> {
     await this.ensureAuthToken();
-    const response = await this.request(`/api/v1/perms/users/self/assets/${encodeURIComponent(assetId)}/`, {
+    const userId = await this.getCurrentUserId();
+    const response = await this.request(`/api/v1/perms/users/${encodeURIComponent(userId)}/assets/${encodeURIComponent(assetId)}/`, {
       headers: this.restHeaders()
     });
     return await response.json() as Record<string, any>;
@@ -385,6 +389,22 @@ export class JumpServerClient {
       nodePath,
       zoneName: asset.zoneName || nodePath.at(-1) || ''
     };
+  }
+
+  private async getCurrentUserId(): Promise<string> {
+    if (this.currentUserId) {
+      return this.currentUserId;
+    }
+    const response = await this.request('/api/v1/users/profile/', {
+      headers: this.restHeaders()
+    });
+    const body = await response.json() as Record<string, unknown>;
+    const id = stringField(body, ['id', 'pk', 'user_id', 'username']);
+    if (!id) {
+      throw new Error('JumpServer profile response did not include user id.');
+    }
+    this.currentUserId = id;
+    return id;
   }
 
   private async request(pathOrUrl: string, init: RequestInit = {}, requireOk = true): Promise<Response> {
