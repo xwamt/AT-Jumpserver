@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { JumpServerConfigManager, type ExtensionMemento, type SecretStore } from '../../src/config/JumpServerConfigManager';
-import type { CachedJumpServerAsset, JumpServerSettings } from '../../src/config/schema';
+import type { CachedJumpServerAsset, CachedJumpServerNode, JumpServerSettings } from '../../src/config/schema';
 
 class MemoryMemento implements ExtensionMemento {
   data = new Map<string, unknown>();
@@ -62,6 +62,17 @@ function asset(overrides: Partial<CachedJumpServerAsset> = {}): CachedJumpServer
   };
 }
 
+function node(overrides: Partial<CachedJumpServerNode> = {}): CachedJumpServerNode {
+  return {
+    id: 'node-web',
+    name: 'Web',
+    path: ['Production', 'Web'],
+    assetIds: ['asset-1'],
+    raw: {},
+    ...overrides
+  };
+}
+
 describe('JumpServerConfigManager', () => {
   it('stores settings in global state and password in SecretStorage', async () => {
     const globalState = new MemoryMemento();
@@ -91,5 +102,13 @@ describe('JumpServerConfigManager', () => {
     await manager.saveCachedAssets([asset({ raw: { id: 'asset-1', token: 'secret-token' } })]);
 
     expect(await manager.listCachedAssets()).toEqual([asset({ raw: { id: 'asset-1' } })]);
+  });
+
+  it('stores and returns sanitized cached JumpServer nodes', async () => {
+    const manager = new JumpServerConfigManager(new MemoryMemento(), new MemorySecretStore());
+
+    await manager.saveCachedAssetNodes([node({ raw: { id: 'node-web', cookie: 'secret-cookie' } })]);
+
+    expect(await manager.listCachedAssetNodes()).toEqual([node({ raw: { id: 'node-web' } })]);
   });
 });

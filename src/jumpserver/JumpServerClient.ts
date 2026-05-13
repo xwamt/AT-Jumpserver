@@ -1,4 +1,4 @@
-import type { CachedJumpServerAsset } from '../config/schema';
+import type { CachedJumpServerAsset, CachedJumpServerNode } from '../config/schema';
 import type { JumpServerAccountRef, JumpServerEndpoint, JumpServerSettingsWithPassword } from './types';
 import WebSocket from 'ws';
 
@@ -237,11 +237,15 @@ export class JumpServerClient {
   }
 
   async listAssetTreePaths(): Promise<AssetPathMap> {
+    return nodesToAssetPathMap(await this.listAssetNodes());
+  }
+
+  async listAssetNodes(): Promise<CachedJumpServerNode[]> {
     await this.ensureAuthToken();
     const response = await this.request('/api/v1/perms/users/self/nodes/all-with-assets/tree/', {
       headers: this.restHeaders()
     });
-    return extractAssetTreePaths(await response.json());
+    return extractAssetTreeNodes(await response.json());
   }
 
   async getAssetDetail(assetId: string): Promise<Record<string, any>> {
@@ -414,9 +418,23 @@ export class JumpServerClient {
 }
 
 export function extractAssetTreePaths(payload: unknown): AssetPathMap {
-  const paths: AssetPathMap = new Map();
+  return nodesToAssetPathMap(extractAssetTreeNodes(payload));
+}
+
+export function extractAssetTreeNodes(payload: unknown): CachedJumpServerNode[] {
+  const nodes: CachedJumpServerNode[] = [];
   for (const item of treeItems(payload)) {
-    walkAssetTreeNode(item, [], paths);
+    walkAssetTreeNode(item, [], nodes);
+  }
+  return nodes;
+}
+
+function nodesToAssetPathMap(nodes: CachedJumpServerNode[]): AssetPathMap {
+  const paths: AssetPathMap = new Map();
+  for (const node of nodes) {
+    for (const assetId of node.assetIds) {
+      paths.set(assetId, node.path);
+    }
   }
   return paths;
 }
@@ -437,40 +455,54 @@ function treeItems(payload: unknown): unknown[] {
   return [payload];
 }
 
-function walkAssetTreeNode(node: unknown, parentPath: string[], paths: AssetPathMap): void {
+function walkAssetTreeNode(node: unknown, parentPath: string[], nodes: CachedJumpServerNode[]): void {
   if (!node || typeof node !== 'object') {
     return;
   }
   const record = node as Record<string, unknown>;
   if (isAssetTreeLeaf(record)) {
-    const id = stringField(record, ['id', 'key', 'value']);
-    if (id && parentPath.length > 0) {
-      paths.set(id, parentPath);
-    }
     return;
   }
 
   const label = stringField(record, ['name', 'title', 'label', 'value']);
   const currentPath = label ? [...parentPath, label] : parentPath;
-  for (const asset of treeItems(record.assets)) {
-    const id = asset && typeof asset === 'object'
-      ? stringField(asset as Record<string, unknown>, ['id', 'key', 'value'])
-      : '';
-    if (id && currentPath.length > 0) {
-      paths.set(id, currentPath);
+  const children = treeItems(record.children);
+  const assetIds = [
+    ...assetIdsFromValue(record.assets),
+    ...assetIdsFromValue(record.asset),
+    ...children
+      .filter((child) => child && typeof child === 'object' && isAssetTreeLeaf(child as Record<string, unknown>))
+      .map((child) => stringField(child as Record<string, unknown>, ['id', 'key', 'value']))
+      .filter((id) => id.length > 0)
+  ];
+  if (label && currentPath.length > 0) {
+    nodes.push({
+      id: stringField(record, ['id', 'key']) || currentPath.join('/'),
+      name: label,
+      path: currentPath,
+      assetIds,
+      raw: record
+    });
+  }
+  for (const child of children) {
+    if (!child || typeof child !== 'object' || isAssetTreeLeaf(child as Record<string, unknown>)) {
+      continue;
+    }
+    walkAssetTreeNode(child, currentPath, nodes);
+  }
+}
+
+function assetIdsFromValue(value: unknown): string[] {
+  const ids: string[] = [];
+  for (const asset of treeItems(value)) {
+    if (asset && typeof asset === 'object') {
+      const id = stringField(asset as Record<string, unknown>, ['id', 'key', 'value']);
+      if (id) {
+        ids.push(id);
+      }
     }
   }
-  for (const asset of treeItems(record.asset)) {
-    const id = asset && typeof asset === 'object'
-      ? stringField(asset as Record<string, unknown>, ['id', 'key', 'value'])
-      : '';
-    if (id && currentPath.length > 0) {
-      paths.set(id, currentPath);
-    }
-  }
-  for (const child of treeItems(record.children)) {
-    walkAssetTreeNode(child, currentPath, paths);
-  }
+  return ids;
 }
 
 function isAssetTreeLeaf(record: Record<string, unknown>): boolean {

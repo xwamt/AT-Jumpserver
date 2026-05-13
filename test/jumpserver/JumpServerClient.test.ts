@@ -226,6 +226,54 @@ describe('JumpServerClient REST flow', () => {
     });
   });
 
+  it('lists JumpServer nodes from the node tree endpoint before assets are synced', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ token: 'bearer-1' }))
+      .mockResolvedValueOnce(jsonResponse([
+        {
+          id: 'node-default',
+          name: 'DEFAULT',
+          children: [
+            {
+              id: 'node-prod',
+              name: 'PROD',
+              children: [
+                {
+                  id: 'node-offline-prod',
+                  name: 'offline-prod',
+                  children: [
+                    {
+                      id: 'node-middleware',
+                      name: 'Middleware',
+                      assets: [{ id: 'asset-1', name: 'gateway02' }]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]));
+    const client = new JumpServerClient({
+      baseUrl: 'https://jumpserver.example.com',
+      orgId: '',
+      username: 'alan',
+      password: 'secret',
+      verifyTls: true,
+      connectTimeout: 30
+    }, fetchMock);
+
+    const nodes = await client.listAssetNodes();
+
+    expect(nodes.map((node) => node.path)).toEqual([
+      ['DEFAULT'],
+      ['DEFAULT', 'PROD'],
+      ['DEFAULT', 'PROD', 'offline-prod'],
+      ['DEFAULT', 'PROD', 'offline-prod', 'Middleware']
+    ]);
+    expect(nodes.at(-1)?.assetIds).toEqual(['asset-1']);
+  });
+
   it('creates connection token and smart endpoint requests', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(jsonResponse({ token: 'bearer-1' }))

@@ -51,6 +51,9 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('jumpserverManager.refresh', async () => {
       await runCommand(async () => {
         const client = await createClient(configManager);
+        const nodes = await client.listAssetNodes();
+        await configManager.saveCachedAssetNodes(nodes);
+        treeProvider.refresh();
         const assets = await client.listAssets({ limit: 200, offset: 0 });
         await configManager.saveCachedAssets(assets);
         treeProvider.refresh();

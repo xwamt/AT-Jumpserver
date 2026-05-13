@@ -54,4 +54,31 @@ describe('JumpServerTreeProvider', () => {
     expect(asset).toBeInstanceOf(AssetTreeItem);
     expect((asset as AssetTreeItem).description).toBe('Linux');
   });
+
+  it('renders JumpServer node tree first, then attaches synced assets to matching nodes', async () => {
+    const provider = new JumpServerTreeProvider({
+      listCachedAssetNodes: async () => [
+        { id: 'node-default', name: 'DEFAULT', path: ['DEFAULT'], assetIds: [], raw: {} },
+        { id: 'node-prod', name: 'PROD', path: ['DEFAULT', 'PROD'], assetIds: [], raw: {} },
+        { id: 'node-offline-prod', name: 'offline-prod', path: ['DEFAULT', 'PROD', 'offline-prod'], assetIds: [], raw: {} },
+        { id: 'node-middleware', name: 'Middleware', path: ['DEFAULT', 'PROD', 'offline-prod', 'Middleware'], assetIds: ['asset-1'], raw: {} }
+      ],
+      listCachedAssets: async () => [
+        { id: 'asset-1', name: 'gateway02', address: '11.0.139.162', platform: 'Linux', category: 'host', type: 'server', zoneName: 'Middleware', nodePath: ['Middleware'], protocolNames: ['ssh'], raw: {} }
+      ]
+    });
+
+    const [root] = await provider.getChildren();
+    const [prod] = await provider.getChildren(root as GroupTreeItem);
+    const [offlineProd] = await provider.getChildren(prod as GroupTreeItem);
+    const [middleware] = await provider.getChildren(offlineProd as GroupTreeItem);
+    const middlewareChildren = await provider.getChildren(middleware as GroupTreeItem);
+
+    expect(root.label).toBe('DEFAULT');
+    expect(prod.label).toBe('PROD');
+    expect(offlineProd.label).toBe('offline-prod');
+    expect(middleware.label).toBe('Middleware');
+    expect(middlewareChildren[0]).toBeInstanceOf(AssetTreeItem);
+    expect((middlewareChildren[0] as AssetTreeItem).asset.id).toBe('asset-1');
+  });
 });

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  parseCachedJumpServerNode,
   parseCachedJumpServerAsset,
   parseJumpServerSettings,
   sanitizeCachedAssetRaw
@@ -50,6 +51,24 @@ describe('JumpServer config schema', () => {
       name: 'web-1',
       nodePath: ['Production', 'Web'],
       protocolNames: ['ssh']
+    });
+  });
+
+  it('parses cached JumpServer nodes with full path metadata', () => {
+    expect(
+      parseCachedJumpServerNode({
+        id: 'node-middleware',
+        name: 'Middleware',
+        path: ['DEFAULT', 'PROD', 'offline-prod', 'Middleware'],
+        assetIds: ['asset-1'],
+        raw: { id: 'node-middleware' }
+      })
+    ).toEqual({
+      id: 'node-middleware',
+      name: 'Middleware',
+      path: ['DEFAULT', 'PROD', 'offline-prod', 'Middleware'],
+      assetIds: ['asset-1'],
+      raw: { id: 'node-middleware' }
     });
   });
 

@@ -1,13 +1,16 @@
 import {
   parseCachedJumpServerAssets,
+  parseCachedJumpServerNodes,
   parseJumpServerSettings,
   sanitizeCachedAssetRaw,
   type CachedJumpServerAsset,
+  type CachedJumpServerNode,
   type JumpServerSettings
 } from './schema';
 
 const SETTINGS_KEY = 'jumpserverManager.settings';
 const ASSETS_KEY = 'jumpserverManager.cachedAssets';
+const NODES_KEY = 'jumpserverManager.cachedAssetNodes';
 const PASSWORD_KEY = 'jumpserverManager.password';
 
 export interface ExtensionMemento {
@@ -50,6 +53,7 @@ export class JumpServerConfigManager {
   async deleteSettings(): Promise<void> {
     await this.globalState.update(SETTINGS_KEY, undefined);
     await this.globalState.update(ASSETS_KEY, undefined);
+    await this.globalState.update(NODES_KEY, undefined);
     await this.secrets.delete(PASSWORD_KEY);
   }
 
@@ -75,5 +79,17 @@ export class JumpServerConfigManager {
 
   async listCachedAssets(): Promise<CachedJumpServerAsset[]> {
     return parseCachedJumpServerAssets(this.globalState.get<unknown[]>(ASSETS_KEY, []));
+  }
+
+  async saveCachedAssetNodes(nodes: CachedJumpServerNode[]): Promise<void> {
+    const sanitized = nodes.map((node) => ({
+      ...node,
+      raw: sanitizeCachedAssetRaw(node.raw)
+    }));
+    await this.globalState.update(NODES_KEY, parseCachedJumpServerNodes(sanitized));
+  }
+
+  async listCachedAssetNodes(): Promise<CachedJumpServerNode[]> {
+    return parseCachedJumpServerNodes(this.globalState.get<unknown[]>(NODES_KEY, []));
   }
 }
