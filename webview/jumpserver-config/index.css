@@ -1,0 +1,42 @@
+body {
+  margin: 0;
+  color: var(--vscode-foreground);
+  background: var(--vscode-editor-background);
+  font-family: var(--vscode-font-family);
+}
+
+.config-shell {
+  max-width: 560px;
+  padding: 20px;
+}
+
+.config-form {
+  display: grid;
+  gap: 12px;
+}
+
+label {
+  display: grid;
+  gap: 6px;
+}
+
+input {
+  padding: 6px 8px;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border);
+}
+
+.config-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+button {
+  width: fit-content;
+  padding: 7px 14px;
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+  border: 0;
+}

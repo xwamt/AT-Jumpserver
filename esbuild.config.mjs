@@ -30,6 +30,13 @@ const contextConfigs = [
     outfile: 'dist/webview/jumpserver-config.js',
     platform: 'browser',
     format: 'iife'
+  }),
+  esbuild.context({
+    ...common,
+    entryPoints: ['webview/jumpserver-config/index.css'],
+    outfile: 'dist/webview/jumpserver-config.css',
+    bundle: true,
+    loader: { '.css': 'css' }
   })
 ];
 
