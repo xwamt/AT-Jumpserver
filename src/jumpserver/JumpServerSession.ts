@@ -90,12 +90,8 @@ export class JumpServerSession {
   }
 
   private bindSocket(socket: KokoWebSocket): void {
-    socket.on('message', (message: Buffer | string) => {
-      if (Buffer.isBuffer(message)) {
-        this.input.events.output(message);
-        return;
-      }
-      this.handleControlMessage(String(message));
+    socket.on('message', (message: Buffer | string, isBinary?: boolean) => {
+      this.handleSocketMessage(message, Boolean(isBinary));
     });
     socket.on('close', () => {
       this.connected = false;
@@ -104,8 +100,19 @@ export class JumpServerSession {
     socket.on('error', (error) => this.input.events.error(error));
   }
 
-  private handleControlMessage(message: string): void {
-    const payload = JSON.parse(message) as { id?: string; type?: string; data?: unknown };
+  private handleSocketMessage(message: Buffer | string, isBinary: boolean): void {
+    const text = Buffer.isBuffer(message) ? message.toString('utf8') : message;
+    if (!isBinary && this.handleControlMessage(text)) {
+      return;
+    }
+    this.input.events.output(Buffer.isBuffer(message) ? message : Buffer.from(message, 'utf8'));
+  }
+
+  private handleControlMessage(message: string): boolean {
+    const payload = parseKokoControlMessage(message);
+    if (!payload) {
+      return false;
+    }
     if (payload.type === 'CONNECT') {
       const init = {
         id: payload.id || randomUUID(),
@@ -115,10 +122,32 @@ export class JumpServerSession {
       this.socket?.send(JSON.stringify(init));
       this.connected = true;
       this.input.events.status('Connected');
-      return;
+      return true;
     }
     if (typeof payload.data === 'string' && payload.type === 'TERMINAL_DATA') {
       this.input.events.output(Buffer.from(payload.data, 'utf8'));
+      return true;
     }
+    return payload.type?.startsWith('TERMINAL_') || payload.type === 'TERMINAL_SESSION';
+  }
+}
+
+function parseKokoControlMessage(message: string): { id?: string; type?: string; data?: unknown } | undefined {
+  const trimmed = message.trimStart();
+  if (!trimmed.startsWith('{')) {
+    return undefined;
+  }
+  try {
+    const payload = JSON.parse(message) as unknown;
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      return undefined;
+    }
+    const type = (payload as { type?: unknown }).type;
+    if (typeof type !== 'string') {
+      return undefined;
+    }
+    return payload as { id?: string; type?: string; data?: unknown };
+  } catch {
+    return undefined;
   }
 }

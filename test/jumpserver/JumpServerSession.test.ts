@@ -61,6 +61,26 @@ describe('JumpServerSession', () => {
     expect(events.status).toHaveBeenCalledWith('Connected');
   });
 
+  it('handles KoKo CONNECT control messages when ws delivers text frames as Buffer', async () => {
+    const fakeClient = client(socket);
+    const session = new JumpServerSession({
+      asset: { id: 'asset-1', name: 'web-1' },
+      client: fakeClient,
+      events
+    });
+
+    await session.connect();
+    socket.emit('message', Buffer.from(JSON.stringify({ id: 'connect-1', type: 'CONNECT', data: '{}' }), 'utf8'));
+
+    expect(socket.sent.at(-1)).toBe(JSON.stringify({
+      id: 'connect-1',
+      type: 'TERMINAL_INIT',
+      data: JSON.stringify({ cols: 80, rows: 24, code: '' })
+    }));
+    expect(events.output).not.toHaveBeenCalled();
+    expect(events.status).toHaveBeenCalledWith('Connected');
+  });
+
   it('maps webview input and resize to KoKo terminal messages', async () => {
     const session = new JumpServerSession({ asset: { id: 'asset-1', name: 'web-1' }, client: client(socket), events });
     await session.connect();
