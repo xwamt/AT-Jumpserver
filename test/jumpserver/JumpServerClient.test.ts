@@ -54,6 +54,39 @@ describe('JumpServerClient pure helpers', () => {
     });
   });
 
+  it('normalizes multi-level JumpServer node paths from display path fields', () => {
+    expect(
+      normalizeJumpServerAsset({
+        id: 'asset-1',
+        name: 'gateway02',
+        address: '11.0.139.162',
+        nodes_display: '/Default/Production/Gateway',
+        protocols: [{ name: 'ssh' }]
+      })
+    ).toMatchObject({
+      nodePath: ['Default', 'Production', 'Gateway'],
+      zoneName: 'Gateway'
+    });
+  });
+
+  it('normalizes multi-level JumpServer node paths from node full values', () => {
+    expect(
+      normalizeJumpServerAsset({
+        id: 'asset-1',
+        name: 'gateway02',
+        address: '11.0.139.162',
+        nodes: [
+          { id: 'node-1', name: 'Gateway', full_value: '/Default/Production/Gateway' },
+          { id: 'node-2', name: 'Short' }
+        ],
+        protocols: [{ name: 'ssh' }]
+      })
+    ).toMatchObject({
+      nodePath: ['Default', 'Production', 'Gateway'],
+      zoneName: 'Gateway'
+    });
+  });
+
   it('selects the first usable account without exposing account choice to users', () => {
     expect(
       resolveFirstUsableAccount({

@@ -5,6 +5,7 @@ import { AssetTreeItem, GroupTreeItem } from '../../src/tree/TreeItems';
 const assets = [
   { id: 'asset-1', name: 'web-1', address: '10.0.0.10', platform: 'Linux', category: 'host', type: 'server', zoneName: 'zone-a', nodePath: ['Production', 'Web'], protocolNames: ['ssh'], raw: {} },
   { id: 'asset-2', name: 'db-1', address: '10.0.0.11', platform: 'Linux', category: 'host', type: 'server', zoneName: 'zone-a', nodePath: ['Production', 'DB'], protocolNames: ['ssh'], raw: {} },
+  { id: 'asset-5', name: 'gateway-1', address: '10.0.0.12', platform: 'Linux', category: 'host', type: 'server', zoneName: 'Gateway', nodePath: ['Production', 'Network', 'Gateway'], protocolNames: ['ssh'], raw: {} },
   { id: 'asset-3', name: 'ops-1', address: '', platform: 'Linux', category: 'host', type: 'server', zoneName: 'Ops', nodePath: [], protocolNames: ['ssh'], raw: {} },
   { id: 'asset-4', name: 'misc-1', address: '', platform: '', category: 'host', type: 'server', zoneName: '', nodePath: [], protocolNames: ['ssh'], raw: {} }
 ];
@@ -26,10 +27,23 @@ describe('JumpServerTreeProvider', () => {
     const web = productionChildren.find((item) => item.label === 'Web') as GroupTreeItem;
     const webChildren = await provider.getChildren(web);
 
-    expect(productionChildren.map((item) => item.label)).toEqual(['DB', 'Web']);
+    expect(productionChildren.map((item) => item.label)).toEqual(['DB', 'Network', 'Web']);
     expect(webChildren).toHaveLength(1);
     expect(webChildren[0]).toBeInstanceOf(AssetTreeItem);
     expect((webChildren[0] as AssetTreeItem).asset.id).toBe('asset-1');
+  });
+
+  it('walks JumpServer directories deeper than two levels', async () => {
+    const provider = new JumpServerTreeProvider({ listCachedAssets: async () => assets });
+    const production = (await provider.getChildren()).find((item) => item.label === 'Production') as GroupTreeItem;
+    const network = (await provider.getChildren(production)).find((item) => item.label === 'Network') as GroupTreeItem;
+    const gateway = (await provider.getChildren(network)).find((item) => item.label === 'Gateway') as GroupTreeItem;
+    const gatewayChildren = await provider.getChildren(gateway);
+
+    expect(gateway.path).toEqual(['Production', 'Network', 'Gateway']);
+    expect(gatewayChildren).toHaveLength(1);
+    expect(gatewayChildren[0]).toBeInstanceOf(AssetTreeItem);
+    expect((gatewayChildren[0] as AssetTreeItem).asset.id).toBe('asset-5');
   });
 
   it('uses address or platform as asset description', async () => {

@@ -64,11 +64,8 @@ export function normalizeJumpServerAsset(item: Record<string, any>): CachedJumpS
   const platform = item.platform;
   const category = item.category;
   const type = item.type;
-  const nodes = Array.isArray(item.nodes) ? item.nodes : [];
   const zone = item.zone;
-  const nodePath = nodes
-    .filter((node: unknown): node is { name: string } => Boolean(node && typeof node === 'object' && 'name' in node))
-    .map((node) => String(node.name));
+  const nodePath = extractNodePath(item);
   const zoneName = typeof zone === 'object' && zone ? String(zone.name || '') : String(zone || '');
 
   return {
@@ -83,6 +80,55 @@ export function normalizeJumpServerAsset(item: Record<string, any>): CachedJumpS
     protocolNames: extractProtocolNames(item),
     raw: item
   };
+}
+
+export function extractNodePath(item: Record<string, any>): string[] {
+  const candidates: string[][] = [];
+  for (const field of ['node_path', 'nodePath', 'nodes_display', 'nodesDisplay']) {
+    candidates.push(parseNodePathValue(item[field]));
+  }
+  const nodes = Array.isArray(item.nodes) ? item.nodes : [];
+  candidates.push(nodes.flatMap((node) => parseNodeName(node)));
+  for (const node of nodes) {
+    if (!node || typeof node !== 'object') {
+      continue;
+    }
+    for (const field of ['full_value', 'fullValue', 'full_name', 'fullName', 'path', 'value', 'name']) {
+      candidates.push(parseNodePathValue((node as Record<string, unknown>)[field]));
+    }
+  }
+  return candidates.reduce<string[]>((best, candidate) => candidate.length > best.length ? candidate : best, []);
+}
+
+function parseNodeName(node: unknown): string[] {
+  if (!node || typeof node !== 'object') {
+    return [];
+  }
+  const name = (node as Record<string, unknown>).name;
+  return typeof name === 'string' && name.trim() ? [name.trim()] : [];
+}
+
+function parseNodePathValue(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => parseNodePathValue(entry));
+  }
+  if (!value) {
+    return [];
+  }
+  if (typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    for (const field of ['full_value', 'fullValue', 'full_name', 'fullName', 'path', 'value', 'name']) {
+      const parsed = parseNodePathValue(record[field]);
+      if (parsed.length > 0) {
+        return parsed;
+      }
+    }
+    return [];
+  }
+  return String(value)
+    .split(/[\\/]+/)
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
 }
 
 export function extractProtocolNames(item: Record<string, any>): string[] {
