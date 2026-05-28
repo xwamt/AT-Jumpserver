@@ -13,7 +13,8 @@
   ],
   "activationEvents": [
     "onStartupFinished",
-    "onView:jumpserverManager.assets"
+    "onView:jumpserverManager.assets",
+    "onView:jumpserverManager.sftpFiles"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -31,6 +32,10 @@
         {
           "id": "jumpserverManager.assets",
           "name": "Assets"
+        },
+        {
+          "id": "jumpserverManager.sftpFiles",
+          "name": "Files"
         }
       ]
     },
@@ -54,6 +59,55 @@
         "title": "JumpServer: Connect"
       },
       {
+        "command": "jumpserverManager.sftp.open",
+        "title": "JumpServer: Open Files",
+        "icon": "$(folder-opened)"
+      },
+      {
+        "command": "jumpserverManager.sftp.refresh",
+        "title": "JumpServer Files: Refresh",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "jumpserverManager.sftp.goToPath",
+        "title": "JumpServer Files: Go To Path"
+      },
+      {
+        "command": "jumpserverManager.sftp.goUp",
+        "title": "JumpServer Files: Go Up",
+        "icon": "$(arrow-up)"
+      },
+      {
+        "command": "jumpserverManager.sftp.upload",
+        "title": "JumpServer Files: Upload",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "jumpserverManager.sftp.download",
+        "title": "JumpServer Files: Download",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "jumpserverManager.sftp.delete",
+        "title": "JumpServer Files: Delete",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "jumpserverManager.sftp.rename",
+        "title": "JumpServer Files: Rename",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "jumpserverManager.sftp.newFolder",
+        "title": "JumpServer Files: New Folder",
+        "icon": "$(new-folder)"
+      },
+      {
+        "command": "jumpserverManager.sftp.copyPath",
+        "title": "JumpServer Files: Copy Path",
+        "icon": "$(copy)"
+      },
+      {
         "command": "jumpserverManager.disconnect",
         "title": "JumpServer: Disconnect"
       },
@@ -73,6 +127,26 @@
           "command": "jumpserverManager.refresh",
           "when": "view == jumpserverManager.assets",
           "group": "navigation@2"
+        },
+        {
+          "command": "jumpserverManager.sftp.refresh",
+          "when": "view == jumpserverManager.sftpFiles",
+          "group": "navigation@1"
+        },
+        {
+          "command": "jumpserverManager.sftp.upload",
+          "when": "view == jumpserverManager.sftpFiles",
+          "group": "navigation@2"
+        },
+        {
+          "command": "jumpserverManager.sftp.goUp",
+          "when": "view == jumpserverManager.sftpFiles",
+          "group": "navigation@3"
+        },
+        {
+          "command": "jumpserverManager.sftp.goToPath",
+          "when": "view == jumpserverManager.sftpFiles",
+          "group": "navigation@4"
         }
       ],
       "view/item/context": [
@@ -80,6 +154,41 @@
           "command": "jumpserverManager.connect",
           "when": "view == jumpserverManager.assets && (viewItem == jumpserverAsset || viewItem == jumpserverMysqlAsset || viewItem == jumpserverUnsupportedAsset)",
           "group": "inline@1"
+        },
+        {
+          "command": "jumpserverManager.sftp.open",
+          "when": "view == jumpserverManager.assets && (viewItem == jumpserverAsset || viewItem == jumpserverMysqlAsset || viewItem == jumpserverUnsupportedAsset)",
+          "group": "inline@2"
+        },
+        {
+          "command": "jumpserverManager.sftp.download",
+          "when": "view == jumpserverManager.sftpFiles && viewItem == jumpserverSftpFile",
+          "group": "inline@1"
+        },
+        {
+          "command": "jumpserverManager.sftp.upload",
+          "when": "view == jumpserverManager.sftpFiles && viewItem == jumpserverSftpDirectory",
+          "group": "inline@1"
+        },
+        {
+          "command": "jumpserverManager.sftp.newFolder",
+          "when": "view == jumpserverManager.sftpFiles && viewItem == jumpserverSftpDirectory",
+          "group": "inline@2"
+        },
+        {
+          "command": "jumpserverManager.sftp.rename",
+          "when": "view == jumpserverManager.sftpFiles && (viewItem == jumpserverSftpFile || viewItem == jumpserverSftpDirectory)",
+          "group": "2_manage@1"
+        },
+        {
+          "command": "jumpserverManager.sftp.delete",
+          "when": "view == jumpserverManager.sftpFiles && (viewItem == jumpserverSftpFile || viewItem == jumpserverSftpDirectory)",
+          "group": "2_manage@2"
+        },
+        {
+          "command": "jumpserverManager.sftp.copyPath",
+          "when": "view == jumpserverManager.sftpFiles && (viewItem == jumpserverSftpFile || viewItem == jumpserverSftpDirectory)",
+          "group": "3_copy@1"
         }
       ]
     },

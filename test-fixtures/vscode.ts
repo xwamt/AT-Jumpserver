@@ -13,6 +13,7 @@ export enum ViewColumn {
 
 export class TreeItem {
   label?: string;
+  id?: string;
   description?: string;
   tooltip?: string;
   contextValue?: string;
@@ -50,7 +51,11 @@ export class Uri {
 export const window = {
   createTreeView: vi.fn(),
   createWebviewPanel: vi.fn(),
+  showInputBox: vi.fn(),
   showInformationMessage: vi.fn(),
+  showOpenDialog: vi.fn(),
+  showSaveDialog: vi.fn(),
+  showWarningMessage: vi.fn(),
   withProgress: vi.fn()
 };
 
@@ -62,6 +67,12 @@ export const workspace = {
 
 export const commands = {
   registerCommand: vi.fn()
+};
+
+export const env = {
+  clipboard: {
+    writeText: vi.fn()
+  }
 };
 
 export const ProgressLocation = {

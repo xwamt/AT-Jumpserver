@@ -16,6 +16,7 @@ const jumpServerClientMock = vi.hoisted(() => ({
   ensureAuthToken: vi.fn(),
   listAssetNodes: vi.fn(),
   listAssets: vi.fn(),
+  openKokoSftpWebSocket: vi.fn(),
   JumpServerClient: vi.fn()
 }));
 
@@ -81,7 +82,8 @@ beforeEach(() => {
   jumpServerClientMock.JumpServerClient.mockImplementation(() => ({
     ensureAuthToken: jumpServerClientMock.ensureAuthToken,
     listAssetNodes: jumpServerClientMock.listAssetNodes,
-    listAssets: jumpServerClientMock.listAssets
+    listAssets: jumpServerClientMock.listAssets,
+    openKokoSftpWebSocket: jumpServerClientMock.openKokoSftpWebSocket
   }));
 
 });
@@ -98,11 +100,36 @@ describe('extension command wiring', () => {
     activate(context);
 
     expect(vscode.window.createTreeView).toHaveBeenCalledWith('jumpserverManager.assets', expect.any(Object));
+    expect(vscode.window.createTreeView).toHaveBeenCalledWith('jumpserverManager.sftpFiles', expect.any(Object));
     expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.configure', expect.any(Function));
     expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.validate', expect.any(Function));
     expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.refresh', expect.any(Function));
     expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.connect', expect.any(Function));
     expect(vscode.commands.registerCommand).not.toHaveBeenCalledWith('sshManager.connect', expect.any(Function));
+  });
+
+  it('registers JumpServer SFTP file commands', () => {
+    const context = contextWithSettings();
+    activate(context);
+
+    expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.sftp.open', expect.any(Function));
+    expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.sftp.refresh', expect.any(Function));
+    expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.sftp.upload', expect.any(Function));
+    expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.sftp.download', expect.any(Function));
+    expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.sftp.delete', expect.any(Function));
+    expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.sftp.rename', expect.any(Function));
+    expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.sftp.newFolder', expect.any(Function));
+    expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.sftp.copyPath', expect.any(Function));
+  });
+
+  it('shows a clear error when opening files for an asset without SFTP', async () => {
+    const context = contextWithSettings();
+    activate(context);
+    const openFiles = registeredCommand('jumpserverManager.sftp.open');
+
+    await openFiles({ asset: { id: 'redis-1', name: 'redis-1', protocolNames: ['redis'] } });
+
+    expect(notificationsMock.showTimedNotification).toHaveBeenCalledWith('Asset does not support SFTP: redis-1', 'error');
   });
 
   it('refreshes JumpServer nodes before syncing assets', async () => {
