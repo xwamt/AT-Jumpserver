@@ -33,7 +33,7 @@ AT JumpServer Terminal is a VS Code extension for opening browser-style JumpServ
 4. Run `JumpServer: Validate Account`.
 5. Run `JumpServer: Refresh Assets`.
 6. Click an SSH or MySQL asset to connect in a terminal.
-7. Use `JumpServer: Open Files` on an SFTP-capable asset to browse and manage files.
+7. Connect to an SSH asset, then use the Files view for the terminal-backed SFTP session.
 
 ## SFTP Development Probe
 

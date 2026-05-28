@@ -123,18 +123,6 @@ export function activate(context: vscode.ExtensionContext): void {
         await tryOpenSftpFiles(sftpManager, sftpTreeProvider, item.asset, terminal.getTerminalId(), false);
       });
     }),
-    vscode.commands.registerCommand('jumpserverManager.sftp.open', async (item?: AssetTreeItem) => {
-      if (!item) {
-        return;
-      }
-      await runCommand(async () => {
-        if (!assetMaySupportSftp(item.asset)) {
-          await showTimedNotification(`Asset does not support SFTP: ${item.asset.name}`, 'error');
-          return;
-        }
-        await tryOpenSftpFiles(sftpManager, sftpTreeProvider, item.asset, item.asset.id, true);
-      });
-    }),
     vscode.commands.registerCommand('jumpserverManager.sftp.refresh', async () => {
       await runCommand(async () => {
         if (!await ensureSftpAssetOpen(sftpManager)) {

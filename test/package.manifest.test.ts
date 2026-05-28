@@ -18,7 +18,6 @@ describe('AT JumpServer Terminal manifest', () => {
       'jumpserverManager.validate',
       'jumpserverManager.refresh',
       'jumpserverManager.connect',
-      'jumpserverManager.sftp.open',
       'jumpserverManager.sftp.refresh',
       'jumpserverManager.sftp.goUp',
       'jumpserverManager.sftp.upload',
@@ -36,11 +35,13 @@ describe('AT JumpServer Terminal manifest', () => {
       expect.objectContaining({ id: 'jumpserverManager.sftpFiles', name: 'Files' })
     ]));
     expect(manifest.contributes.commands).toEqual(expect.arrayContaining([
-      expect.objectContaining({ command: 'jumpserverManager.sftp.open' }),
       expect.objectContaining({ command: 'jumpserverManager.sftp.upload' }),
       expect.objectContaining({ command: 'jumpserverManager.sftp.download' }),
       expect.objectContaining({ command: 'jumpserverManager.sftp.preview' }),
       expect.objectContaining({ command: 'jumpserverManager.sftp.edit' })
+    ]));
+    expect(manifest.contributes.commands).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ command: 'jumpserverManager.sftp.open' })
     ]));
     const fileMenus = manifest.contributes.menus['view/item/context'].filter((item: { command: string }) =>
       item.command === 'jumpserverManager.sftp.preview' || item.command === 'jumpserverManager.sftp.edit'
@@ -62,9 +63,6 @@ describe('AT JumpServer Terminal manifest', () => {
     expect(commandsById.get('jumpserverManager.refresh')).toMatchObject({
       icon: '$(refresh)'
     });
-    expect(commandsById.get('jumpserverManager.sftp.open')).toMatchObject({
-      icon: '$(folder-opened)'
-    });
     expect(commandsById.get('jumpserverManager.sftp.upload')).toMatchObject({
       icon: '$(cloud-upload)'
     });
@@ -82,6 +80,16 @@ describe('AT JumpServer Terminal manifest', () => {
     expect(connectMenu.when).toContain('jumpserverAsset');
     expect(connectMenu.when).toContain('jumpserverMysqlAsset');
     expect(connectMenu.when).toContain('jumpserverUnsupportedAsset');
+  });
+
+  it('does not show a standalone Open Files action on assets', () => {
+    const assetMenus = manifest.contributes.menus['view/item/context'].filter(
+      (item: { when: string }) => item.when.includes('view == jumpserverManager.assets')
+    );
+
+    expect(assetMenus).toHaveLength(1);
+    expect(assetMenus[0].command).toBe('jumpserverManager.connect');
+    expect(JSON.stringify(manifest)).not.toContain('jumpserverManager.sftp.open');
   });
 
   it('keeps SFTP file open actions out of inline tree buttons', () => {

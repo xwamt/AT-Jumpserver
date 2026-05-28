@@ -59,11 +59,6 @@
         "title": "JumpServer: Connect"
       },
       {
-        "command": "jumpserverManager.sftp.open",
-        "title": "JumpServer: Open Files",
-        "icon": "$(folder-opened)"
-      },
-      {
         "command": "jumpserverManager.sftp.refresh",
         "title": "JumpServer Files: Refresh",
         "icon": "$(refresh)"
@@ -155,11 +150,6 @@
           "command": "jumpserverManager.connect",
           "when": "view == jumpserverManager.assets && (viewItem == jumpserverAsset || viewItem == jumpserverMysqlAsset || viewItem == jumpserverUnsupportedAsset)",
           "group": "inline@1"
-        },
-        {
-          "command": "jumpserverManager.sftp.open",
-          "when": "view == jumpserverManager.assets && (viewItem == jumpserverAsset || viewItem == jumpserverMysqlAsset || viewItem == jumpserverUnsupportedAsset)",
-          "group": "inline@2"
         },
         {
           "command": "jumpserverManager.sftp.download",

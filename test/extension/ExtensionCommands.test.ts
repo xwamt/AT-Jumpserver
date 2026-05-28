@@ -170,7 +170,7 @@ describe('extension command wiring', () => {
     const context = contextWithSettings();
     activate(context);
 
-    expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.sftp.open', expect.any(Function));
+    expect(vscode.commands.registerCommand).not.toHaveBeenCalledWith('jumpserverManager.sftp.open', expect.any(Function));
     expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.sftp.refresh', expect.any(Function));
     expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.sftp.upload', expect.any(Function));
     expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.sftp.download', expect.any(Function));
@@ -182,39 +182,11 @@ describe('extension command wiring', () => {
     expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.sftp.copyPath', expect.any(Function));
   });
 
-  it('shows a clear error when opening files for an asset without SFTP', async () => {
+  it('does not register a standalone SFTP open command from the asset list', () => {
     const context = contextWithSettings();
     activate(context);
-    const openFiles = registeredCommand('jumpserverManager.sftp.open');
 
-    await openFiles({ asset: { id: 'redis-1', name: 'redis-1', protocolNames: ['redis'] } });
-
-    expect(notificationsMock.showTimedNotification).toHaveBeenCalledWith('Asset does not support SFTP: redis-1', 'error');
-  });
-
-  it('opens files for SSH assets even when the cached protocol list only contains ssh', async () => {
-    const context = contextWithSettings();
-    activate(context);
-    const openFiles = registeredCommand('jumpserverManager.sftp.open');
-    const item = {
-      asset: {
-        id: 'server-1',
-        name: 'uat-service',
-        address: '10.0.0.11',
-        platform: 'Linux',
-        category: 'host',
-        type: 'server',
-        zoneName: '',
-        nodePath: [],
-        protocolNames: ['ssh'],
-        raw: {}
-      }
-    };
-
-    await openFiles(item);
-
-    expect(sftpManagerMock.openAsset).toHaveBeenCalledWith(item.asset, item.asset.id);
-    expect(notificationsMock.showTimedNotification).not.toHaveBeenCalledWith('Asset does not support SFTP: uat-service', 'error');
+    expect(vscode.commands.registerCommand).not.toHaveBeenCalledWith('jumpserverManager.sftp.open', expect.any(Function));
   });
 
   it('automatically opens the SFTP file tree when connecting an SSH asset', async () => {
