@@ -114,6 +114,7 @@
   },
   "scripts": {
     "build": "node esbuild.config.mjs",
+    "probe:sftp": "node tools/probe-jumpserver-sftp.mjs",
     "watch": "node esbuild.config.mjs --watch",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
