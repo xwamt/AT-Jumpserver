@@ -18,9 +18,11 @@ const disposeSession = vi.fn<() => void>();
 const write = vi.fn<(data: string) => void>();
 const resize = vi.fn<(rows: number, cols: number) => void>();
 const sessionEvents: Array<{ output(data: Buffer): void; status(message: string): void }> = [];
+const sessionInputs: unknown[] = [];
 
 vi.mock('../../src/jumpserver/JumpServerSession', () => ({
   JumpServerSession: vi.fn().mockImplementation((input) => {
+    sessionInputs.push(input);
     sessionEvents.push(input.events);
     return {
       connect,
@@ -42,6 +44,21 @@ function asset(id = 'terminal-asset'): CachedJumpServerAsset {
     zoneName: 'Production',
     nodePath: ['Production'],
     protocolNames: ['ssh'],
+    raw: {}
+  };
+}
+
+function mysqlAsset(id = 'mysql-asset'): CachedJumpServerAsset {
+  return {
+    id,
+    name: id,
+    address: `${id}.example.com`,
+    platform: 'MySQL',
+    category: 'database',
+    type: 'mysql',
+    zoneName: 'Production',
+    nodePath: ['Production'],
+    protocolNames: ['mysql'],
     raw: {}
   };
 }
@@ -108,6 +125,7 @@ beforeEach(() => {
   write.mockClear();
   resize.mockClear();
   sessionEvents.length = 0;
+  sessionInputs.length = 0;
   vi.spyOn(vscode.window, 'createWebviewPanel').mockReturnValue(createPanel().panel);
 });
 
@@ -185,7 +203,7 @@ describe('TerminalPanel rendering helpers', () => {
 
     expect(vscode.window.createWebviewPanel).toHaveBeenCalledWith(
       'jumpserverTerminal',
-      'JumpServer: terminal-asset',
+      'JumpServer SSH: terminal-asset',
       vscode.ViewColumn.Active,
       expect.objectContaining({ enableScripts: true, retainContextWhenHidden: true })
     );
@@ -193,6 +211,25 @@ describe('TerminalPanel rendering helpers', () => {
     expect(registry.getActive()?.connected).toBe(false);
     await flushPromises();
     expect(registry.getActive()?.connected).toBe(true);
+  });
+
+
+  it('uses a MySQL title and passes mysql connection kind into the session', async () => {
+    const panelHost = createPanel();
+    vi.mocked(vscode.window.createWebviewPanel).mockReturnValueOnce(panelHost.panel);
+
+    TerminalPanel.open(extensionContext(), mysqlAsset(), jumpServerClient());
+
+    expect(vscode.window.createWebviewPanel).toHaveBeenCalledWith(
+      'jumpserverTerminal',
+      'JumpServer MySQL: mysql-asset',
+      vscode.ViewColumn.Active,
+      expect.objectContaining({ enableScripts: true, retainContextWhenHidden: true })
+    );
+    expect(sessionInputs.at(-1)).toMatchObject({
+      connectionKind: 'mysql',
+      asset: expect.objectContaining({ id: 'mysql-asset' })
+    });
   });
 
   it('posts upstream bytes to the terminal webview', async () => {
