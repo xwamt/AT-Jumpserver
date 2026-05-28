@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { JumpServerTreeProvider } from '../../src/tree/JumpServerTreeProvider';
-import { AssetTreeItem, GroupTreeItem } from '../../src/tree/TreeItems';
+import { AssetTreeItem, GroupTreeItem, getAssetOpenKind } from '../../src/tree/TreeItems';
 
 const assets = [
   { id: 'asset-1', name: 'web-1', address: '10.0.0.10', platform: 'Linux', category: 'host', type: 'server', zoneName: 'zone-a', nodePath: ['Production', 'Web'], protocolNames: ['ssh'], raw: {} },
@@ -53,6 +53,58 @@ describe('JumpServerTreeProvider', () => {
 
     expect(asset).toBeInstanceOf(AssetTreeItem);
     expect((asset as AssetTreeItem).description).toBe('Linux');
+  });
+
+
+  it('marks MySQL and unsupported database assets without hiding them', () => {
+    const mysql = new AssetTreeItem({
+      id: 'mysql-1',
+      name: 'mysql-1',
+      address: 'db.example.com',
+      platform: 'MySQL',
+      category: 'database',
+      type: 'mysql',
+      zoneName: '',
+      nodePath: [],
+      protocolNames: [],
+      raw: {}
+    });
+    const redis = new AssetTreeItem({
+      id: 'redis-1',
+      name: 'redis-1',
+      address: 'redis.example.com',
+      platform: 'Redis6+',
+      category: 'database',
+      type: 'redis',
+      zoneName: '',
+      nodePath: [],
+      protocolNames: [],
+      raw: {}
+    });
+
+    expect(getAssetOpenKind(mysql.asset)).toBe('mysql');
+    expect(mysql.contextValue).toBe('jumpserverMysqlAsset');
+    expect(mysql.description).toBe('db.example.com - MySQL');
+    expect(getAssetOpenKind(redis.asset)).toBe('unsupported');
+    expect(redis.contextValue).toBe('jumpserverUnsupportedAsset');
+  });
+
+  it('routes MySQL database assets to the terminal even if cached protocols include ssh', () => {
+    const mysql = new AssetTreeItem({
+      id: 'mysql-1',
+      name: 'mysql-1',
+      address: 'db.example.com',
+      platform: 'MySQL',
+      category: 'database',
+      type: 'mysql',
+      zoneName: '',
+      nodePath: [],
+      protocolNames: ['ssh'],
+      raw: {}
+    });
+
+    expect(getAssetOpenKind(mysql.asset)).toBe('mysql');
+    expect(mysql.contextValue).toBe('jumpserverMysqlAsset');
   });
 
   it('renders JumpServer node tree first, then attaches synced assets to matching nodes', async () => {
