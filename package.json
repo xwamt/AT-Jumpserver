@@ -164,17 +164,17 @@
         {
           "command": "jumpserverManager.sftp.download",
           "when": "view == jumpserverManager.sftpFiles && viewItem == jumpserverSftpFile",
-          "group": "inline@1"
+          "group": "transfer@2"
         },
         {
           "command": "jumpserverManager.sftp.preview",
           "when": "view == jumpserverManager.sftpFiles && viewItem == jumpserverSftpFile",
-          "group": "inline@2"
+          "group": "open@2"
         },
         {
           "command": "jumpserverManager.sftp.edit",
           "when": "view == jumpserverManager.sftpFiles && viewItem == jumpserverSftpFile",
-          "group": "inline@3"
+          "group": "open@1"
         },
         {
           "command": "jumpserverManager.sftp.upload",

@@ -29,6 +29,23 @@ describe('SftpTreeProvider', () => {
     expect(children[2]).toBeInstanceOf(SftpFileTreeItem);
   });
 
+  it('formats file sizes with scaled units', async () => {
+    const provider = new SftpTreeProvider({
+      getState: () => ({ kind: 'active', rootPath: '/home/root', asset: {} as never }),
+      listDirectory: async () => [
+        { name: 'small.txt', path: '/home/root/small.txt', type: 'file' as const, size: 512 },
+        { name: 'medium.log', path: '/home/root/medium.log', type: 'file' as const, size: 1536 },
+        { name: 'large.bin', path: '/home/root/large.bin', type: 'file' as const, size: 1048576 }
+      ]
+    });
+
+    const children = await provider.getChildren();
+
+    expect((children[1] as SftpFileTreeItem).description).toBe('512 B');
+    expect((children[2] as SftpFileTreeItem).description).toBe('1.5 KB');
+    expect((children[3] as SftpFileTreeItem).description).toBe('1 MB');
+  });
+
   it('renders disconnected snapshot entries', async () => {
     const provider = new SftpTreeProvider({
       getState: () => ({ kind: 'disconnected', rootPath: '/home/root', entries, asset: {} as never })

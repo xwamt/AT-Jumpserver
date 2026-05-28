@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { formatFileSize } from '../sftp/FileSize';
 import type { JumpServerSftpEntry } from '../sftp/SftpTypes';
 
 export class SftpPlaceholderTreeItem extends vscode.TreeItem {
@@ -34,7 +35,7 @@ export class SftpFileTreeItem extends vscode.TreeItem {
   ) {
     super(entry.name, vscode.TreeItemCollapsibleState.None);
     this.contextValue = disconnected ? 'jumpserverSftpDisconnectedFile' : 'jumpserverSftpFile';
-    this.description = entry.size === undefined ? undefined : `${entry.size} B`;
+    this.description = entry.size === undefined ? undefined : formatFileSize(entry.size);
     this.tooltip = entry.path;
   }
 }

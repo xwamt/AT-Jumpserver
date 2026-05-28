@@ -83,4 +83,21 @@ describe('AT JumpServer Terminal manifest', () => {
     expect(connectMenu.when).toContain('jumpserverMysqlAsset');
     expect(connectMenu.when).toContain('jumpserverUnsupportedAsset');
   });
+
+  it('keeps SFTP file open actions out of inline tree buttons', () => {
+    const fileActionMenus = manifest.contributes.menus['view/item/context'].filter((item: { command: string }) =>
+      [
+        'jumpserverManager.sftp.download',
+        'jumpserverManager.sftp.preview',
+        'jumpserverManager.sftp.edit'
+      ].includes(item.command)
+    );
+
+    expect(fileActionMenus).toEqual(expect.arrayContaining([
+      expect.objectContaining({ command: 'jumpserverManager.sftp.download', group: 'transfer@2' }),
+      expect.objectContaining({ command: 'jumpserverManager.sftp.edit', group: 'open@1' }),
+      expect.objectContaining({ command: 'jumpserverManager.sftp.preview', group: 'open@2' })
+    ]));
+    expect(fileActionMenus.every((item: { group: string }) => !item.group.startsWith('inline'))).toBe(true);
+  });
 });
