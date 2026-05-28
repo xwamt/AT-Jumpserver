@@ -37,7 +37,15 @@ export class EventEmitter<T> {
 }
 
 export class Uri {
-  constructor(readonly fsPath: string) {}
+  readonly scheme: string;
+  readonly path: string;
+  readonly query: string;
+
+  constructor(readonly fsPath: string, scheme = 'file', path = fsPath, query = '') {
+    this.scheme = scheme;
+    this.path = path;
+    this.query = query;
+  }
 
   static file(path: string): Uri {
     return new Uri(path);
@@ -46,23 +54,42 @@ export class Uri {
   static joinPath(base: Uri, ...paths: string[]): Uri {
     return new Uri([base.fsPath, ...paths].join('/'));
   }
+
+  static from(input: { scheme: string; path: string; query?: string }): Uri {
+    return new Uri(input.path, input.scheme, input.path, input.query ?? '');
+  }
+
+  toString(): string {
+    const query = this.query ? `?${this.query}` : '';
+    return `${this.scheme}:${this.path}${query}`;
+  }
 }
 
 export const window = {
   createTreeView: vi.fn(),
+  createStatusBarItem: vi.fn(() => ({ text: '', tooltip: '', show: vi.fn(), hide: vi.fn(), dispose: vi.fn() })),
   createWebviewPanel: vi.fn(),
   showInputBox: vi.fn(),
   showInformationMessage: vi.fn(),
   showOpenDialog: vi.fn(),
   showSaveDialog: vi.fn(),
+  showTextDocument: vi.fn(),
   showWarningMessage: vi.fn(),
-  withProgress: vi.fn()
+  withProgress: vi.fn(),
+  tabGroups: {
+    onDidChangeTabs: vi.fn()
+  }
 };
 
 export const workspace = {
   getConfiguration: vi.fn(() => ({
     get: <T>(_key: string, defaultValue: T): T => defaultValue
-  }))
+  })),
+  onDidCloseTextDocument: vi.fn(),
+  onDidSaveTextDocument: vi.fn(),
+  openTextDocument: vi.fn(async (uri) => ({ uri, languageId: 'plaintext' })),
+  registerTextDocumentContentProvider: vi.fn(),
+  workspaceFolders: undefined
 };
 
 export const commands = {
@@ -78,3 +105,8 @@ export const env = {
 export const ProgressLocation = {
   Notification: 15
 };
+
+export enum StatusBarAlignment {
+  Left = 1,
+  Right = 2
+}
