@@ -8,6 +8,8 @@ AT JumpServer Terminal is a VS Code extension for opening browser-style JumpServ
 - Listing the current user's permitted assets
 - SSH protocol assets
 - MySQL protocol assets through JumpServer `db_client`
+- SFTP file tree for permitted assets
+- SFTP upload, download, new folder, rename, delete, copy path, and path navigation through JumpServer KoKo
 - xterm.js terminal UI
 - JumpServer KoKo WebSocket terminal sessions
 
@@ -15,7 +17,7 @@ AT JumpServer Terminal is a VS Code extension for opening browser-style JumpServ
 
 - Ahell backend integration
 - Direct SSH through ssh2
-- SFTP or remote file editing
+- Remote file editing and save-to-upload sync
 - MCP and Agent tools
 - MySQL GUI/workbench, Chen SQL editor, schema browser, or result grid
 - RDP, PostgreSQL, Redis, Oracle, SQL Server, Kubernetes, or other non-SSH/non-MySQL assets
@@ -29,6 +31,15 @@ AT JumpServer Terminal is a VS Code extension for opening browser-style JumpServ
 4. Run `JumpServer: Validate Account`.
 5. Run `JumpServer: Refresh Assets`.
 6. Click an SSH or MySQL asset to connect in a terminal.
+7. Use `JumpServer: Open Files` on an SFTP-capable asset to browse and manage files.
+
+## SFTP Development Probe
+
+Before changing the SFTP implementation, validate a real JumpServer instance with `npm run probe:sftp`. The probe reads `JUMPSERVER_BASE_URL`, `JUMPSERVER_USERNAME`, `JUMPSERVER_PASSWORD`, and `JUMPSERVER_ASSET_ID` from the environment.
+
+## Phase Two Direction
+
+Remote file editing is intentionally reserved for a later phase. The current SFTP layer already exposes `stat`, `readFile`, `writeFile`, and `createFile` interfaces so a future edit workflow can download into an extension-owned cache, detect remote changes before upload, and sync saved files back through KoKo without reshaping the first-phase file manager.
 
 ## Development
 
@@ -47,6 +58,13 @@ npm run build
 - Run `whoami`, `pwd`, and `ls`.
 - Connect to a MySQL asset.
 - Run `select 1;` at the MySQL prompt.
+- Open files for an SFTP-capable SSH asset.
+- Navigate into a directory and back up.
+- Upload a small text file.
+- Download the file and compare content.
+- Rename and delete the test file.
+- Create and delete a test directory.
+- Verify an asset without SFTP shows a clear unsupported message.
 - Resize the terminal.
 - Disconnect and reconnect.
 - Verify bad password and non-SSH assets show clear errors.

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 const manifest = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8'));
 
 describe('AT JumpServer Terminal manifest', () => {
-  it('declares a standalone JumpServer terminal extension without SSH/SFTP/MCP commands', () => {
+  it('declares JumpServer terminal and first-phase SFTP file commands without MCP commands', () => {
     expect(manifest.name).toBe('at-jumpserver-terminal');
     expect(manifest.displayName).toBe('AT JumpServer Terminal');
     expect(manifest.version).toBe('0.1.1');
@@ -18,10 +18,28 @@ describe('AT JumpServer Terminal manifest', () => {
       'jumpserverManager.validate',
       'jumpserverManager.refresh',
       'jumpserverManager.connect',
+      'jumpserverManager.sftp.open',
+      'jumpserverManager.sftp.refresh',
+      'jumpserverManager.sftp.goToPath',
+      'jumpserverManager.sftp.goUp',
+      'jumpserverManager.sftp.upload',
+      'jumpserverManager.sftp.download',
+      'jumpserverManager.sftp.delete',
+      'jumpserverManager.sftp.rename',
+      'jumpserverManager.sftp.newFolder',
+      'jumpserverManager.sftp.copyPath',
       'jumpserverManager.disconnect',
       'jumpserverManager.reconnect'
     ]);
-    expect(JSON.stringify(manifest)).not.toContain('sftp');
+    expect(manifest.contributes.views.jumpserverManager).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'jumpserverManager.sftpFiles', name: 'Files' })
+    ]));
+    expect(manifest.contributes.commands).toEqual(expect.arrayContaining([
+      expect.objectContaining({ command: 'jumpserverManager.sftp.open' }),
+      expect.objectContaining({ command: 'jumpserverManager.sftp.upload' }),
+      expect.objectContaining({ command: 'jumpserverManager.sftp.download' })
+    ]));
+    expect(JSON.stringify(manifest).toLowerCase()).not.toContain('mcp');
     expect(JSON.stringify(manifest)).not.toContain('run_remote_command');
     expect(JSON.stringify(manifest)).not.toContain('sshManager');
     expect(JSON.stringify(manifest)).not.toContain('media/terminal-activity.svg');
@@ -34,6 +52,15 @@ describe('AT JumpServer Terminal manifest', () => {
     });
     expect(commandsById.get('jumpserverManager.refresh')).toMatchObject({
       icon: '$(refresh)'
+    });
+    expect(commandsById.get('jumpserverManager.sftp.open')).toMatchObject({
+      icon: '$(folder-opened)'
+    });
+    expect(commandsById.get('jumpserverManager.sftp.upload')).toMatchObject({
+      icon: '$(cloud-upload)'
+    });
+    expect(commandsById.get('jumpserverManager.sftp.download')).toMatchObject({
+      icon: '$(cloud-download)'
     });
   });
 
