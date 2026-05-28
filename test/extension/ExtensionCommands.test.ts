@@ -1,6 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as vscode from 'vscode';
 
+const terminalPanelMock = vi.hoisted(() => ({
+  open: vi.fn(),
+  getActive: vi.fn(),
+  disconnectAll: vi.fn()
+}));
+
+const notificationsMock = vi.hoisted(() => ({
+  showTimedNotification: vi.fn()
+}));
+
 const jumpServerClientMock = vi.hoisted(() => ({
   calls: [] as string[],
   ensureAuthToken: vi.fn(),
@@ -13,7 +23,44 @@ vi.mock('../../src/jumpserver/JumpServerClient', () => ({
   JumpServerClient: jumpServerClientMock.JumpServerClient
 }));
 
+vi.mock('../../src/webview/TerminalPanel', () => ({
+  TerminalPanel: terminalPanelMock
+}));
+
+vi.mock('../../src/utils/notifications', () => ({
+  showTimedNotification: notificationsMock.showTimedNotification
+}));
+
 import { activate, deactivate } from '../../src/extension';
+
+
+function contextWithSettings(): vscode.ExtensionContext {
+  const data = new Map<string, unknown>([
+    ['jumpserverManager.settings', {
+      baseUrl: 'https://jumpserver.example.com',
+      orgId: '',
+      username: 'alan',
+      verifyTls: true,
+      connectTimeout: 30,
+      updatedAt: 1
+    }]
+  ]);
+  return {
+    globalState: {
+      get: vi.fn((key, fallback) => data.has(key) ? data.get(key) : fallback),
+      update: vi.fn(async (key, value) => {
+        data.set(key, value);
+      })
+    },
+    secrets: { get: vi.fn(async () => 'secret'), store: vi.fn(), delete: vi.fn() },
+    subscriptions: [],
+    extensionUri: vscode.Uri.file('extension-root')
+  } as unknown as vscode.ExtensionContext;
+}
+
+function registeredCommand(commandId: string): (...args: any[]) => Promise<void> {
+  return vi.mocked(vscode.commands.registerCommand).mock.calls.find(([command]) => command === commandId)?.[1] as (...args: any[]) => Promise<void>;
+}
 
 beforeEach(() => {
   deactivate();
@@ -28,11 +75,16 @@ beforeEach(() => {
     jumpServerClientMock.calls.push('assets');
     return [{ id: 'asset-1', name: 'gateway02', address: '11.0.139.162', platform: 'Linux', category: 'host', type: 'server', zoneName: 'DEFAULT', nodePath: ['DEFAULT'], protocolNames: ['ssh'], raw: {} }];
   });
+  terminalPanelMock.open.mockClear();
+  terminalPanelMock.getActive.mockReturnValue(undefined);
+  terminalPanelMock.disconnectAll.mockClear();
+  notificationsMock.showTimedNotification.mockResolvedValue(undefined);
   jumpServerClientMock.JumpServerClient.mockImplementation(() => ({
     ensureAuthToken: jumpServerClientMock.ensureAuthToken,
     listAssetNodes: jumpServerClientMock.listAssetNodes,
     listAssets: jumpServerClientMock.listAssets
   }));
+
 });
 
 describe('extension command wiring', () => {
@@ -84,5 +136,55 @@ describe('extension command wiring', () => {
     expect(jumpServerClientMock.calls).toEqual(['nodes', 'assets']);
     expect(context.globalState.update).toHaveBeenCalledWith('jumpserverManager.cachedAssetNodes', expect.any(Array));
     expect(context.globalState.update).toHaveBeenCalledWith('jumpserverManager.cachedAssets', expect.any(Array));
+  });
+
+  it('opens the unified terminal panel for MySQL assets', async () => {
+    const context = contextWithSettings();
+    activate(context);
+    const connectCommand = registeredCommand('jumpserverManager.connect');
+    const item = {
+      asset: {
+        id: 'mysql-1',
+        name: 'mysql-1',
+        address: 'db.example.com',
+        platform: 'MySQL',
+        category: 'database',
+        type: 'mysql',
+        zoneName: '',
+        nodePath: [],
+        protocolNames: ['mysql'],
+        raw: {}
+      }
+    };
+
+    await connectCommand(item);
+
+    expect(terminalPanelMock.open).toHaveBeenCalledWith(context, item.asset, expect.any(Object), expect.any(Object));
+    expect(notificationsMock.showTimedNotification).not.toHaveBeenCalledWith(expect.stringContaining('not supported'), 'error');
+  });
+
+  it('keeps unsupported assets visible but shows an unsupported message instead of opening a terminal', async () => {
+    const context = contextWithSettings();
+    activate(context);
+    const connectCommand = registeredCommand('jumpserverManager.connect');
+    const item = {
+      asset: {
+        id: 'redis-1',
+        name: 'redis-1',
+        address: 'redis.example.com',
+        platform: 'Redis6+',
+        category: 'database',
+        type: 'redis',
+        zoneName: '',
+        nodePath: [],
+        protocolNames: [],
+        raw: {}
+      }
+    };
+
+    await connectCommand(item);
+
+    expect(terminalPanelMock.open).not.toHaveBeenCalled();
+    expect(notificationsMock.showTimedNotification).toHaveBeenCalledWith('Asset type is not supported yet: redis-1', 'error');
   });
 });

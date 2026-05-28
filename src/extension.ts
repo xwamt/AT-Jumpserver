@@ -4,7 +4,7 @@ import { JumpServerClient } from './jumpserver/JumpServerClient';
 import { errorMessage } from './jumpserver/redaction';
 import { TerminalContextRegistry } from './terminal/TerminalContext';
 import { JumpServerTreeProvider } from './tree/JumpServerTreeProvider';
-import { AssetTreeItem } from './tree/TreeItems';
+import { AssetTreeItem, getAssetOpenKind } from './tree/TreeItems';
 import { showTimedNotification } from './utils/notifications';
 import { JumpServerConfigPanel } from './webview/JumpServerConfigPanel';
 import { TerminalPanel } from './webview/TerminalPanel';
@@ -65,6 +65,11 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
       await runCommand(async () => {
+        const kind = getAssetOpenKind(item.asset);
+        if (kind === 'unsupported') {
+          await showTimedNotification(`Asset type is not supported yet: ${item.asset.name}`, 'error');
+          return;
+        }
         const client = await createClient(configManager);
         TerminalPanel.open(context, item.asset, client, terminalContext);
       });
