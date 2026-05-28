@@ -31,7 +31,10 @@ const sftpManagerMock = vi.hoisted(() => ({
   uploadFile: vi.fn(),
   downloadFile: vi.fn(),
   deleteEntry: vi.fn(),
+  getActiveConnectionKey: vi.fn(),
   rename: vi.fn(),
+  readFile: vi.fn(),
+  stat: vi.fn(),
   selectTerminal: vi.fn(),
   removeTerminal: vi.fn(),
   dispose: vi.fn()
@@ -112,7 +115,10 @@ beforeEach(() => {
   sftpManagerMock.uploadFile.mockResolvedValue(undefined);
   sftpManagerMock.downloadFile.mockResolvedValue(undefined);
   sftpManagerMock.deleteEntry.mockResolvedValue(undefined);
+  sftpManagerMock.getActiveConnectionKey.mockReturnValue('terminal-1');
   sftpManagerMock.rename.mockResolvedValue(undefined);
+  sftpManagerMock.readFile.mockResolvedValue(Buffer.from('hello'));
+  sftpManagerMock.stat.mockResolvedValue({ size: 5, modifiedAt: 1 });
   sftpManagerMock.JumpServerSftpManager.mockImplementation(() => ({
     openAsset: sftpManagerMock.openAsset,
     listDirectory: sftpManagerMock.listDirectory,
@@ -123,7 +129,10 @@ beforeEach(() => {
     uploadFile: sftpManagerMock.uploadFile,
     downloadFile: sftpManagerMock.downloadFile,
     deleteEntry: sftpManagerMock.deleteEntry,
+    getActiveConnectionKey: sftpManagerMock.getActiveConnectionKey,
     rename: sftpManagerMock.rename,
+    readFile: sftpManagerMock.readFile,
+    stat: sftpManagerMock.stat,
     selectTerminal: sftpManagerMock.selectTerminal,
     removeTerminal: sftpManagerMock.removeTerminal,
     dispose: sftpManagerMock.dispose
@@ -165,6 +174,8 @@ describe('extension command wiring', () => {
     expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.sftp.refresh', expect.any(Function));
     expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.sftp.upload', expect.any(Function));
     expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.sftp.download', expect.any(Function));
+    expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.sftp.preview', expect.any(Function));
+    expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.sftp.edit', expect.any(Function));
     expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.sftp.delete', expect.any(Function));
     expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.sftp.rename', expect.any(Function));
     expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.sftp.newFolder', expect.any(Function));

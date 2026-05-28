@@ -84,6 +84,16 @@
         "icon": "$(cloud-download)"
       },
       {
+        "command": "jumpserverManager.sftp.preview",
+        "title": "JumpServer Files: Preview",
+        "icon": "$(open-preview)"
+      },
+      {
+        "command": "jumpserverManager.sftp.edit",
+        "title": "JumpServer Files: Edit",
+        "icon": "$(edit)"
+      },
+      {
         "command": "jumpserverManager.sftp.delete",
         "title": "JumpServer Files: Delete",
         "icon": "$(trash)"
@@ -155,6 +165,16 @@
           "command": "jumpserverManager.sftp.download",
           "when": "view == jumpserverManager.sftpFiles && viewItem == jumpserverSftpFile",
           "group": "inline@1"
+        },
+        {
+          "command": "jumpserverManager.sftp.preview",
+          "when": "view == jumpserverManager.sftpFiles && viewItem == jumpserverSftpFile",
+          "group": "inline@2"
+        },
+        {
+          "command": "jumpserverManager.sftp.edit",
+          "when": "view == jumpserverManager.sftpFiles && viewItem == jumpserverSftpFile",
+          "group": "inline@3"
         },
         {
           "command": "jumpserverManager.sftp.upload",

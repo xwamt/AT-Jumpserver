@@ -23,6 +23,8 @@ describe('AT JumpServer Terminal manifest', () => {
       'jumpserverManager.sftp.goUp',
       'jumpserverManager.sftp.upload',
       'jumpserverManager.sftp.download',
+      'jumpserverManager.sftp.preview',
+      'jumpserverManager.sftp.edit',
       'jumpserverManager.sftp.delete',
       'jumpserverManager.sftp.rename',
       'jumpserverManager.sftp.newFolder',
@@ -36,8 +38,15 @@ describe('AT JumpServer Terminal manifest', () => {
     expect(manifest.contributes.commands).toEqual(expect.arrayContaining([
       expect.objectContaining({ command: 'jumpserverManager.sftp.open' }),
       expect.objectContaining({ command: 'jumpserverManager.sftp.upload' }),
-      expect.objectContaining({ command: 'jumpserverManager.sftp.download' })
+      expect.objectContaining({ command: 'jumpserverManager.sftp.download' }),
+      expect.objectContaining({ command: 'jumpserverManager.sftp.preview' }),
+      expect.objectContaining({ command: 'jumpserverManager.sftp.edit' })
     ]));
+    const fileMenus = manifest.contributes.menus['view/item/context'].filter((item: { command: string }) =>
+      item.command === 'jumpserverManager.sftp.preview' || item.command === 'jumpserverManager.sftp.edit'
+    );
+    expect(fileMenus).toHaveLength(2);
+    expect(fileMenus.every((item: { when: string }) => item.when.includes('viewItem == jumpserverSftpFile'))).toBe(true);
     expect(JSON.stringify(manifest).toLowerCase()).not.toContain('mcp');
     expect(JSON.stringify(manifest)).not.toContain('run_remote_command');
     expect(JSON.stringify(manifest)).not.toContain('sshManager');

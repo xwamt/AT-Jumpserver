@@ -3,8 +3,11 @@ import { JumpServerConfigManager } from './config/JumpServerConfigManager';
 import type { CachedJumpServerAsset } from './config/schema';
 import { JumpServerClient } from './jumpserver/JumpServerClient';
 import { errorMessage } from './jumpserver/redaction';
+import { assertTextFileEditable, DEFAULT_SFTP_EDIT_MAX_BYTES } from './sftp/SftpFileGuards';
+import { createVscodeSftpEditUi, SftpEditSessionManager } from './sftp/SftpEditSessionManager';
 import { JumpServerSftpManager } from './sftp/JumpServerSftpManager';
 import { JumpServerSftpSession } from './sftp/JumpServerSftpSession';
+import { JUMPSERVER_SFTP_PREVIEW_SCHEME, openRemotePreviewFile, SftpPreviewDocumentStore } from './sftp/SftpPreview';
 import { dirname, joinRemotePath, remoteBasename } from './sftp/RemotePath';
 import { VscodeTransferReporter } from './sftp/VscodeTransferReporter';
 import { TerminalContextRegistry } from './terminal/TerminalContext';
@@ -30,6 +33,13 @@ export function activate(context: vscode.ExtensionContext): void {
     getState: () => sftpManager.getState(),
     listDirectory: (path) => sftpManager.listDirectory(path)
   });
+  const sftpPreviewStore = new SftpPreviewDocumentStore();
+  const sftpEditStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+  const sftpEditManager = new SftpEditSessionManager({
+    storageUri: context.globalStorageUri ?? context.extensionUri,
+    sftp: sftpManager,
+    ui: createVscodeSftpEditUi(sftpEditStatus)
+  });
   let disposed = false;
 
   const cleanup = {
@@ -39,6 +49,7 @@ export function activate(context: vscode.ExtensionContext): void {
       }
       disposed = true;
       sftpManager.dispose();
+      sftpEditManager.dispose();
       TerminalPanel.disconnectAll();
       if (extensionCleanup === cleanup) {
         extensionCleanup = undefined;
@@ -66,6 +77,12 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.createTreeView('jumpserverManager.sftpFiles', {
       treeDataProvider: sftpTreeProvider,
       showCollapseAll: true
+    }),
+    sftpEditStatus,
+    sftpEditManager,
+    vscode.workspace.registerTextDocumentContentProvider(JUMPSERVER_SFTP_PREVIEW_SCHEME, sftpPreviewStore),
+    vscode.window.tabGroups.onDidChangeTabs((event) => {
+      void sftpPreviewStore.deletePreviewFilesForClosedTabs(event.closed);
     }),
     cleanup,
     vscode.commands.registerCommand('jumpserverManager.configure', () => {
@@ -162,6 +179,32 @@ export function activate(context: vscode.ExtensionContext): void {
           return;
         }
         await sftpManager.downloadFile(item.entry.path, target.fsPath, item.entry.type === 'directory');
+      });
+    }),
+    vscode.commands.registerCommand('jumpserverManager.sftp.preview', async (item?: SftpFileTreeItem) => {
+      if (!item) {
+        return;
+      }
+      await runCommand(async () => {
+        await ensurePreviewEditAllowed(sftpManager, item);
+        await openRemotePreviewFile({
+          storageUri: context.globalStorageUri ?? context.extensionUri,
+          remotePath: item.entry.path,
+          previewStore: sftpPreviewStore,
+          downloadFile: (remotePath, localPath) => sftpManager.downloadFile(remotePath, localPath, false),
+          openUri: async (uri, options) => {
+            await vscode.commands.executeCommand('vscode.open', uri, options);
+          }
+        });
+      });
+    }),
+    vscode.commands.registerCommand('jumpserverManager.sftp.edit', async (item?: SftpFileTreeItem) => {
+      if (!item) {
+        return;
+      }
+      await runCommand(async () => {
+        await ensurePreviewEditAllowed(sftpManager, item);
+        await sftpEditManager.openRemoteFile(item.entry.path);
       });
     }),
     vscode.commands.registerCommand('jumpserverManager.sftp.delete', async (item?: SftpDirectoryTreeItem | SftpFileTreeItem) => {
@@ -278,6 +321,21 @@ async function ensureSftpAssetOpen(manager: JumpServerSftpManager): Promise<bool
   }
   await showTimedNotification('Open files from a JumpServer asset first.', 'warning');
   return false;
+}
+
+async function ensurePreviewEditAllowed(
+  manager: JumpServerSftpManager,
+  item: SftpFileTreeItem
+): Promise<void> {
+  if (!await ensureSftpAssetOpen(manager)) {
+    throw new Error('Open files from a JumpServer asset first.');
+  }
+  const stat = item.entry.size === undefined
+    ? await manager.stat(item.entry.path)
+    : { size: item.entry.size, modifiedAt: item.entry.modifiedAt ?? 0 };
+  assertTextFileEditable({ remotePath: item.entry.path, size: stat.size });
+  const sample = await manager.readFile(item.entry.path, Math.min(DEFAULT_SFTP_EDIT_MAX_BYTES, Math.max(stat.size, 1)));
+  assertTextFileEditable({ remotePath: item.entry.path, size: stat.size, sample });
 }
 
 function getSftpTargetDirectory(
