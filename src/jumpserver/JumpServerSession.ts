@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { extractProtocolNames, resolveFirstUsableAccount, type KokoWebSocket } from './JumpServerClient';
-import type { TerminalEvents } from './types';
+import { connectionKindLabel, connectionKindProtocol, type JumpServerConnectionKind } from './connectionTypes';
+import type { JumpServerConnectionProtocol, TerminalEvents } from './types';
 
 export interface JumpServerSessionAsset {
   id: string;
@@ -11,8 +12,8 @@ export interface JumpServerSessionClient {
   getAssetDetail(assetId: string): Promise<Record<string, any>>;
   createConnectionToken(input: {
     assetId: string;
-    account: { id: string; username: string };
-    protocol: 'ssh';
+    account: { id: string; alias?: string; username: string; hasSecret?: boolean };
+    protocol: JumpServerConnectionProtocol;
   }): Promise<{ id: string }>;
   getSmartEndpoint(tokenId: string): Promise<Record<string, any>>;
   openKokoWebSocket(input: {
@@ -31,6 +32,7 @@ export class JumpServerSession {
 
   constructor(private readonly input: {
     asset: JumpServerSessionAsset;
+    connectionKind: JumpServerConnectionKind;
     client: JumpServerSessionClient;
     events: TerminalEvents;
   }) {}
@@ -38,9 +40,10 @@ export class JumpServerSession {
   async connect(): Promise<void> {
     this.input.events.status('Loading asset');
     const detail = await this.input.client.getAssetDetail(this.input.asset.id);
-    const protocolNames = extractProtocolNames(detail);
-    if (!protocolNames.includes('ssh')) {
-      throw new Error('Selected asset does not expose SSH protocol.');
+    const protocol = connectionKindProtocol(this.input.connectionKind);
+    const protocolNames = extractProtocolNames(detail).map((name) => name.toLowerCase());
+    if (!protocolNames.includes(protocol)) {
+      throw new Error(`Selected asset does not expose ${connectionKindLabel(this.input.connectionKind)} protocol.`);
     }
     const account = resolveFirstUsableAccount(detail);
 
@@ -48,7 +51,7 @@ export class JumpServerSession {
     const token = await this.input.client.createConnectionToken({
       assetId: this.input.asset.id,
       account,
-      protocol: 'ssh'
+      protocol
     });
     const endpoint = await this.input.client.getSmartEndpoint(token.id);
 
