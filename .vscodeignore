@@ -5,6 +5,7 @@ node_modules/**
 src/**
 test/**
 test-fixtures/**
+tools/**
 webview/**
 *.vsix
 *.log

@@ -7,6 +7,7 @@ import {
   buildOrigin,
   DEFAULT_CONNECT_OPTIONS,
   DEFAULT_MYSQL_CONNECT_OPTIONS,
+  extractAssetTreeNodes,
   JumpServerClient,
   normalizeJumpServerAsset,
   parseCsrfMiddlewareToken,
@@ -87,6 +88,38 @@ describe('JumpServerClient pure helpers', () => {
       nodePath: ['Default', 'Production', 'Gateway'],
       zoneName: 'Gateway'
     });
+  });
+
+  it('rebuilds JumpServer zTree flat node responses into parent-child paths', () => {
+    const nodes = extractAssetTreeNodes([
+      { id: 'default-key', name: 'DEFAULT (42)', pId: '', isParent: true, meta: { type: 'node', data: { id: 'node-default', key: 'default-key', value: 'DEFAULT' } } },
+      { id: 'prod-key', name: 'PROD (31)', pId: 'default-key', isParent: true, meta: { type: 'node', data: { id: 'node-prod', key: 'prod-key', value: 'PROD' } } },
+      { id: 'middleware-key', name: 'Middleware (5)', pId: 'prod-key', isParent: true, meta: { type: 'node', data: { id: 'node-middleware', key: 'middleware-key', value: 'Middleware' } } },
+      { id: 'asset-1', name: 'gateway02', pId: 'middleware-key', isParent: false, meta: { type: 'asset' } }
+    ]);
+
+    expect(nodes.map((node) => node.path)).toEqual([
+      ['DEFAULT (42)'],
+      ['DEFAULT (42)', 'PROD (31)'],
+      ['DEFAULT (42)', 'PROD (31)', 'Middleware (5)']
+    ]);
+    expect(nodes.at(-1)?.assetIds).toEqual(['asset-1']);
+  });
+
+  it('rebuilds flat JumpServer node responses that use parent fields', () => {
+    const nodes = extractAssetTreeNodes([
+      { id: 'node-default', name: 'DEFAULT', parent: null, meta: { type: 'node', data: { id: 'node-default', key: 'node-default', value: 'DEFAULT', parent: '' } } },
+      { id: 'node-prod', name: 'PROD', parent: 'node-default', meta: { type: 'node', data: { id: 'node-prod', key: 'node-prod', value: 'PROD', parent: 'node-default' } } },
+      { id: 'node-service', name: 'service', parent: 'node-prod', meta: { type: 'node', data: { id: 'node-service', key: 'node-service', value: 'service', parent: 'node-prod' } } },
+      { id: 'asset-1', name: 'gateway02', parent: 'node-service', meta: { type: 'asset', data: { id: 'asset-1', parent: 'node-service' } } }
+    ]);
+
+    expect(nodes.map((node) => node.path)).toEqual([
+      ['DEFAULT'],
+      ['DEFAULT', 'PROD'],
+      ['DEFAULT', 'PROD', 'service']
+    ]);
+    expect(nodes.at(-1)?.assetIds).toEqual(['asset-1']);
   });
 
   it('selects a usable account with alias metadata without exposing account choice to users', () => {

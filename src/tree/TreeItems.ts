@@ -11,6 +11,7 @@ export class GroupTreeItem extends vscode.TreeItem {
   ) {
     super(path.at(-1) || 'Default', collapsibleState);
     this.label = path.at(-1) || 'Default';
+    this.id = `group:${path.join('/') || 'Default'}`;
   }
 }
 
@@ -18,6 +19,7 @@ export class AssetTreeItem extends vscode.TreeItem {
   constructor(readonly asset: CachedJumpServerAsset) {
     super(asset.name, vscode.TreeItemCollapsibleState.None);
     const kind = getAssetOpenKind(asset);
+    this.id = `asset:${asset.id}`;
     this.label = asset.name;
     this.contextValue = contextValueForKind(kind);
     this.description = assetDescription(asset, kind);

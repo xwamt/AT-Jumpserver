@@ -476,8 +476,12 @@ export function extractAssetTreePaths(payload: unknown): AssetPathMap {
 }
 
 export function extractAssetTreeNodes(payload: unknown): CachedJumpServerNode[] {
+  const items = treeItems(payload);
+  if (isFlatAssetTree(items)) {
+    return flatAssetTreeNodes(items);
+  }
   const nodes: CachedJumpServerNode[] = [];
-  for (const item of treeItems(payload)) {
+  for (const item of items) {
     walkAssetTreeNode(item, [], nodes);
   }
   return nodes;
@@ -507,6 +511,94 @@ function treeItems(payload: unknown): unknown[] {
     }
   }
   return [payload];
+}
+
+function isFlatAssetTree(items: unknown[]): boolean {
+  return items.some((item) => Boolean(item && typeof item === 'object' && parentKey(item as Record<string, unknown>)));
+}
+
+function flatAssetTreeNodes(items: unknown[]): CachedJumpServerNode[] {
+  const records = items.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'));
+  const nodeRecords = records.filter((record) => !isAssetTreeLeaf(record));
+  const nodesByKey = new Map<string, Record<string, unknown>>();
+  const assetsByParentKey = new Map<string, string[]>();
+
+  for (const record of nodeRecords) {
+    const key = treeItemKey(record);
+    if (key) {
+      nodesByKey.set(key, record);
+    }
+  }
+
+  for (const record of records.filter(isAssetTreeLeaf)) {
+    const parent = parentKey(record);
+    const assetId = stringField(record, ['id', 'key', 'value']);
+    if (!parent || !assetId) {
+      continue;
+    }
+    const assetIds = assetsByParentKey.get(parent) ?? [];
+    assetIds.push(assetId);
+    assetsByParentKey.set(parent, assetIds);
+  }
+
+  const pathCache = new Map<string, string[]>();
+  const buildPath = (record: Record<string, unknown>, seen = new Set<string>()): string[] => {
+    const key = treeItemKey(record);
+    if (key && pathCache.has(key)) {
+      return pathCache.get(key) ?? [];
+    }
+    const label = treeNodeLabel(record);
+    const parent = parentKey(record);
+    const parentRecord = parent ? nodesByKey.get(parent) : undefined;
+    const path = parentRecord && (!key || !seen.has(key))
+      ? [...buildPath(parentRecord, key ? new Set([...seen, key]) : seen), label]
+      : [label];
+    const normalized = path.filter((part) => part.length > 0);
+    if (key) {
+      pathCache.set(key, normalized);
+    }
+    return normalized;
+  };
+
+  return nodeRecords
+    .map((record) => {
+      const key = treeItemKey(record);
+      const path = buildPath(record);
+      return {
+        id: nestedStringField(record, ['meta.data.id']) || key || path.join('/'),
+        name: path.at(-1) || treeNodeLabel(record),
+        path,
+        assetIds: key ? assetsByParentKey.get(key) ?? [] : [],
+        raw: record
+      };
+    })
+    .filter((node) => node.path.length > 0);
+}
+
+function treeItemKey(record: Record<string, unknown>): string {
+  return nestedStringField(record, ['key', 'id', 'value', 'meta.data.key']);
+}
+
+function parentKey(record: Record<string, unknown>): string {
+  return nestedStringField(record, [
+    'pId',
+    'pid',
+    'parent',
+    'parent_key',
+    'parentKey',
+    'parent_id',
+    'parentId',
+    'meta.parent',
+    'meta.parent_key',
+    'meta.parentKey',
+    'meta.data.parent',
+    'meta.data.parent_key',
+    'meta.data.parentKey'
+  ]);
+}
+
+function treeNodeLabel(record: Record<string, unknown>): string {
+  return nestedStringField(record, ['name', 'title', 'label', 'value', 'meta.data.value']);
 }
 
 function walkAssetTreeNode(node: unknown, parentPath: string[], nodes: CachedJumpServerNode[]): void {
@@ -568,6 +660,22 @@ function isAssetTreeLeaf(record: Record<string, unknown>): boolean {
 function stringField(record: Record<string, unknown>, fields: string[]): string {
   for (const field of fields) {
     const value = record[field];
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+    if (typeof value === 'number') {
+      return String(value);
+    }
+  }
+  return '';
+}
+
+function nestedStringField(record: Record<string, unknown>, paths: string[]): string {
+  for (const path of paths) {
+    let value: unknown = record;
+    for (const segment of path.split('.')) {
+      value = value && typeof value === 'object' ? (value as Record<string, unknown>)[segment] : undefined;
+    }
     if (typeof value === 'string' && value.trim()) {
       return value.trim();
     }

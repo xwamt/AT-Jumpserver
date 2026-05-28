@@ -8,7 +8,9 @@ describe('AT JumpServer Terminal manifest', () => {
   it('declares a standalone JumpServer terminal extension without SSH/SFTP/MCP commands', () => {
     expect(manifest.name).toBe('at-jumpserver-terminal');
     expect(manifest.displayName).toBe('AT JumpServer Terminal');
+    expect(manifest.version).toBe('0.1.1');
     expect(manifest.contributes.viewsContainers.activitybar[0].id).toBe('jumpserverManager');
+    expect(manifest.contributes.viewsContainers.activitybar[0].icon).toBe('media/at-terminal-activity.svg');
 
     const commandIds = manifest.contributes.commands.map((command: { command: string }) => command.command);
     expect(commandIds).toEqual([
@@ -22,6 +24,7 @@ describe('AT JumpServer Terminal manifest', () => {
     expect(JSON.stringify(manifest)).not.toContain('sftp');
     expect(JSON.stringify(manifest)).not.toContain('run_remote_command');
     expect(JSON.stringify(manifest)).not.toContain('sshManager');
+    expect(JSON.stringify(manifest)).not.toContain('media/terminal-activity.svg');
   });
 
   it('shows the connect menu for SSH, MySQL, and unsupported JumpServer assets', () => {

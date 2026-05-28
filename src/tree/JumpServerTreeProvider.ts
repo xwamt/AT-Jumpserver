@@ -72,16 +72,39 @@ export class JumpServerTreeProvider implements vscode.TreeDataProvider<GroupTree
     element?: GroupTreeItem
   ): Array<GroupTreeItem | AssetTreeItem> {
     const parentPath = element?.path ?? [];
-    const childNodes = nodes
-      .filter((node) => node.path.length === parentPath.length + 1 && this.startsWith(node.path, parentPath))
-      .sort((a, b) => a.name.localeCompare(b.name))
-      .map((node) => new GroupTreeItem(node.path));
+    const nodePaths = this.normalizedNodePaths(nodes, assets);
+    const childNodePaths = Array.from(nodePaths.values())
+      .filter((path) => path.length === parentPath.length + 1 && this.startsWith(path, parentPath))
+      .sort((a, b) => (a.at(-1) || '').localeCompare(b.at(-1) || ''))
+      .map((path) => new GroupTreeItem(path));
     const assetIds = new Set(nodes.find((node) => samePath(node.path, parentPath))?.assetIds ?? []);
     const childAssets = assets
       .filter((asset) => assetIds.has(asset.id) || samePath(asset.nodePath, parentPath))
       .sort((a, b) => a.name.localeCompare(b.name))
       .map((asset) => new AssetTreeItem(asset));
-    return [...childNodes, ...childAssets];
+    return [...childNodePaths, ...childAssets];
+  }
+
+  private normalizedNodePaths(nodes: CachedJumpServerNode[], assets: CachedJumpServerAsset[]): Map<string, string[]> {
+    const paths = new Map<string, string[]>();
+    const hasNestedNodePaths = nodes.some((node) => node.path.length > 1);
+    const assetNodePaths = assets.map((asset) => asset.nodePath).filter((path) => path.length > 0);
+    const assetRootNames = new Set(assetNodePaths.map((path) => path[0]));
+    for (const node of nodes) {
+      if (hasNestedNodePaths || node.path.length > 1 || assetNodePaths.length === 0 || assetRootNames.has(node.path[0])) {
+        paths.set(node.path.join('/'), node.path);
+      }
+    }
+    if (hasNestedNodePaths) {
+      return paths;
+    }
+    for (const asset of assets) {
+      for (let index = 1; index <= asset.nodePath.length; index += 1) {
+        const path = asset.nodePath.slice(0, index);
+        paths.set(path.join('/'), path);
+      }
+    }
+    return paths;
   }
 }
 

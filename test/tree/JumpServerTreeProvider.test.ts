@@ -133,4 +133,29 @@ describe('JumpServerTreeProvider', () => {
     expect(middlewareChildren[0]).toBeInstanceOf(AssetTreeItem);
     expect((middlewareChildren[0] as AssetTreeItem).asset.id).toBe('asset-1');
   });
+
+  it('uses synced asset nodePath to restore hierarchy when cached JumpServer nodes are flat', async () => {
+    const provider = new JumpServerTreeProvider({
+      listCachedAssetNodes: async () => [
+        { id: 'node-default', name: 'DEFAULT', path: ['DEFAULT'], assetIds: [], raw: {} },
+        { id: 'node-prod', name: 'PROD', path: ['PROD'], assetIds: [], raw: {} },
+        { id: 'node-service', name: 'service', path: ['service'], assetIds: ['asset-1'], raw: {} }
+      ],
+      listCachedAssets: async () => [
+        { id: 'asset-1', name: 'gateway02', address: '11.0.139.162', platform: 'Linux', category: 'host', type: 'server', zoneName: 'service', nodePath: ['DEFAULT', 'PROD', 'service'], protocolNames: ['ssh'], raw: {} }
+      ]
+    });
+
+    const roots = await provider.getChildren();
+    const defaultRoot = roots.find((item) => item.label === 'DEFAULT') as GroupTreeItem;
+    const prod = (await provider.getChildren(defaultRoot)).find((item) => item.label === 'PROD') as GroupTreeItem;
+    const service = (await provider.getChildren(prod)).find((item) => item.label === 'service') as GroupTreeItem;
+    const serviceChildren = await provider.getChildren(service);
+
+    expect(roots.map((item) => item.label)).toEqual(['DEFAULT']);
+    expect(prod.path).toEqual(['DEFAULT', 'PROD']);
+    expect(service.path).toEqual(['DEFAULT', 'PROD', 'service']);
+    expect(serviceChildren[0]).toBeInstanceOf(AssetTreeItem);
+    expect((serviceChildren[0] as AssetTreeItem).asset.id).toBe('asset-1');
+  });
 });
