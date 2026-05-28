@@ -48,6 +48,17 @@ export function activate(context: vscode.ExtensionContext): void {
   extensionCleanup = cleanup;
 
   context.subscriptions.push(
+    terminalContext.onDidChangeActiveContext((activeContext) => {
+      sftpManager.selectTerminal(activeContext?.terminalId);
+      sftpTreeProvider.refresh();
+    }),
+    terminalContext.onDidRemoveContext((terminalId) => {
+      sftpManager.removeTerminal(terminalId);
+      sftpTreeProvider.refresh();
+    })
+  );
+
+  context.subscriptions.push(
     vscode.window.createTreeView('jumpserverManager.assets', {
       treeDataProvider: treeProvider,
       showCollapseAll: true
@@ -91,7 +102,8 @@ export function activate(context: vscode.ExtensionContext): void {
           return;
         }
         const client = await createClient(configManager);
-        TerminalPanel.open(context, item.asset, client, terminalContext);
+        const terminal = TerminalPanel.open(context, item.asset, client, terminalContext);
+        await tryOpenSftpFiles(sftpManager, sftpTreeProvider, item.asset, terminal.getTerminalId(), false);
       });
     }),
     vscode.commands.registerCommand('jumpserverManager.sftp.open', async (item?: AssetTreeItem) => {
@@ -99,42 +111,36 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
       await runCommand(async () => {
-        if (assetExplicitlyLacksSftp(item.asset)) {
+        if (!assetMaySupportSftp(item.asset)) {
           await showTimedNotification(`Asset does not support SFTP: ${item.asset.name}`, 'error');
           return;
         }
-        await sftpManager.openAsset(item.asset);
-        sftpTreeProvider.refresh();
+        await tryOpenSftpFiles(sftpManager, sftpTreeProvider, item.asset, item.asset.id, true);
       });
     }),
     vscode.commands.registerCommand('jumpserverManager.sftp.refresh', async () => {
       await runCommand(async () => {
+        if (!await ensureSftpAssetOpen(sftpManager)) {
+          return;
+        }
         await sftpManager.listDirectory();
         sftpTreeProvider.refresh();
       });
     }),
     vscode.commands.registerCommand('jumpserverManager.sftp.goUp', async () => {
       await runCommand(async () => {
-        await sftpManager.changeToParentDirectory();
-        sftpTreeProvider.refresh();
-      });
-    }),
-    vscode.commands.registerCommand('jumpserverManager.sftp.goToPath', async () => {
-      await runCommand(async () => {
-        const state = sftpManager.getState();
-        const path = await vscode.window.showInputBox({
-          prompt: 'Remote path',
-          value: state.kind === 'active' ? state.rootPath : '/'
-        });
-        if (!path) {
+        if (!await ensureSftpAssetOpen(sftpManager)) {
           return;
         }
-        await sftpManager.changeDirectory(path);
+        await sftpManager.changeToParentDirectory();
         sftpTreeProvider.refresh();
       });
     }),
     vscode.commands.registerCommand('jumpserverManager.sftp.upload', async (item?: SftpDirectoryTreeItem | SftpFileTreeItem) => {
       await runCommand(async () => {
+        if (!await ensureSftpAssetOpen(sftpManager)) {
+          return;
+        }
         const sources = await vscode.window.showOpenDialog({ canSelectFiles: true, canSelectFolders: false, canSelectMany: true });
         if (!sources?.length) {
           return;
@@ -186,6 +192,9 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand('jumpserverManager.sftp.newFolder', async (item?: SftpDirectoryTreeItem | SftpFileTreeItem) => {
       await runCommand(async () => {
+        if (!await ensureSftpAssetOpen(sftpManager)) {
+          return;
+        }
         const name = await vscode.window.showInputBox({ prompt: 'Folder name' });
         if (!name) {
           return;
@@ -231,9 +240,44 @@ async function runCommand(command: () => Promise<void>): Promise<void> {
   }
 }
 
-function assetExplicitlyLacksSftp(asset: CachedJumpServerAsset): boolean {
+function assetMaySupportSftp(asset: CachedJumpServerAsset): boolean {
   const protocols = asset.protocolNames.map((name) => name.toLowerCase());
-  return protocols.length > 0 && !protocols.includes('sftp');
+  if (protocols.includes('sftp')) {
+    return true;
+  }
+  if (protocols.length === 0 || protocols.includes('ssh')) {
+    return getAssetOpenKind(asset) === 'ssh';
+  }
+  return false;
+}
+
+async function tryOpenSftpFiles(
+  manager: JumpServerSftpManager,
+  treeProvider: SftpTreeProvider,
+  asset: CachedJumpServerAsset,
+  terminalId: string,
+  notifyErrors: boolean
+): Promise<void> {
+  if (!assetMaySupportSftp(asset)) {
+    return;
+  }
+  try {
+    await manager.openAsset(asset, terminalId);
+    treeProvider.refresh();
+  } catch (error) {
+    if (notifyErrors) {
+      throw error;
+    }
+    await showTimedNotification(`Files are not available for ${asset.name}: ${errorMessage(error)}`, 'warning');
+  }
+}
+
+async function ensureSftpAssetOpen(manager: JumpServerSftpManager): Promise<boolean> {
+  if (manager.getState().kind !== 'none') {
+    return true;
+  }
+  await showTimedNotification('Open files from a JumpServer asset first.', 'warning');
+  return false;
 }
 
 function getSftpTargetDirectory(

@@ -69,10 +69,6 @@
         "icon": "$(refresh)"
       },
       {
-        "command": "jumpserverManager.sftp.goToPath",
-        "title": "JumpServer Files: Go To Path"
-      },
-      {
         "command": "jumpserverManager.sftp.goUp",
         "title": "JumpServer Files: Go Up",
         "icon": "$(arrow-up)"
@@ -142,11 +138,6 @@
           "command": "jumpserverManager.sftp.goUp",
           "when": "view == jumpserverManager.sftpFiles",
           "group": "navigation@3"
-        },
-        {
-          "command": "jumpserverManager.sftp.goToPath",
-          "when": "view == jumpserverManager.sftpFiles",
-          "group": "navigation@4"
         }
       ],
       "view/item/context": [

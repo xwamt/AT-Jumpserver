@@ -20,8 +20,29 @@ const jumpServerClientMock = vi.hoisted(() => ({
   JumpServerClient: vi.fn()
 }));
 
+const sftpManagerMock = vi.hoisted(() => ({
+  JumpServerSftpManager: vi.fn(),
+  openAsset: vi.fn(),
+  listDirectory: vi.fn(),
+  getState: vi.fn(),
+  changeToParentDirectory: vi.fn(),
+  changeDirectory: vi.fn(),
+  mkdir: vi.fn(),
+  uploadFile: vi.fn(),
+  downloadFile: vi.fn(),
+  deleteEntry: vi.fn(),
+  rename: vi.fn(),
+  selectTerminal: vi.fn(),
+  removeTerminal: vi.fn(),
+  dispose: vi.fn()
+}));
+
 vi.mock('../../src/jumpserver/JumpServerClient', () => ({
   JumpServerClient: jumpServerClientMock.JumpServerClient
+}));
+
+vi.mock('../../src/sftp/JumpServerSftpManager', () => ({
+  JumpServerSftpManager: sftpManagerMock.JumpServerSftpManager
 }));
 
 vi.mock('../../src/webview/TerminalPanel', () => ({
@@ -76,9 +97,37 @@ beforeEach(() => {
     return [{ id: 'asset-1', name: 'gateway02', address: '11.0.139.162', platform: 'Linux', category: 'host', type: 'server', zoneName: 'DEFAULT', nodePath: ['DEFAULT'], protocolNames: ['ssh'], raw: {} }];
   });
   terminalPanelMock.open.mockClear();
+  terminalPanelMock.open.mockReturnValue({ getTerminalId: () => 'terminal-opened-1' });
   terminalPanelMock.getActive.mockReturnValue(undefined);
   terminalPanelMock.disconnectAll.mockClear();
   notificationsMock.showTimedNotification.mockResolvedValue(undefined);
+  sftpManagerMock.openAsset.mockImplementation(async (asset) => {
+    sftpManagerMock.getState.mockReturnValue({ kind: 'active', asset, rootPath: '/' });
+  });
+  sftpManagerMock.listDirectory.mockResolvedValue([]);
+  sftpManagerMock.getState.mockReturnValue({ kind: 'none' });
+  sftpManagerMock.changeToParentDirectory.mockResolvedValue('/');
+  sftpManagerMock.changeDirectory.mockResolvedValue('/');
+  sftpManagerMock.mkdir.mockResolvedValue(undefined);
+  sftpManagerMock.uploadFile.mockResolvedValue(undefined);
+  sftpManagerMock.downloadFile.mockResolvedValue(undefined);
+  sftpManagerMock.deleteEntry.mockResolvedValue(undefined);
+  sftpManagerMock.rename.mockResolvedValue(undefined);
+  sftpManagerMock.JumpServerSftpManager.mockImplementation(() => ({
+    openAsset: sftpManagerMock.openAsset,
+    listDirectory: sftpManagerMock.listDirectory,
+    getState: sftpManagerMock.getState,
+    changeToParentDirectory: sftpManagerMock.changeToParentDirectory,
+    changeDirectory: sftpManagerMock.changeDirectory,
+    mkdir: sftpManagerMock.mkdir,
+    uploadFile: sftpManagerMock.uploadFile,
+    downloadFile: sftpManagerMock.downloadFile,
+    deleteEntry: sftpManagerMock.deleteEntry,
+    rename: sftpManagerMock.rename,
+    selectTerminal: sftpManagerMock.selectTerminal,
+    removeTerminal: sftpManagerMock.removeTerminal,
+    dispose: sftpManagerMock.dispose
+  }));
   jumpServerClientMock.JumpServerClient.mockImplementation(() => ({
     ensureAuthToken: jumpServerClientMock.ensureAuthToken,
     listAssetNodes: jumpServerClientMock.listAssetNodes,
@@ -130,6 +179,123 @@ describe('extension command wiring', () => {
     await openFiles({ asset: { id: 'redis-1', name: 'redis-1', protocolNames: ['redis'] } });
 
     expect(notificationsMock.showTimedNotification).toHaveBeenCalledWith('Asset does not support SFTP: redis-1', 'error');
+  });
+
+  it('opens files for SSH assets even when the cached protocol list only contains ssh', async () => {
+    const context = contextWithSettings();
+    activate(context);
+    const openFiles = registeredCommand('jumpserverManager.sftp.open');
+    const item = {
+      asset: {
+        id: 'server-1',
+        name: 'uat-service',
+        address: '10.0.0.11',
+        platform: 'Linux',
+        category: 'host',
+        type: 'server',
+        zoneName: '',
+        nodePath: [],
+        protocolNames: ['ssh'],
+        raw: {}
+      }
+    };
+
+    await openFiles(item);
+
+    expect(sftpManagerMock.openAsset).toHaveBeenCalledWith(item.asset, item.asset.id);
+    expect(notificationsMock.showTimedNotification).not.toHaveBeenCalledWith('Asset does not support SFTP: uat-service', 'error');
+  });
+
+  it('automatically opens the SFTP file tree when connecting an SSH asset', async () => {
+    const context = contextWithSettings();
+    activate(context);
+    const connectCommand = registeredCommand('jumpserverManager.connect');
+    const item = {
+      asset: {
+        id: 'server-1',
+        name: 'uat-service',
+        address: '10.0.0.11',
+        platform: 'Linux',
+        category: 'host',
+        type: 'server',
+        zoneName: '',
+        nodePath: [],
+        protocolNames: ['ssh'],
+        raw: {}
+      }
+    };
+
+    await connectCommand(item);
+
+    expect(terminalPanelMock.open).toHaveBeenCalledWith(context, item.asset, expect.any(Object), expect.any(Object));
+    expect(sftpManagerMock.openAsset).toHaveBeenCalledWith(item.asset, expect.any(String));
+  });
+
+  it('switches the SFTP file tree when the active terminal changes', async () => {
+    const context = contextWithSettings();
+    activate(context);
+    const connectCommand = registeredCommand('jumpserverManager.connect');
+    await connectCommand({
+      asset: {
+        id: 'asset-1',
+        name: 'asset-1',
+        address: '',
+        platform: 'Linux',
+        category: 'host',
+        type: 'server',
+        zoneName: '',
+        nodePath: [],
+        protocolNames: ['ssh'],
+        raw: {}
+      }
+    });
+    const registry = terminalPanelMock.open.mock.calls[0]?.[3];
+
+    registry.setActive({ terminalId: 'terminal-1', asset: { id: 'asset-1' }, connected: true, write: vi.fn() });
+    registry.setActive({ terminalId: 'terminal-2', asset: { id: 'asset-2' }, connected: true, write: vi.fn() });
+    registry.setActive({ terminalId: 'terminal-1', asset: { id: 'asset-1' }, connected: true, write: vi.fn() });
+
+    expect(sftpManagerMock.selectTerminal).toHaveBeenNthCalledWith(1, 'terminal-1');
+    expect(sftpManagerMock.selectTerminal).toHaveBeenNthCalledWith(2, 'terminal-2');
+    expect(sftpManagerMock.selectTerminal).toHaveBeenNthCalledWith(3, 'terminal-1');
+  });
+
+  it('removes only the closed terminal SFTP connection', async () => {
+    const context = contextWithSettings();
+    activate(context);
+    const connectCommand = registeredCommand('jumpserverManager.connect');
+    await connectCommand({
+      asset: {
+        id: 'asset-1',
+        name: 'asset-1',
+        address: '',
+        platform: 'Linux',
+        category: 'host',
+        type: 'server',
+        zoneName: '',
+        nodePath: [],
+        protocolNames: ['ssh'],
+        raw: {}
+      }
+    });
+    const registry = terminalPanelMock.open.mock.calls[0]?.[3];
+
+    registry.setActive({ terminalId: 'terminal-1', asset: { id: 'asset-1' }, connected: true, write: vi.fn() });
+    registry.setActive({ terminalId: 'terminal-2', asset: { id: 'asset-2' }, connected: true, write: vi.fn() });
+    registry.clearIfActive('terminal-2');
+
+    expect(sftpManagerMock.removeTerminal).toHaveBeenCalledWith('terminal-2');
+  });
+
+  it('shows a clear prompt instead of an internal state error before an SFTP asset is open', async () => {
+    const context = contextWithSettings();
+    activate(context);
+    const refreshFiles = registeredCommand('jumpserverManager.sftp.refresh');
+
+    await refreshFiles();
+
+    expect(notificationsMock.showTimedNotification).toHaveBeenCalledWith('Open files from a JumpServer asset first.', 'warning');
+    expect(notificationsMock.showTimedNotification).not.toHaveBeenCalledWith('No active JumpServer SFTP asset.', 'error');
   });
 
   it('refreshes JumpServer nodes before syncing assets', async () => {

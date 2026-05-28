@@ -9,7 +9,7 @@ AT JumpServer Terminal is a VS Code extension for opening browser-style JumpServ
 - SSH protocol assets
 - MySQL protocol assets through JumpServer `db_client`
 - SFTP file tree for permitted assets
-- SFTP upload, download, new folder, rename, delete, copy path, and path navigation through JumpServer KoKo
+- SFTP upload, download, new folder, rename, delete, copy path, and directory navigation through JumpServer KoKo
 - xterm.js terminal UI
 - JumpServer KoKo WebSocket terminal sessions
 
@@ -36,6 +36,8 @@ AT JumpServer Terminal is a VS Code extension for opening browser-style JumpServ
 ## SFTP Development Probe
 
 Before changing the SFTP implementation, validate a real JumpServer instance with `npm run probe:sftp`. The probe reads `JUMPSERVER_BASE_URL`, `JUMPSERVER_USERNAME`, `JUMPSERVER_PASSWORD`, and `JUMPSERVER_ASSET_ID` from the environment.
+
+JumpServer KoKo SFTP is constrained by the asset platform's configured SFTP root. On the tested instance, `/` and `/tmp` resolve to the same file area and paths such as `/home` or `/etc` do not expose the server filesystem. Change the platform SFTP root in JumpServer if a different managed root is required.
 
 ## Phase Two Direction
 

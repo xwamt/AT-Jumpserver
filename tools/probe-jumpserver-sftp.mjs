@@ -236,8 +236,9 @@ function decodeRaw(raw) {
 }
 
 async function wsCommand(ws, cmd, data, extra = {}) {
-  const id = `${Date.now()}-${Math.random()}`;
-  ws.send(JSON.stringify({ id, type: 'SFTP_DATA', cmd, data: JSON.stringify(data), ...extra }));
+  const id = extra.id ? String(extra.id) : `${Date.now()}-${Math.random()}`;
+  const { id: _id, ...extraPayload } = extra;
+  ws.send(JSON.stringify({ id, type: 'SFTP_DATA', cmd, data: JSON.stringify(data), ...extraPayload }));
   const binaries = [];
   return await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`Timed out waiting for ${cmd}`)), 30_000);
@@ -314,7 +315,10 @@ async function main() {
     const bytes = await readFile(config.uploadFile);
     const cleanName = basename(config.uploadFile).replace(/[\\/]/g, '-');
     const remotePath = posix.join(config.testPath || '/', `probe-${Date.now()}-${cleanName}`);
-    await wsCommand(ws, 'upload', { path: remotePath, size: bytes.byteLength }, { raw: bytes.toString('base64') });
+    await wsCommand(ws, 'upload', { path: remotePath, size: bytes.byteLength, offSet: 0, chunk: false }, {
+      id: String(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER)),
+      raw: bytes.toString('base64')
+    });
     const downloaded = await wsCommand(ws, 'download', { path: remotePath, is_dir: false });
     if (!downloaded.binary.equals(bytes)) {
       throw new Error(`Downloaded bytes differ for ${remotePath}`);

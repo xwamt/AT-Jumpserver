@@ -33,7 +33,8 @@ interface ManagedConnection {
 }
 
 export class JumpServerSftpManager {
-  private active: ManagedConnection | undefined;
+  private activeTerminalId: string | undefined;
+  private readonly connections = new Map<string, ManagedConnection>();
   private readonly transfers: TransferService;
 
   constructor(private readonly options: {
@@ -43,36 +44,69 @@ export class JumpServerSftpManager {
     this.transfers = new TransferService(options.reporter);
   }
 
-  async openAsset(asset: CachedJumpServerAsset): Promise<void> {
-    this.closeActive();
-    this.active = { asset, session: undefined, rootPath: undefined, snapshot: undefined };
+  async openAsset(asset: CachedJumpServerAsset, terminalId = asset.id): Promise<void> {
+    const existing = this.connections.get(terminalId);
+    if (existing && existing.asset.id !== asset.id) {
+      this.disposeConnection(existing);
+      this.connections.delete(terminalId);
+    }
+    if (!this.connections.has(terminalId)) {
+      this.connections.set(terminalId, { asset, session: undefined, rootPath: undefined, snapshot: undefined });
+    }
+    this.activeTerminalId = terminalId;
     await this.ensureRoot();
   }
 
   closeActive(): void {
-    this.active?.session?.dispose();
-    if (this.active?.snapshot) {
-      this.active.session = undefined;
-      this.active.rootPath = undefined;
+    const active = this.getActiveConnection();
+    if (!active) {
       return;
     }
-    this.active = undefined;
+    active.session?.dispose();
+    if (active.snapshot) {
+      active.session = undefined;
+      active.rootPath = undefined;
+      return;
+    }
+    if (this.activeTerminalId) {
+      this.connections.delete(this.activeTerminalId);
+    }
+    this.activeTerminalId = undefined;
+  }
+
+  selectTerminal(terminalId: string | undefined): void {
+    this.activeTerminalId = terminalId && this.connections.has(terminalId) ? terminalId : undefined;
+  }
+
+  removeTerminal(terminalId: string): void {
+    const connection = this.connections.get(terminalId);
+    if (connection) {
+      this.disposeConnection(connection);
+      this.connections.delete(terminalId);
+    }
+    if (this.activeTerminalId === terminalId) {
+      this.activeTerminalId = undefined;
+    }
   }
 
   dispose(): void {
-    this.active?.session?.dispose();
-    this.active = undefined;
+    for (const connection of this.connections.values()) {
+      this.disposeConnection(connection);
+    }
+    this.connections.clear();
+    this.activeTerminalId = undefined;
   }
 
   getState(): JumpServerSftpTreeState {
-    if (!this.active) {
+    const active = this.getActiveConnection();
+    if (!active) {
       return { kind: 'none' };
     }
-    if (this.active.rootPath) {
-      return { kind: 'active', asset: this.active.asset, rootPath: this.active.rootPath };
+    if (active.rootPath) {
+      return { kind: 'active', asset: active.asset, rootPath: active.rootPath };
     }
-    if (this.active.snapshot) {
-      return { kind: 'disconnected', asset: this.active.asset, ...this.active.snapshot };
+    if (active.snapshot) {
+      return { kind: 'disconnected', asset: active.asset, ...active.snapshot };
     }
     return { kind: 'none' };
   }
@@ -151,11 +185,16 @@ export class JumpServerSftpManager {
     return this.ensureSession(this.requireConnection()).then((session) => session.createFile(path));
   }
 
+  private getActiveConnection(): ManagedConnection | undefined {
+    return this.activeTerminalId ? this.connections.get(this.activeTerminalId) : undefined;
+  }
+
   private requireConnection(): ManagedConnection {
-    if (!this.active) {
+    const active = this.getActiveConnection();
+    if (!active) {
       throw new Error('No active JumpServer SFTP asset.');
     }
-    return this.active;
+    return active;
   }
 
   private async ensureSession(connection: ManagedConnection): Promise<JumpServerSftpSessionLike> {
@@ -166,5 +205,10 @@ export class JumpServerSftpManager {
     connection.session = session;
     await session.connect();
     return session;
+  }
+
+  private disposeConnection(connection: ManagedConnection): void {
+    connection.session?.dispose();
+    connection.session = undefined;
   }
 }

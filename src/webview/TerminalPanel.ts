@@ -136,6 +136,10 @@ export class TerminalPanel {
     return TerminalPanel.active;
   }
 
+  getTerminalId(): string {
+    return this.terminalId;
+  }
+
   static disconnectAll(): void {
     for (const terminal of Array.from(TerminalPanel.panels)) {
       terminal.disconnect();

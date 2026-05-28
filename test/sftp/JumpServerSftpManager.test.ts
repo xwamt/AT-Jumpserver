@@ -91,4 +91,49 @@ describe('JumpServerSftpManager', () => {
       asset: expect.objectContaining({ id: 'asset-1' })
     });
   });
+
+  it('keeps SFTP sessions alive in the background when switching active terminals', async () => {
+    const firstSession = session();
+    const secondSession = session();
+    const manager = new JumpServerSftpManager({
+      createSession: vi.fn()
+        .mockReturnValueOnce(firstSession)
+        .mockReturnValueOnce(secondSession)
+    });
+
+    await manager.openAsset(asset({ id: 'asset-1', name: 'web-1' }), 'terminal-1');
+    await manager.openAsset(asset({ id: 'asset-2', name: 'web-2' }), 'terminal-2');
+    manager.selectTerminal('terminal-1');
+
+    expect(firstSession.dispose).not.toHaveBeenCalled();
+    expect(secondSession.dispose).not.toHaveBeenCalled();
+    expect(manager.getState()).toEqual({
+      kind: 'active',
+      rootPath: '/home/root',
+      asset: expect.objectContaining({ id: 'asset-1' })
+    });
+  });
+
+  it('removes only the disposed terminal SFTP session', async () => {
+    const firstSession = session();
+    const secondSession = session();
+    const manager = new JumpServerSftpManager({
+      createSession: vi.fn()
+        .mockReturnValueOnce(firstSession)
+        .mockReturnValueOnce(secondSession)
+    });
+
+    await manager.openAsset(asset({ id: 'asset-1' }), 'terminal-1');
+    await manager.openAsset(asset({ id: 'asset-2' }), 'terminal-2');
+    manager.removeTerminal('terminal-2');
+    manager.selectTerminal('terminal-1');
+
+    expect(secondSession.dispose).toHaveBeenCalledTimes(1);
+    expect(firstSession.dispose).not.toHaveBeenCalled();
+    expect(manager.getState()).toEqual({
+      kind: 'active',
+      rootPath: '/home/root',
+      asset: expect.objectContaining({ id: 'asset-1' })
+    });
+  });
 });

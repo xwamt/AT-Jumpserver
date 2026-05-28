@@ -109,7 +109,11 @@ export class JumpServerSftpSession {
   }
 
   uploadBytes(path: string, bytes: Buffer): Promise<void> {
-    return this.sendCommand('upload', { path, size: bytes.byteLength }, { raw: encodeSftpRaw(bytes) }).then(() => undefined);
+    return this.sendCommand(
+      'upload',
+      { path, size: bytes.byteLength, offSet: 0, chunk: false },
+      { id: createKokoUploadId(), raw: encodeSftpRaw(bytes) }
+    ).then(() => undefined);
   }
 
   async stat(path: string): Promise<{ size: number; modifiedAt: number }> {
@@ -149,8 +153,9 @@ export class JumpServerSftpSession {
     if (!this.socket || !this.connected) {
       return Promise.reject(new Error('SFTP connection is not available.'));
     }
-    const id = randomUUID();
-    const payload = { id, type: 'SFTP_DATA', cmd, data: JSON.stringify(data), ...extra };
+    const id = typeof extra.id === 'string' ? extra.id : randomUUID();
+    const { id: _id, ...extraPayload } = extra;
+    const payload = { id, type: 'SFTP_DATA', cmd, data: JSON.stringify(data), ...extraPayload };
     return new Promise<ResolvedCommand>((resolve, reject) => {
       const pendingCommand: PendingCommand = { cmd, chunks: [], resolve, reject };
       this.pending.set(id, pendingCommand);
@@ -221,4 +226,8 @@ export class JumpServerSftpSession {
     }
     this.pending.clear();
   }
+}
+
+function createKokoUploadId(): string {
+  return Math.floor(Math.random() * Number.MAX_SAFE_INTEGER).toString();
 }

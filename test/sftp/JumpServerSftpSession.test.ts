@@ -93,6 +93,31 @@ describe('JumpServerSftpSession', () => {
     await expect(download).resolves.toEqual(Buffer.from('hello'));
   });
 
+  it('uploads with KoKo numeric upload ids and offset payload', async () => {
+    const socket = new FakeSocket();
+    const session = new JumpServerSftpSession({ asset: { id: 'asset-1', name: 'web-1' }, client: client(socket) });
+    const connect = session.connect();
+    await flushPromises();
+    socket.emitMessage({ id: 'ws-1', type: 'CONNECT', data: '{}' });
+    await connect;
+
+    const upload = session.uploadBytes('/tmp/a.txt', Buffer.from('hello'));
+    const sent = JSON.parse(String(socket.send.mock.calls.at(-1)?.[0]));
+
+    expect(sent).toMatchObject({ type: 'SFTP_DATA', cmd: 'upload' });
+    expect(sent.id).toMatch(/^\d+$/);
+    expect(JSON.parse(sent.data)).toEqual({
+      path: '/tmp/a.txt',
+      size: 5,
+      offSet: 0,
+      chunk: false
+    });
+    expect(sent.raw).toBe(Buffer.from('hello').toString('base64'));
+    socket.emitMessage({ id: sent.id, type: 'SFTP_DATA', cmd: 'upload', data: 'ok' });
+
+    await expect(upload).resolves.toBeUndefined();
+  });
+
   it('rejects pending commands on CLOSE', async () => {
     const socket = new FakeSocket();
     const session = new JumpServerSftpSession({ asset: { id: 'asset-1', name: 'web-1' }, client: client(socket) });

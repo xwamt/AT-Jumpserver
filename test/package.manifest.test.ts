@@ -20,7 +20,6 @@ describe('AT JumpServer Terminal manifest', () => {
       'jumpserverManager.connect',
       'jumpserverManager.sftp.open',
       'jumpserverManager.sftp.refresh',
-      'jumpserverManager.sftp.goToPath',
       'jumpserverManager.sftp.goUp',
       'jumpserverManager.sftp.upload',
       'jumpserverManager.sftp.download',
@@ -42,6 +41,7 @@ describe('AT JumpServer Terminal manifest', () => {
     expect(JSON.stringify(manifest).toLowerCase()).not.toContain('mcp');
     expect(JSON.stringify(manifest)).not.toContain('run_remote_command');
     expect(JSON.stringify(manifest)).not.toContain('sshManager');
+    expect(JSON.stringify(manifest)).not.toContain('jumpserverManager.sftp.goToPath');
     expect(JSON.stringify(manifest)).not.toContain('media/terminal-activity.svg');
   });
 
