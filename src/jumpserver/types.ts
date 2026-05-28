@@ -13,9 +13,13 @@ export interface JumpServerEndpoint {
   http_port?: number;
 }
 
+export type JumpServerConnectionProtocol = 'ssh' | 'mysql';
+
 export interface JumpServerAccountRef {
   id: string;
+  alias?: string;
   username: string;
+  hasSecret?: boolean;
 }
 
 export interface TerminalEvents {

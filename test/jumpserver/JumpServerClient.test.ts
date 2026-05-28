@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   buildConnectionTokenPayload,
+  buildMysqlConnectionTokenPayload,
   buildKokoConnectUrl,
   buildKokoWsUrl,
   buildOrigin,
   DEFAULT_CONNECT_OPTIONS,
+  DEFAULT_MYSQL_CONNECT_OPTIONS,
   JumpServerClient,
   normalizeJumpServerAsset,
   parseCsrfMiddlewareToken,
@@ -87,15 +89,16 @@ describe('JumpServerClient pure helpers', () => {
     });
   });
 
-  it('selects the first usable account without exposing account choice to users', () => {
+  it('selects a usable account with alias metadata without exposing account choice to users', () => {
     expect(
       resolveFirstUsableAccount({
         permed_accounts: [
-          { id: 'account-1', username: 'root' },
-          { id: 'account-2', name: 'deploy' }
+          { id: 'account-1', alias: '@virtual', username: 'virtual', has_secret: true },
+          { id: 'account-2', alias: 'mysql-root', username: 'root', has_secret: true },
+          { id: 'account-3', name: 'deploy' }
         ]
       })
-    ).toEqual({ id: 'account-1', username: 'root' });
+    ).toEqual({ id: 'account-2', alias: 'mysql-root', username: 'root', hasSecret: true });
   });
 
   it('builds Ahell-compatible connection-token payload', () => {
@@ -113,6 +116,22 @@ describe('JumpServerClient pure helpers', () => {
       input_secret: '',
       connect_method: 'web_cli',
       connect_options: DEFAULT_CONNECT_OPTIONS
+    });
+  });
+
+
+  it('builds MySQL db_client connection-token payload with account alias', () => {
+    expect(buildMysqlConnectionTokenPayload({
+      assetId: 'mysql-1',
+      account: { id: 'account-id-1', alias: 'mysql-alias', username: 'root', hasSecret: true }
+    })).toEqual({
+      asset: 'mysql-1',
+      account: 'mysql-alias',
+      protocol: 'mysql',
+      input_username: 'root',
+      input_secret: '',
+      connect_method: 'db_client',
+      connect_options: DEFAULT_MYSQL_CONNECT_OPTIONS
     });
   });
 });
@@ -314,6 +333,32 @@ describe('JumpServerClient REST flow', () => {
       body: expect.stringContaining('"connect_method":"web_cli"')
     }));
     expect(fetchMock).toHaveBeenNthCalledWith(3, 'https://jumpserver.example.com/api/v1/terminal/endpoints/smart/?protocol=https&token=token-1', expect.any(Object));
+  });
+
+  it('creates MySQL db_client connection tokens', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ token: 'bearer-1' }))
+      .mockResolvedValueOnce(jsonResponse({ id: 'mysql-token-1' }));
+    const client = new JumpServerClient({
+      baseUrl: 'https://jumpserver.example.com',
+      orgId: '',
+      username: 'alan',
+      password: 'secret',
+      verifyTls: true,
+      connectTimeout: 30
+    }, fetchMock);
+
+    const token = await client.createConnectionToken({
+      assetId: 'mysql-1',
+      account: { id: 'account-id-1', alias: 'mysql-alias', username: 'root', hasSecret: true },
+      protocol: 'mysql'
+    });
+
+    expect(token.id).toBe('mysql-token-1');
+    expect(fetchMock).toHaveBeenNthCalledWith(2, 'https://jumpserver.example.com/api/v1/authentication/connection-token/', expect.objectContaining({
+      method: 'POST',
+      body: expect.stringContaining('"connect_method":"db_client"')
+    }));
   });
 
   it('warms up KoKo web session with csrf and cookies', async () => {
