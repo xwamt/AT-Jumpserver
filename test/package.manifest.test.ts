@@ -23,4 +23,15 @@ describe('AT JumpServer Terminal manifest', () => {
     expect(JSON.stringify(manifest)).not.toContain('run_remote_command');
     expect(JSON.stringify(manifest)).not.toContain('sshManager');
   });
+
+  it('shows the connect menu for SSH, MySQL, and unsupported JumpServer assets', () => {
+    const connectMenu = manifest.contributes.menus['view/item/context'].find(
+      (item: { command: string }) => item.command === 'jumpserverManager.connect'
+    );
+
+    expect(connectMenu.when).toContain('view == jumpserverManager.assets');
+    expect(connectMenu.when).toContain('jumpserverAsset');
+    expect(connectMenu.when).toContain('jumpserverMysqlAsset');
+    expect(connectMenu.when).toContain('jumpserverUnsupportedAsset');
+  });
 });

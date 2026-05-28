@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import * as vscode from 'vscode';
 import type { CachedJumpServerAsset } from '../config/schema';
 import { JumpServerClient } from '../jumpserver/JumpServerClient';
+import { connectionKindLabel, getAssetConnectionKind, type JumpServerConnectionKind } from '../jumpserver/connectionTypes';
 import { JumpServerSession } from '../jumpserver/JumpServerSession';
 import type { TerminalContextRegistry } from '../terminal/TerminalContext';
 import { formatError } from '../utils/errors';
@@ -81,6 +82,7 @@ export class TerminalPanel {
   private static active: TerminalPanel | undefined;
   private static readonly panels = new Set<TerminalPanel>();
   private readonly terminalId = randomUUID();
+  private readonly connectionKind: JumpServerConnectionKind;
   private session: JumpServerSession;
   private connected = false;
   private disposed = false;
@@ -93,6 +95,7 @@ export class TerminalPanel {
     private readonly settings: TerminalSettings,
     private readonly terminalContext?: TerminalContextRegistry
   ) {
+    this.connectionKind = getAssetConnectionKind(asset);
     this.session = this.createSession(this.connectionGeneration);
     TerminalPanel.panels.add(this);
   }
@@ -103,9 +106,10 @@ export class TerminalPanel {
     jumpServerClient: JumpServerClient,
     terminalContext?: TerminalContextRegistry
   ): TerminalPanel {
+    const connectionKind = getAssetConnectionKind(asset);
     const panel = vscode.window.createWebviewPanel(
       'jumpserverTerminal',
-      `JumpServer: ${asset.name}`,
+      `JumpServer ${connectionKindLabel(connectionKind)}: ${asset.name}`,
       createTerminalViewColumn(),
       {
         enableScripts: true,
@@ -218,6 +222,7 @@ export class TerminalPanel {
   private createSession(generation: number): JumpServerSession {
     return new JumpServerSession({
       asset: this.asset,
+      connectionKind: this.connectionKind,
       client: this.jumpServerClient,
       events: {
         output: (data) => this.postWebviewMessage({ type: 'outputBytes', payload: [...data] }),

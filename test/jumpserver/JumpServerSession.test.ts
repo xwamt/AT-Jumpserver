@@ -15,12 +15,12 @@ class FakeSocket extends EventEmitter {
   }
 }
 
-function client(socket: FakeSocket) {
+function client(socket: FakeSocket, protocolName = 'ssh') {
   return {
     getAssetDetail: vi.fn().mockResolvedValue({
       id: 'asset-1',
-      permed_accounts: [{ id: 'account-1', username: 'root' }],
-      permed_protocols: [{ name: 'ssh' }]
+      permed_accounts: [{ id: 'account-1', alias: 'account-alias-1', username: 'root', has_secret: true }],
+      permed_protocols: [{ name: protocolName }]
     }),
     createConnectionToken: vi.fn().mockResolvedValue({ id: 'token-1' }),
     getSmartEndpoint: vi.fn().mockResolvedValue({ host: 'koko.example.com', https_port: 443 }),
@@ -41,6 +41,7 @@ describe('JumpServerSession', () => {
     const fakeClient = client(socket);
     const session = new JumpServerSession({
       asset: { id: 'asset-1', name: 'web-1' },
+      connectionKind: 'ssh',
       client: fakeClient,
       events
     });
@@ -50,7 +51,7 @@ describe('JumpServerSession', () => {
 
     expect(fakeClient.createConnectionToken).toHaveBeenCalledWith({
       assetId: 'asset-1',
-      account: { id: 'account-1', username: 'root' },
+      account: { id: 'account-1', alias: 'account-alias-1', username: 'root', hasSecret: true },
       protocol: 'ssh'
     });
     expect(socket.sent.at(-1)).toBe(JSON.stringify({
@@ -61,10 +62,42 @@ describe('JumpServerSession', () => {
     expect(events.status).toHaveBeenCalledWith('Connected');
   });
 
+
+  it('creates MySQL db_client tokens and opens the same KoKo terminal socket', async () => {
+    const fakeClient = client(socket, 'mysql');
+    const session = new JumpServerSession({
+      asset: { id: 'mysql-1', name: 'mysql-1' },
+      connectionKind: 'mysql',
+      client: fakeClient,
+      events
+    });
+
+    await session.connect();
+    socket.emit('message', JSON.stringify({ id: 'connect-1', type: 'CONNECT', data: '{}' }));
+
+    expect(fakeClient.createConnectionToken).toHaveBeenCalledWith({
+      assetId: 'mysql-1',
+      account: { id: 'account-1', alias: 'account-alias-1', username: 'root', hasSecret: true },
+      protocol: 'mysql'
+    });
+    expect(fakeClient.openKokoWebSocket).toHaveBeenCalledWith({
+      endpoint: { host: 'koko.example.com', https_port: 443 },
+      tokenId: 'token-1',
+      cols: 80,
+      rows: 24
+    });
+    expect(socket.sent.at(-1)).toBe(JSON.stringify({
+      id: 'connect-1',
+      type: 'TERMINAL_INIT',
+      data: JSON.stringify({ cols: 80, rows: 24, code: '' })
+    }));
+  });
+
   it('handles KoKo CONNECT control messages when ws delivers text frames as Buffer', async () => {
     const fakeClient = client(socket);
     const session = new JumpServerSession({
       asset: { id: 'asset-1', name: 'web-1' },
+      connectionKind: 'ssh',
       client: fakeClient,
       events
     });
@@ -84,6 +117,7 @@ describe('JumpServerSession', () => {
   it('handles KoKo PING heartbeats without writing JSON into the terminal', async () => {
     const session = new JumpServerSession({
       asset: { id: 'asset-1', name: 'web-1' },
+      connectionKind: 'ssh',
       client: client(socket),
       events
     });
@@ -103,7 +137,7 @@ describe('JumpServerSession', () => {
   });
 
   it('maps webview input and resize to KoKo terminal messages', async () => {
-    const session = new JumpServerSession({ asset: { id: 'asset-1', name: 'web-1' }, client: client(socket), events });
+    const session = new JumpServerSession({ asset: { id: 'asset-1', name: 'web-1' }, connectionKind: 'ssh', client: client(socket), events });
     await session.connect();
 
     session.write('ls\r');
@@ -118,7 +152,7 @@ describe('JumpServerSession', () => {
   });
 
   it('forwards upstream bytes and closes cleanly', async () => {
-    const session = new JumpServerSession({ asset: { id: 'asset-1', name: 'web-1' }, client: client(socket), events });
+    const session = new JumpServerSession({ asset: { id: 'asset-1', name: 'web-1' }, connectionKind: 'ssh', client: client(socket), events });
     await session.connect();
 
     socket.emit('message', Buffer.from('hello', 'utf8'));
@@ -128,6 +162,19 @@ describe('JumpServerSession', () => {
     expect(socket.closed).toBe(true);
   });
 
+
+  it('rejects assets that do not expose MySQL protocol for MySQL sessions', async () => {
+    const fakeClient = client(socket, 'ssh');
+    const session = new JumpServerSession({
+      asset: { id: 'mysql-1', name: 'mysql-1' },
+      connectionKind: 'mysql',
+      client: fakeClient,
+      events
+    });
+
+    await expect(session.connect()).rejects.toThrow('Selected asset does not expose MySQL protocol.');
+  });
+
   it('rejects non-SSH assets', async () => {
     const fakeClient = client(socket);
     fakeClient.getAssetDetail.mockResolvedValueOnce({
@@ -135,7 +182,7 @@ describe('JumpServerSession', () => {
       permed_accounts: [{ id: 'account-1', username: 'root' }],
       permed_protocols: [{ name: 'rdp' }]
     });
-    const session = new JumpServerSession({ asset: { id: 'asset-1', name: 'web-1' }, client: fakeClient, events });
+    const session = new JumpServerSession({ asset: { id: 'asset-1', name: 'web-1' }, connectionKind: 'ssh', client: fakeClient, events });
 
     await expect(session.connect()).rejects.toThrow('Selected asset does not expose SSH protocol.');
   });

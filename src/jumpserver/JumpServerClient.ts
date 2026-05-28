@@ -1,5 +1,5 @@
 import type { CachedJumpServerAsset, CachedJumpServerNode } from '../config/schema';
-import type { JumpServerAccountRef, JumpServerEndpoint, JumpServerSettingsWithPassword } from './types';
+import type { JumpServerAccountRef, JumpServerConnectionProtocol, JumpServerEndpoint, JumpServerSettingsWithPassword } from './types';
 import WebSocket from 'ws';
 
 type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
@@ -26,6 +26,11 @@ export const DEFAULT_CONNECT_OPTIONS = {
   virtualappConnectMethod: 'web',
   reusable: false,
   rdp_connection_speed: 'auto'
+} as const;
+
+export const DEFAULT_MYSQL_CONNECT_OPTIONS = {
+  token_reusable: false,
+  disableautohash: false
 } as const;
 
 export function buildOrigin(baseUrl: string): string {
@@ -150,21 +155,32 @@ export function resolveFirstUsableAccount(detail: Record<string, any>): JumpServ
     : Array.isArray(detail.accounts)
       ? detail.accounts
       : [];
-  for (const account of accounts) {
-    const id = account?.id ? String(account.id) : '';
-    const username = account?.username || account?.name || account?.alias || '';
+  const preferred = accounts.find((account) => account?.has_secret === true && !String(account?.alias ?? '').startsWith('@')) ?? accounts[0];
+  if (preferred) {
+    const id = preferred.id ? String(preferred.id) : '';
+    const alias = preferred.alias ? String(preferred.alias) : undefined;
+    const username = String(preferred.username || preferred.name || alias || '');
     if (id && username) {
-      return { id, username: String(username) };
+      return {
+        id,
+        alias,
+        username,
+        hasSecret: typeof preferred.has_secret === 'boolean' ? preferred.has_secret : undefined
+      };
     }
   }
   throw new Error('No usable JumpServer account was returned for this asset.');
 }
 
+
 export function buildConnectionTokenPayload(input: {
   assetId: string;
   account: JumpServerAccountRef;
-  protocol: 'ssh';
+  protocol: JumpServerConnectionProtocol;
 }): Record<string, unknown> {
+  if (input.protocol === 'mysql') {
+    return buildMysqlConnectionTokenPayload(input);
+  }
   return {
     asset: input.assetId,
     account: input.account.id,
@@ -175,6 +191,22 @@ export function buildConnectionTokenPayload(input: {
     connect_options: DEFAULT_CONNECT_OPTIONS
   };
 }
+
+export function buildMysqlConnectionTokenPayload(input: {
+  assetId: string;
+  account: JumpServerAccountRef;
+}): Record<string, unknown> {
+  return {
+    asset: input.assetId,
+    account: input.account.alias || input.account.id,
+    protocol: 'mysql',
+    input_username: input.account.username,
+    input_secret: '',
+    connect_method: 'db_client',
+    connect_options: DEFAULT_MYSQL_CONNECT_OPTIONS
+  };
+}
+
 
 export async function defaultWebSocketFactory(url: string, options: WebSocket.ClientOptions): Promise<KokoWebSocket> {
   const socket = new WebSocket(url, ['JMS-KOKO'], options);
@@ -260,7 +292,7 @@ export class JumpServerClient {
     return await response.json() as Record<string, any>;
   }
 
-  async createConnectionToken(input: { assetId: string; account: JumpServerAccountRef; protocol: 'ssh' }): Promise<{ id: string }> {
+  async createConnectionToken(input: { assetId: string; account: JumpServerAccountRef; protocol: JumpServerConnectionProtocol }): Promise<{ id: string }> {
     await this.ensureAuthToken();
     const response = await this.request('/api/v1/authentication/connection-token/', {
       method: 'POST',
@@ -269,7 +301,9 @@ export class JumpServerClient {
     });
     const body = await response.json() as { id?: unknown };
     if (!body.id) {
-      throw new Error('JumpServer connection-token response did not include id.');
+      throw new Error(input.protocol === 'mysql'
+        ? 'JumpServer MySQL connection-token response did not include id.'
+        : 'JumpServer connection-token response did not include id.');
     }
     return { id: String(body.id) };
   }

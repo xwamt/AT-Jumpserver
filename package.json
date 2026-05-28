@@ -76,7 +76,7 @@
       "view/item/context": [
         {
           "command": "jumpserverManager.connect",
-          "when": "view == jumpserverManager.assets && viewItem == jumpserverAsset",
+          "when": "view == jumpserverManager.assets && (viewItem == jumpserverAsset || viewItem == jumpserverMysqlAsset || viewItem == jumpserverUnsupportedAsset)",
           "group": "inline@1"
         }
       ]
