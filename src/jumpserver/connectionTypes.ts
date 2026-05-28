@@ -33,7 +33,7 @@ export function getAssetConnectionKind(asset: AssetLikeForConnection): JumpServe
   if (isMysqlAsset(asset)) {
     return 'mysql';
   }
-  if (lowerProtocols(asset).includes('ssh')) {
+  if (lowerProtocols(asset).includes('ssh') || isSshCandidateAsset(asset)) {
     return 'ssh';
   }
   return 'unsupported';
@@ -67,6 +67,14 @@ function lowerValues(asset: AssetLikeForConnection): string[] {
 
 function lowerProtocols(asset: AssetLikeForConnection): string[] {
   return (asset.protocolNames ?? []).map((value) => value.toLowerCase());
+}
+
+function isSshCandidateAsset(asset: AssetLikeForConnection): boolean {
+  if (isDatabaseAsset(asset)) {
+    return false;
+  }
+  const values = lowerValues(asset);
+  return values.includes('host') || values.includes('server') || values.includes('linux') || values.includes('windows');
 }
 
 function hasMysqlMarker(values: string[]): boolean {

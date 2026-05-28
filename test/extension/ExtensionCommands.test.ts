@@ -163,6 +163,31 @@ describe('extension command wiring', () => {
     expect(notificationsMock.showTimedNotification).not.toHaveBeenCalledWith(expect.stringContaining('not supported'), 'error');
   });
 
+  it('opens SSH server assets even when cached protocol names are missing', async () => {
+    const context = contextWithSettings();
+    activate(context);
+    const connectCommand = registeredCommand('jumpserverManager.connect');
+    const item = {
+      asset: {
+        id: 'server-1',
+        name: 'uat-service',
+        address: '10.0.0.11',
+        platform: 'Linux',
+        category: 'host',
+        type: 'server',
+        zoneName: '',
+        nodePath: [],
+        protocolNames: [],
+        raw: {}
+      }
+    };
+
+    await connectCommand(item);
+
+    expect(terminalPanelMock.open).toHaveBeenCalledWith(context, item.asset, expect.any(Object), expect.any(Object));
+    expect(notificationsMock.showTimedNotification).not.toHaveBeenCalledWith(expect.stringContaining('not supported'), 'error');
+  });
+
   it('keeps unsupported assets visible but shows an unsupported message instead of opening a terminal', async () => {
     const context = contextWithSettings();
     activate(context);

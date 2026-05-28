@@ -29,6 +29,16 @@ describe('connectionTypes', () => {
     expect(getAssetConnectionKind({ category: 'database', type: 'redis', platform: 'Redis6+' })).toBe('unsupported');
   });
 
+  it('treats host server assets without cached protocols as SSH candidates', () => {
+    expect(getAssetConnectionKind({
+      category: 'host',
+      type: 'server',
+      platform: 'Linux',
+      name: 'uat-service',
+      protocolNames: []
+    })).toBe('ssh');
+  });
+
   it('routes MySQL before SSH when cached metadata is mixed', () => {
     expect(getAssetConnectionKind({
       category: 'database',
