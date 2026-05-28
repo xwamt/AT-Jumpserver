@@ -8,6 +8,10 @@ AT JumpServer Terminal is a VS Code extension for opening browser-style JumpServ
 - Listing the current user's permitted assets
 - SSH protocol assets
 - MySQL protocol assets through JumpServer `db_client`
+- SFTP file tree for permitted assets
+- SFTP upload, download, new folder, rename, delete, copy path, and directory navigation through JumpServer KoKo
+- SFTP preview for small text files
+- SFTP edit sessions with first-save sync confirmation and conflict prompts
 - xterm.js terminal UI
 - JumpServer KoKo WebSocket terminal sessions
 
@@ -15,7 +19,7 @@ AT JumpServer Terminal is a VS Code extension for opening browser-style JumpServ
 
 - Ahell backend integration
 - Direct SSH through ssh2
-- SFTP or remote file editing
+- Editing files larger than 1 MB or binary files through the preview/edit workflow
 - MCP and Agent tools
 - MySQL GUI/workbench, Chen SQL editor, schema browser, or result grid
 - RDP, PostgreSQL, Redis, Oracle, SQL Server, Kubernetes, or other non-SSH/non-MySQL assets
@@ -29,6 +33,19 @@ AT JumpServer Terminal is a VS Code extension for opening browser-style JumpServ
 4. Run `JumpServer: Validate Account`.
 5. Run `JumpServer: Refresh Assets`.
 6. Click an SSH or MySQL asset to connect in a terminal.
+7. Connect to an SSH asset, then use the Files view for the terminal-backed SFTP session.
+
+## SFTP Development Probe
+
+Before changing the SFTP implementation, validate a real JumpServer instance with `npm run probe:sftp`. The probe reads `JUMPSERVER_BASE_URL`, `JUMPSERVER_USERNAME`, `JUMPSERVER_PASSWORD`, and `JUMPSERVER_ASSET_ID` from the environment.
+
+JumpServer KoKo SFTP is constrained by the asset platform's configured SFTP root. On the tested instance, `/` and `/tmp` resolve to the same file area and paths such as `/home` or `/etc` do not expose the server filesystem. Change the platform SFTP root in JumpServer if a different managed root is required.
+
+## SFTP Preview And Edit
+
+Use `Preview` on a file to open a read-only cached copy. Use `Edit` on a file to open an extension-owned local cache file; the first save asks whether to enable automatic sync for that edit session, and later saves upload automatically after sync is enabled.
+
+Before each upload, the extension compares the current remote stat with the stat captured when the edit session opened. If the remote file changed, choose whether to overwrite the remote file or cancel the upload. Files larger than 1 MB and binary-like files are blocked from preview/edit; use `Download` for those files.
 
 ## Development
 
@@ -47,6 +64,18 @@ npm run build
 - Run `whoami`, `pwd`, and `ls`.
 - Connect to a MySQL asset.
 - Run `select 1;` at the MySQL prompt.
+- Open files for an SFTP-capable SSH asset.
+- Navigate into a directory and back up.
+- Upload a small text file.
+- Download the file and compare content.
+- Rename and delete the test file.
+- Create and delete a test directory.
+- Preview a small text file and confirm it opens read-only.
+- Edit a small text file, save once, and confirm the sync prompt appears.
+- Enable sync and confirm the file uploads after save.
+- Modify the remote file externally and confirm the conflict prompt appears on the next save.
+- Try preview/edit on a binary or over-1 MB file and confirm it suggests Download.
+- Verify an asset without SFTP shows a clear unsupported message.
 - Resize the terminal.
 - Disconnect and reconnect.
 - Verify bad password and non-SSH assets show clear errors.

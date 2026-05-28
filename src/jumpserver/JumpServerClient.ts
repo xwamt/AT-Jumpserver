@@ -33,6 +33,11 @@ export const DEFAULT_MYSQL_CONNECT_OPTIONS = {
   disableautohash: false
 } as const;
 
+export const DEFAULT_SFTP_CONNECT_OPTIONS = {
+  token_reusable: false,
+  disableautohash: false
+} as const;
+
 export function buildOrigin(baseUrl: string): string {
   const parsed = new URL(baseUrl);
   return `${parsed.protocol}//${parsed.host}`;
@@ -57,6 +62,22 @@ export function buildKokoWsUrl(
     ? `${host}:${port}`
     : host;
   return `${scheme}://${authority}/koko/ws/terminal/?disableautohash=false&token=${encodeURIComponent(tokenId)}&_=${timestamp}`;
+}
+
+export function buildKokoSftpWsUrl(
+  baseUrl: string,
+  endpoint: JumpServerEndpoint,
+  tokenId: string,
+  timestamp = Date.now()
+): string {
+  const parsed = new URL(baseUrl);
+  const scheme = parsed.protocol === 'https:' ? 'wss' : 'ws';
+  const host = endpoint.host || parsed.hostname;
+  const port = parsed.protocol === 'https:' ? endpoint.https_port : endpoint.http_port;
+  const authority = port && !((scheme === 'wss' && port === 443) || (scheme === 'ws' && port === 80))
+    ? `${host}:${port}`
+    : host;
+  return `${scheme}://${authority}/koko/ws/sftp/?token=${encodeURIComponent(tokenId)}&_=${timestamp}`;
 }
 
 export function parseCsrfMiddlewareToken(html: string): string {
@@ -181,6 +202,9 @@ export function buildConnectionTokenPayload(input: {
   if (input.protocol === 'mysql') {
     return buildMysqlConnectionTokenPayload(input);
   }
+  if (input.protocol === 'sftp') {
+    return buildSftpConnectionTokenPayload(input);
+  }
   return {
     asset: input.assetId,
     account: input.account.id,
@@ -189,6 +213,21 @@ export function buildConnectionTokenPayload(input: {
     input_secret: '',
     connect_method: 'web_cli',
     connect_options: DEFAULT_CONNECT_OPTIONS
+  };
+}
+
+export function buildSftpConnectionTokenPayload(input: {
+  assetId: string;
+  account: JumpServerAccountRef;
+}): Record<string, unknown> {
+  return {
+    asset: input.assetId,
+    account: input.account.id,
+    protocol: 'sftp',
+    input_username: input.account.username,
+    input_secret: '',
+    connect_method: 'sftp',
+    connect_options: DEFAULT_SFTP_CONNECT_OPTIONS
   };
 }
 
@@ -385,6 +424,28 @@ export class JumpServerClient {
         Pragma: 'no-cache',
         'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
         'User-Agent': 'AT JumpServer Terminal'
+      },
+      rejectUnauthorized: this.settings.verifyTls
+    });
+  }
+
+  async openKokoSftpWebSocket(input: {
+    endpoint: JumpServerEndpoint;
+    tokenId: string;
+    timestamp?: number;
+    webSocketFactory?: WebSocketFactory;
+  }): Promise<KokoWebSocket> {
+    await this.warmupKokoConnectPage(input.tokenId);
+    const url = buildKokoSftpWsUrl(this.settings.baseUrl, input.endpoint, input.tokenId, input.timestamp);
+    const factory = input.webSocketFactory ?? defaultWebSocketFactory;
+    return factory(url, {
+      origin: buildOrigin(this.settings.baseUrl),
+      headers: {
+        Cookie: this.cookieHeader(),
+        'Cache-Control': 'no-cache',
+        Pragma: 'no-cache',
+        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+        'User-Agent': 'AT JumpServer SFTP'
       },
       rejectUnauthorized: this.settings.verifyTls
     });
