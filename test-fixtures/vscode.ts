@@ -77,7 +77,7 @@ export const window = {
   showWarningMessage: vi.fn(),
   withProgress: vi.fn(),
   tabGroups: {
-    onDidChangeTabs: vi.fn()
+    onDidChangeTabs: vi.fn(() => ({ dispose: vi.fn() }))
   }
 };
 
@@ -85,14 +85,15 @@ export const workspace = {
   getConfiguration: vi.fn(() => ({
     get: <T>(_key: string, defaultValue: T): T => defaultValue
   })),
-  onDidCloseTextDocument: vi.fn(),
-  onDidSaveTextDocument: vi.fn(),
+  onDidCloseTextDocument: vi.fn(() => ({ dispose: vi.fn() })),
+  onDidSaveTextDocument: vi.fn(() => ({ dispose: vi.fn() })),
   openTextDocument: vi.fn(async (uri) => ({ uri, languageId: 'plaintext' })),
   registerTextDocumentContentProvider: vi.fn(),
   workspaceFolders: undefined
 };
 
 export const commands = {
+  executeCommand: vi.fn(),
   registerCommand: vi.fn()
 };
 
@@ -110,3 +111,7 @@ export enum StatusBarAlignment {
   Left = 1,
   Right = 2
 }
+
+export const languages = {
+  setTextDocumentLanguage: vi.fn(async (document) => document)
+};
