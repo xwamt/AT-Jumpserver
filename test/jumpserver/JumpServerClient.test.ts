@@ -1,12 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   buildConnectionTokenPayload,
+  buildSftpConnectionTokenPayload,
   buildMysqlConnectionTokenPayload,
   buildKokoConnectUrl,
+  buildKokoSftpWsUrl,
   buildKokoWsUrl,
   buildOrigin,
   DEFAULT_CONNECT_OPTIONS,
   DEFAULT_MYSQL_CONNECT_OPTIONS,
+  DEFAULT_SFTP_CONNECT_OPTIONS,
   extractAssetTreeNodes,
   JumpServerClient,
   normalizeJumpServerAsset,
@@ -29,6 +32,12 @@ describe('JumpServerClient pure helpers', () => {
     expect(
       buildKokoWsUrl('https://jumpserver.example.com', { host: 'koko.example.com', https_port: 8443 }, 'token-1', 1000)
     ).toBe('wss://koko.example.com:8443/koko/ws/terminal/?disableautohash=false&token=token-1&_=1000');
+  });
+
+  it('builds KoKo SFTP websocket URL from smart endpoint', () => {
+    expect(
+      buildKokoSftpWsUrl('https://jumpserver.example.com', { host: 'koko.example.com', https_port: 8443 }, 'token-1', 1000)
+    ).toBe('wss://koko.example.com:8443/koko/ws/sftp/?token=token-1&_=1000');
   });
 
   it('parses csrfmiddlewaretoken from JumpServer login HTML', () => {
@@ -165,6 +174,21 @@ describe('JumpServerClient pure helpers', () => {
       input_secret: '',
       connect_method: 'db_client',
       connect_options: DEFAULT_MYSQL_CONNECT_OPTIONS
+    });
+  });
+
+  it('builds SFTP connection-token payload with the probe-confirmed method', () => {
+    expect(buildSftpConnectionTokenPayload({
+      assetId: 'asset-1',
+      account: { id: 'account-1', username: 'root' }
+    })).toEqual({
+      asset: 'asset-1',
+      account: 'account-1',
+      protocol: 'sftp',
+      input_username: 'root',
+      input_secret: '',
+      connect_method: 'sftp',
+      connect_options: DEFAULT_SFTP_CONNECT_OPTIONS
     });
   });
 });
@@ -416,6 +440,37 @@ describe('JumpServerClient REST flow', () => {
       headers: expect.objectContaining({
         Cookie: 'csrftoken=abc; sessionid=session-1'
       })
+    }));
+  });
+
+  it('opens KoKo SFTP websocket with warmed cookies', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(textResponse('<input name="csrfmiddlewaretoken" value="csrf-1">', { headers: { 'set-cookie': 'csrftoken=abc; Path=/' } }))
+      .mockResolvedValueOnce(new Response('', { status: 302, headers: { location: '/ui/', 'set-cookie': 'sessionid=session-1; Path=/' } }))
+      .mockResolvedValueOnce(textResponse('ok'))
+      .mockResolvedValueOnce(jsonResponse({ id: 'user-1' }))
+      .mockResolvedValueOnce(textResponse('<html>koko</html>'));
+    const socket = { send: vi.fn(), close: vi.fn(), on: vi.fn() };
+    const webSocketFactory = vi.fn(async () => socket);
+    const client = new JumpServerClient({
+      baseUrl: 'https://jumpserver.example.com',
+      orgId: '',
+      username: 'alan',
+      password: 'secret',
+      verifyTls: true,
+    }, fetchMock);
+
+    await client.openKokoSftpWebSocket({
+      endpoint: { host: 'koko.example.com', https_port: 443 },
+      tokenId: 'token-1',
+      timestamp: 1000,
+      webSocketFactory
+    });
+
+    expect(webSocketFactory).toHaveBeenCalledWith('wss://koko.example.com/koko/ws/sftp/?token=token-1&_=1000', expect.objectContaining({
+      origin: 'https://jumpserver.example.com',
+      rejectUnauthorized: true,
+      headers: expect.objectContaining({ Cookie: 'csrftoken=abc; sessionid=session-1' })
     }));
   });
 });
