@@ -1,3 +1,6 @@
+import { mkdtemp, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { describe, expect, it, vi } from 'vitest';
 import type { CachedJumpServerAsset } from '../../src/config/schema';
 import { JumpServerSftpManager } from '../../src/sftp/JumpServerSftpManager';
@@ -135,5 +138,50 @@ describe('JumpServerSftpManager', () => {
       rootPath: '/home/root',
       asset: expect.objectContaining({ id: 'asset-1' })
     });
+  });
+
+  it('exposes the active connection key for edit sessions', async () => {
+    const fakeSession = session();
+    const manager = new JumpServerSftpManager({ createSession: () => fakeSession });
+
+    expect(manager.getActiveConnectionKey()).toBeUndefined();
+    await manager.openAsset(asset({ id: 'asset-1' }), 'terminal-1');
+
+    expect(manager.getActiveConnectionKey()).toBe('terminal-1');
+  });
+
+  it('routes read/write/stat/download/upload by explicit connection key', async () => {
+    const firstSession = session();
+    const secondSession = session();
+    const createSession = vi.fn()
+      .mockReturnValueOnce(firstSession)
+      .mockReturnValueOnce(secondSession);
+    const manager = new JumpServerSftpManager({ createSession });
+    const tempDir = await mkdtemp(join(tmpdir(), 'jumpserver-sftp-manager-'));
+    const uploadPath = join(tempDir, 'a.txt');
+    const downloadPath = join(tempDir, 'downloaded.txt');
+    await writeFile(uploadPath, 'a');
+
+    await manager.openAsset(asset({ id: 'asset-1' }), 'terminal-1');
+    await manager.openAsset(asset({ id: 'asset-2' }), 'terminal-2');
+
+    await manager.stat('/tmp/a.txt', 'terminal-1');
+    await manager.readFile('/tmp/a.txt', 1024, 'terminal-1');
+    await manager.writeFile('/tmp/a.txt', Buffer.from('a'), 'terminal-1');
+    await manager.createFile('/tmp/new.txt', 'terminal-1');
+    await manager.downloadFile('/tmp/a.txt', downloadPath, false, 'terminal-1');
+    await manager.uploadFile(uploadPath, '/tmp/a.txt', 'terminal-1');
+
+    expect(firstSession.stat).toHaveBeenCalledWith('/tmp/a.txt');
+    expect(firstSession.readFile).toHaveBeenCalledWith('/tmp/a.txt', 1024);
+    expect(firstSession.writeFile).toHaveBeenCalledWith('/tmp/a.txt', Buffer.from('a'));
+    expect(firstSession.createFile).toHaveBeenCalledWith('/tmp/new.txt');
+    expect(firstSession.downloadFile).toHaveBeenCalledWith('/tmp/a.txt', false);
+    expect(firstSession.uploadBytes).toHaveBeenCalledWith('/tmp/a.txt', Buffer.from('a'));
+
+    expect(secondSession.stat).not.toHaveBeenCalled();
+    expect(secondSession.readFile).not.toHaveBeenCalled();
+    expect(secondSession.writeFile).not.toHaveBeenCalled();
+    expect(secondSession.createFile).not.toHaveBeenCalled();
   });
 });

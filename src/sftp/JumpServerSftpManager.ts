@@ -111,6 +111,10 @@ export class JumpServerSftpManager {
     return { kind: 'none' };
   }
 
+  getActiveConnectionKey(): string | undefined {
+    return this.activeTerminalId;
+  }
+
   async ensureRoot(): Promise<string> {
     const connection = this.requireConnection();
     const session = await this.ensureSession(connection);
@@ -155,42 +159,42 @@ export class JumpServerSftpManager {
     await (await this.ensureSession(this.requireConnection())).deleteEntry(entry.path);
   }
 
-  async uploadFile(localPath: string, remotePath: string): Promise<void> {
+  async uploadFile(localPath: string, remotePath: string, connectionKey?: string): Promise<void> {
     await this.transfers.run(`Upload ${remotePath}`, async () => {
       const bytes = await readFile(localPath);
-      await (await this.ensureSession(this.requireConnection())).uploadBytes(remotePath, bytes);
+      await (await this.ensureSession(this.requireConnection(connectionKey))).uploadBytes(remotePath, bytes);
     });
   }
 
-  async downloadFile(remotePath: string, localPath: string, isDir = false): Promise<void> {
+  async downloadFile(remotePath: string, localPath: string, isDir = false, connectionKey?: string): Promise<void> {
     await this.transfers.run(`Download ${remotePath}`, async () => {
-      const bytes = await (await this.ensureSession(this.requireConnection())).downloadFile(remotePath, isDir);
+      const bytes = await (await this.ensureSession(this.requireConnection(connectionKey))).downloadFile(remotePath, isDir);
       await writeFile(localPath, bytes);
     });
   }
 
-  stat(path: string): Promise<JumpServerSftpFileStat> {
-    return this.ensureSession(this.requireConnection()).then((session) => session.stat(path));
+  stat(path: string, connectionKey?: string): Promise<JumpServerSftpFileStat> {
+    return this.ensureSession(this.requireConnection(connectionKey)).then((session) => session.stat(path));
   }
 
-  readFile(path: string, maxBytes: number): Promise<Buffer> {
-    return this.ensureSession(this.requireConnection()).then((session) => session.readFile(path, maxBytes));
+  readFile(path: string, maxBytes: number, connectionKey?: string): Promise<Buffer> {
+    return this.ensureSession(this.requireConnection(connectionKey)).then((session) => session.readFile(path, maxBytes));
   }
 
-  writeFile(path: string, content: Buffer): Promise<void> {
-    return this.ensureSession(this.requireConnection()).then((session) => session.writeFile(path, content));
+  writeFile(path: string, content: Buffer, connectionKey?: string): Promise<void> {
+    return this.ensureSession(this.requireConnection(connectionKey)).then((session) => session.writeFile(path, content));
   }
 
-  createFile(path: string): Promise<void> {
-    return this.ensureSession(this.requireConnection()).then((session) => session.createFile(path));
+  createFile(path: string, connectionKey?: string): Promise<void> {
+    return this.ensureSession(this.requireConnection(connectionKey)).then((session) => session.createFile(path));
   }
 
   private getActiveConnection(): ManagedConnection | undefined {
     return this.activeTerminalId ? this.connections.get(this.activeTerminalId) : undefined;
   }
 
-  private requireConnection(): ManagedConnection {
-    const active = this.getActiveConnection();
+  private requireConnection(connectionKey?: string): ManagedConnection {
+    const active = connectionKey ? this.connections.get(connectionKey) : this.getActiveConnection();
     if (!active) {
       throw new Error('No active JumpServer SFTP asset.');
     }
