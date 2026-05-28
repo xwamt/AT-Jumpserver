@@ -10,6 +10,8 @@ AT JumpServer Terminal is a VS Code extension for opening browser-style JumpServ
 - MySQL protocol assets through JumpServer `db_client`
 - SFTP file tree for permitted assets
 - SFTP upload, download, new folder, rename, delete, copy path, and directory navigation through JumpServer KoKo
+- SFTP preview for small text files
+- SFTP edit sessions with first-save sync confirmation and conflict prompts
 - xterm.js terminal UI
 - JumpServer KoKo WebSocket terminal sessions
 
@@ -17,7 +19,7 @@ AT JumpServer Terminal is a VS Code extension for opening browser-style JumpServ
 
 - Ahell backend integration
 - Direct SSH through ssh2
-- Remote file editing and save-to-upload sync
+- Editing files larger than 1 MB or binary files through the preview/edit workflow
 - MCP and Agent tools
 - MySQL GUI/workbench, Chen SQL editor, schema browser, or result grid
 - RDP, PostgreSQL, Redis, Oracle, SQL Server, Kubernetes, or other non-SSH/non-MySQL assets
@@ -39,9 +41,11 @@ Before changing the SFTP implementation, validate a real JumpServer instance wit
 
 JumpServer KoKo SFTP is constrained by the asset platform's configured SFTP root. On the tested instance, `/` and `/tmp` resolve to the same file area and paths such as `/home` or `/etc` do not expose the server filesystem. Change the platform SFTP root in JumpServer if a different managed root is required.
 
-## Phase Two Direction
+## SFTP Preview And Edit
 
-Remote file editing is intentionally reserved for a later phase. The current SFTP layer already exposes `stat`, `readFile`, `writeFile`, and `createFile` interfaces so a future edit workflow can download into an extension-owned cache, detect remote changes before upload, and sync saved files back through KoKo without reshaping the first-phase file manager.
+Use `Preview` on a file to open a read-only cached copy. Use `Edit` on a file to open an extension-owned local cache file; the first save asks whether to enable automatic sync for that edit session, and later saves upload automatically after sync is enabled.
+
+Before each upload, the extension compares the current remote stat with the stat captured when the edit session opened. If the remote file changed, choose whether to overwrite the remote file or cancel the upload. Files larger than 1 MB and binary-like files are blocked from preview/edit; use `Download` for those files.
 
 ## Development
 
@@ -66,6 +70,11 @@ npm run build
 - Download the file and compare content.
 - Rename and delete the test file.
 - Create and delete a test directory.
+- Preview a small text file and confirm it opens read-only.
+- Edit a small text file, save once, and confirm the sync prompt appears.
+- Enable sync and confirm the file uploads after save.
+- Modify the remote file externally and confirm the conflict prompt appears on the next save.
+- Try preview/edit on a binary or over-1 MB file and confirm it suggests Download.
 - Verify an asset without SFTP shows a clear unsupported message.
 - Resize the terminal.
 - Disconnect and reconnect.
