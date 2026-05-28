@@ -13,8 +13,7 @@ form?.addEventListener('submit', (event) => {
       orgId: String(data.get('orgId') || ''),
       username: String(data.get('username') || ''),
       password: String(data.get('password') || ''),
-      verifyTls: data.get('verifyTls') === 'on',
-      connectTimeout: Number(data.get('connectTimeout') || 30)
+      verifyTls: data.get('verifyTls') === 'on'
     }
   });
 });

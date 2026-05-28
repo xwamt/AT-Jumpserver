@@ -4,7 +4,6 @@ export interface JumpServerSettingsWithPassword {
   username: string;
   password: string;
   verifyTls: boolean;
-  connectTimeout: number;
 }
 
 export interface JumpServerEndpoint {

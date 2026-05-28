@@ -162,6 +162,24 @@ describe('JumpServerSession', () => {
     expect(socket.closed).toBe(true);
   });
 
+  it('reports websocket close code and reason from KoKo', async () => {
+    const session = new JumpServerSession({ asset: { id: 'asset-1', name: 'web-1' }, connectionKind: 'ssh', client: client(socket), events });
+    await session.connect();
+
+    socket.emit('close', 4001, Buffer.from('idle timeout', 'utf8'));
+
+    expect(events.status).toHaveBeenCalledWith('Disconnected (code 4001: idle timeout)');
+  });
+
+  it('reports normal remote websocket close codes too', async () => {
+    const session = new JumpServerSession({ asset: { id: 'asset-1', name: 'web-1' }, connectionKind: 'ssh', client: client(socket), events });
+    await session.connect();
+
+    socket.emit('close', 1000, Buffer.alloc(0));
+
+    expect(events.status).toHaveBeenCalledWith('Disconnected (code 1000)');
+  });
+
 
   it('rejects assets that do not expose MySQL protocol for MySQL sessions', async () => {
     const fakeClient = client(socket, 'ssh');

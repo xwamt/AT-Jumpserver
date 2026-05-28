@@ -40,7 +40,6 @@ function settings(overrides: Partial<JumpServerSettings> = {}): JumpServerSettin
     orgId: '',
     username: 'alan',
     verifyTls: true,
-    connectTimeout: 30,
     updatedAt: 1,
     ...overrides
   };

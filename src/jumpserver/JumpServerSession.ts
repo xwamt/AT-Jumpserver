@@ -96,9 +96,9 @@ export class JumpServerSession {
     socket.on('message', (message: Buffer | string, isBinary?: boolean) => {
       this.handleSocketMessage(message, Boolean(isBinary));
     });
-    socket.on('close', () => {
+    socket.on('close', (code?: number, reason?: Buffer | string) => {
       this.connected = false;
-      this.input.events.status('Disconnected');
+      this.input.events.status(formatSocketCloseStatus(code, reason));
     });
     socket.on('error', (error) => this.input.events.error(error));
   }
@@ -137,6 +137,18 @@ export class JumpServerSession {
     }
     return payload.type?.startsWith('TERMINAL_') || payload.type === 'TERMINAL_SESSION';
   }
+}
+
+function formatSocketCloseStatus(code?: number, reason?: Buffer | string): string {
+  const details: string[] = [];
+  if (typeof code === 'number') {
+    details.push(`code ${code}`);
+  }
+  const textReason = Buffer.isBuffer(reason) ? reason.toString('utf8') : reason;
+  if (textReason?.trim()) {
+    details.push(textReason.trim());
+  }
+  return details.length > 0 ? `Disconnected (${details.join(': ')})` : 'Disconnected';
 }
 
 function parseKokoControlMessage(message: string): { id?: string; type?: string; data?: unknown } | undefined {

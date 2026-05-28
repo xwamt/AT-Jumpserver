@@ -15,7 +15,6 @@ type ConfigMessage = {
     username: string;
     password: string;
     verifyTls: boolean;
-    connectTimeout: number;
   };
 };
 
@@ -47,7 +46,6 @@ export class JumpServerConfigPanel {
           orgId: message.payload.orgId,
           username: message.payload.username,
           verifyTls: message.payload.verifyTls,
-          connectTimeout: message.payload.connectTimeout,
           updatedAt: now
         },
         message.payload.password || undefined
@@ -73,7 +71,6 @@ export function renderJumpServerConfigBody(settings?: JumpServerSettings): strin
     <label>Username<input name="username" required value="${escapeAttr(settings?.username ?? '')}" /></label>
     <label>Password<input name="password" type="password" autocomplete="current-password" /></label>
     <label class="config-row"><input name="verifyTls" type="checkbox" ${settings?.verifyTls === false ? '' : 'checked'} /> Verify TLS</label>
-    <label>Connect Timeout<input name="connectTimeout" type="number" min="1" max="120" value="${settings?.connectTimeout ?? 30}" /></label>
     <button type="submit">Save</button>
   </form>
 </main>`;

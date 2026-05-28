@@ -37,7 +37,8 @@
     "commands": [
       {
         "command": "jumpserverManager.configure",
-        "title": "JumpServer: Configure"
+        "title": "JumpServer: Configure",
+        "icon": "$(gear)"
       },
       {
         "command": "jumpserverManager.validate",
@@ -45,7 +46,8 @@
       },
       {
         "command": "jumpserverManager.refresh",
-        "title": "JumpServer: Refresh Assets"
+        "title": "JumpServer: Refresh Assets",
+        "icon": "$(refresh)"
       },
       {
         "command": "jumpserverManager.connect",

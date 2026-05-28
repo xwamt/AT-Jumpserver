@@ -198,7 +198,6 @@ describe('JumpServerClient REST flow', () => {
       username: 'alan',
       password: 'secret',
       verifyTls: true,
-      connectTimeout: 30
     }, fetchMock);
 
     const assets = await client.listAssets({ limit: 200, offset: 0 });
@@ -275,7 +274,6 @@ describe('JumpServerClient REST flow', () => {
       username: 'alan',
       password: 'secret',
       verifyTls: true,
-      connectTimeout: 30
     }, fetchMock);
 
     const assets = await client.listAssets({ limit: 200, offset: 0 });
@@ -322,7 +320,6 @@ describe('JumpServerClient REST flow', () => {
       username: 'alan',
       password: 'secret',
       verifyTls: true,
-      connectTimeout: 30
     }, fetchMock);
 
     const nodes = await client.listAssetNodes();
@@ -349,7 +346,6 @@ describe('JumpServerClient REST flow', () => {
       username: 'alan',
       password: 'secret',
       verifyTls: true,
-      connectTimeout: 30
     }, fetchMock);
 
     const token = await client.createConnectionToken({
@@ -378,7 +374,6 @@ describe('JumpServerClient REST flow', () => {
       username: 'alan',
       password: 'secret',
       verifyTls: true,
-      connectTimeout: 30
     }, fetchMock);
 
     const token = await client.createConnectionToken({
@@ -407,7 +402,6 @@ describe('JumpServerClient REST flow', () => {
       username: 'alan',
       password: 'secret',
       verifyTls: true,
-      connectTimeout: 30
     }, fetchMock);
 
     await client.warmupKokoConnectPage('token-1', 1000);
@@ -425,3 +419,4 @@ describe('JumpServerClient REST flow', () => {
     }));
   });
 });
+

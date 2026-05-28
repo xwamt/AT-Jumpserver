@@ -48,13 +48,14 @@ describe('JumpServerConfigPanel', () => {
       orgId: 'org-1',
       username: 'alan',
       verifyTls: true,
-      connectTimeout: 30,
       updatedAt: 1
     });
 
     expect(body).toContain('name="baseUrl"');
     expect(body).toContain('value="https://jumpserver.example.com"');
     expect(body).toContain('name="password"');
+    expect(body).not.toContain('connectTimeout');
+    expect(body).not.toContain('Connect Timeout');
     expect(body).not.toContain('super-secret');
   });
 
@@ -99,8 +100,7 @@ describe('JumpServerConfigPanel', () => {
         orgId: 'org-1',
         username: 'alan',
         password: 'super-secret',
-        verifyTls: true,
-        connectTimeout: 30
+        verifyTls: true
       }
     });
 
@@ -109,8 +109,7 @@ describe('JumpServerConfigPanel', () => {
         baseUrl: 'https://jumpserver.example.com/',
         orgId: 'org-1',
         username: 'alan',
-        verifyTls: true,
-        connectTimeout: 30
+        verifyTls: true
       }),
       'super-secret'
     );

@@ -13,10 +13,9 @@ export const jumpServerSettingsSchema = z
     orgId: z.string().trim().optional().default(''),
     username: z.string().trim().min(1),
     verifyTls: z.boolean().default(true),
-    connectTimeout: z.number().int().min(1).max(120).default(30),
     updatedAt: z.number().int().nonnegative()
   })
-  .strict();
+  .strip();
 
 export const cachedJumpServerAssetSchema = z
   .object({

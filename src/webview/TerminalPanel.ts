@@ -237,10 +237,11 @@ export class TerminalPanel {
   }
 
   private handleSessionStatus(message: string, generation: number): void {
-    if (message === 'Disconnected' && generation === this.connectionGeneration) {
+    if (message.startsWith('Disconnected') && generation === this.connectionGeneration) {
       this.connected = false;
       this.terminalContext?.markDisconnected(this.terminalId);
-      this.postWebviewMessage({ type: 'output', payload: formatTerminalNotice('Connection disconnected') });
+      const detail = message.slice('Disconnected'.length).trim();
+      this.postWebviewMessage({ type: 'output', payload: formatTerminalNotice(`Connection disconnected${detail ? ` ${detail}` : ''}`) });
     }
     this.postStatus(message);
   }

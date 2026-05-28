@@ -247,6 +247,20 @@ describe('TerminalPanel rendering helpers', () => {
     });
   });
 
+  it('prints detailed remote disconnect statuses into the terminal', async () => {
+    const panelHost = createPanel();
+    vi.mocked(vscode.window.createWebviewPanel).mockReturnValueOnce(panelHost.panel);
+
+    TerminalPanel.open(extensionContext(), asset(), jumpServerClient());
+    await flushPromises();
+    sessionEvents.at(-1)!.status('Disconnected (code 1000)');
+
+    expect(panelHost.panel.webview.postMessage).toHaveBeenCalledWith({
+      type: 'output',
+      payload: formatTerminalNotice('Connection disconnected (code 1000)')
+    });
+  });
+
   it('disconnects all terminal sessions when the extension deactivates', async () => {
     TerminalPanel.open(extensionContext(), asset('first'), jumpServerClient());
     TerminalPanel.open(extensionContext(), asset('second'), jumpServerClient());

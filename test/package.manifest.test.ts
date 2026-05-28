@@ -27,6 +27,16 @@ describe('AT JumpServer Terminal manifest', () => {
     expect(JSON.stringify(manifest)).not.toContain('media/terminal-activity.svg');
   });
 
+  it('uses icon-only actions in the JumpServer view title', () => {
+    const commandsById = new Map(manifest.contributes.commands.map((command: { command: string; icon?: unknown; title: string }) => [command.command, command]));
+    expect(commandsById.get('jumpserverManager.configure')).toMatchObject({
+      icon: '$(gear)'
+    });
+    expect(commandsById.get('jumpserverManager.refresh')).toMatchObject({
+      icon: '$(refresh)'
+    });
+  });
+
   it('shows the connect menu for SSH, MySQL, and unsupported JumpServer assets', () => {
     const connectMenu = manifest.contributes.menus['view/item/context'].find(
       (item: { command: string }) => item.command === 'jumpserverManager.connect'

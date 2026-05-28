@@ -41,7 +41,6 @@ function contextWithSettings(): vscode.ExtensionContext {
       orgId: '',
       username: 'alan',
       verifyTls: true,
-      connectTimeout: 30,
       updatedAt: 1
     }]
   ]);
@@ -113,7 +112,6 @@ describe('extension command wiring', () => {
         orgId: '',
         username: 'alan',
         verifyTls: true,
-        connectTimeout: 30,
         updatedAt: 1
       }]
     ]);

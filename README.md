@@ -25,7 +25,7 @@ AT JumpServer Terminal is a VS Code extension for opening browser-style JumpServ
 
 1. Open the AT JumpServer activity bar.
 2. Run `JumpServer: Configure`.
-3. Enter JumpServer base URL, username, password, optional org ID, TLS verification, and timeout.
+3. Enter JumpServer base URL, username, password, optional org ID, and TLS verification.
 4. Run `JumpServer: Validate Account`.
 5. Run `JumpServer: Refresh Assets`.
 6. Click an SSH or MySQL asset to connect in a terminal.

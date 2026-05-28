@@ -14,7 +14,6 @@ describe('JumpServer config schema', () => {
         orgId: ' org-1 ',
         username: ' alan ',
         verifyTls: undefined,
-        connectTimeout: undefined,
         updatedAt: 1
       })
     ).toEqual({
@@ -22,7 +21,25 @@ describe('JumpServer config schema', () => {
       orgId: 'org-1',
       username: 'alan',
       verifyTls: true,
-      connectTimeout: 30,
+      updatedAt: 1
+    });
+  });
+
+  it('ignores legacy timeout fields from previously saved settings', () => {
+    expect(
+      parseJumpServerSettings({
+        baseUrl: 'https://jumpserver.example.com/',
+        orgId: '',
+        username: 'alan',
+        verifyTls: true,
+        connectTimeout: 30,
+        updatedAt: 1
+      })
+    ).toEqual({
+      baseUrl: 'https://jumpserver.example.com',
+      orgId: '',
+      username: 'alan',
+      verifyTls: true,
       updatedAt: 1
     });
   });
