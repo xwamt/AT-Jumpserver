@@ -8,6 +8,7 @@ export interface CollectUntilOptions {
 
 export interface CollectedTerminalOutput {
   output: string;
+  terminator?: string;
   timedOut: boolean;
   truncated: boolean;
 }
@@ -48,6 +49,7 @@ export class TerminalOutputBuffer {
         const index = text.indexOf(options.marker);
         resolve({
           output: index >= 0 ? text.slice(0, index) : text,
+          terminator: index >= 0 ? text.slice(index) : undefined,
           timedOut,
           truncated
         });
