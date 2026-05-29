@@ -5,7 +5,7 @@ import { join } from 'node:path';
 const manifest = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8'));
 
 describe('AT JumpServer Terminal manifest', () => {
-  it('declares JumpServer terminal and first-phase SFTP file commands without MCP commands', () => {
+  it('declares JumpServer terminal, SFTP file commands, and MCP install command', () => {
     expect(manifest.name).toBe('at-jumpserver-terminal');
     expect(manifest.displayName).toBe('AT JumpServer Terminal');
     expect(manifest.version).toBe('0.1.1');
@@ -28,6 +28,7 @@ describe('AT JumpServer Terminal manifest', () => {
       'jumpserverManager.sftp.rename',
       'jumpserverManager.sftp.newFolder',
       'jumpserverManager.sftp.copyPath',
+      'jumpserverManager.installMcpConfig',
       'jumpserverManager.disconnect',
       'jumpserverManager.reconnect'
     ]);
@@ -48,11 +49,38 @@ describe('AT JumpServer Terminal manifest', () => {
     );
     expect(fileMenus).toHaveLength(2);
     expect(fileMenus.every((item: { when: string }) => item.when.includes('viewItem == jumpserverSftpFile'))).toBe(true);
-    expect(JSON.stringify(manifest).toLowerCase()).not.toContain('mcp');
     expect(JSON.stringify(manifest)).not.toContain('run_remote_command');
     expect(JSON.stringify(manifest)).not.toContain('sshManager');
     expect(JSON.stringify(manifest)).not.toContain('jumpserverManager.sftp.goToPath');
     expect(JSON.stringify(manifest)).not.toContain('media/terminal-activity.svg');
+  });
+
+  it('contributes JumpServer MCP tools and install command', () => {
+    const tools = manifest.contributes.languageModelTools ?? [];
+    const toolNames = tools.map((tool: { name: string }) => tool.name);
+    expect(toolNames).toEqual(expect.arrayContaining([
+      'jumpserver_list_assets',
+      'jumpserver_get_terminal_context',
+      'jumpserver_send_terminal_input',
+      'jumpserver_run_terminal_command',
+      'jumpserver_sftp_list_directory',
+      'jumpserver_sftp_stat_path',
+      'jumpserver_sftp_read_file',
+      'jumpserver_sftp_write_file',
+      'jumpserver_sftp_create_file',
+      'jumpserver_sftp_create_directory',
+      'jumpserver_sftp_rename',
+      'jumpserver_sftp_delete',
+      'jumpserver_mysql_get_context',
+      'jumpserver_mysql_send_input',
+      'jumpserver_mysql_execute_sql'
+    ]));
+    expect(manifest.contributes.commands).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        command: 'jumpserverManager.installMcpConfig',
+        title: 'JumpServer: Install MCP Config'
+      })
+    ]));
   });
 
   it('uses icon-only actions in the JumpServer view title', () => {

@@ -19,6 +19,13 @@ const contextConfigs = [
   }),
   esbuild.context({
     ...common,
+    entryPoints: ['src/mcp/server.ts'],
+    outfile: 'dist/mcp-server.js',
+    platform: 'node',
+    format: 'cjs'
+  }),
+  esbuild.context({
+    ...common,
     entryPoints: ['webview/terminal/index.ts'],
     outfile: 'dist/webview/terminal.js',
     platform: 'browser',
