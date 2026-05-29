@@ -14,13 +14,13 @@ AT JumpServer Terminal is a VS Code extension for opening browser-style JumpServ
 - SFTP edit sessions with first-save sync confirmation and conflict prompts
 - xterm.js terminal UI
 - JumpServer KoKo WebSocket terminal sessions
+- MCP tools for JumpServer assets, terminal context, SFTP, SSH terminal commands, and MySQL CLI SQL execution
 
 ## Not Supported In This Version
 
 - Ahell backend integration
 - Direct SSH through ssh2
 - Editing files larger than 1 MB or binary files through the preview/edit workflow
-- MCP and Agent tools
 - MySQL GUI/workbench, Chen SQL editor, schema browser, or result grid
 - RDP, PostgreSQL, Redis, Oracle, SQL Server, Kubernetes, or other non-SSH/non-MySQL assets
 - SSO, MFA, captcha, private token, or access key login
@@ -34,6 +34,7 @@ AT JumpServer Terminal is a VS Code extension for opening browser-style JumpServ
 5. Run `JumpServer: Refresh Assets`.
 6. Click an SSH or MySQL asset to connect in a terminal.
 7. Connect to an SSH asset, then use the Files view for the terminal-backed SFTP session.
+8. Optional: run `JumpServer: Install MCP Config` to expose JumpServer tools to MCP-capable agents.
 
 ## SFTP Development Probe
 
