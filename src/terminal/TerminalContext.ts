@@ -1,11 +1,29 @@
 import * as vscode from 'vscode';
+import { TerminalOutputBuffer } from '../agent/TerminalOutputBuffer';
 import type { CachedJumpServerAsset } from '../config/schema';
+import { getAssetConnectionKind, type JumpServerConnectionKind } from '../jumpserver/connectionTypes';
 
 export interface ActiveTerminalContext {
   terminalId: string;
   asset: CachedJumpServerAsset;
   connected: boolean;
   write(data: string): void;
+  output?: TerminalOutputBuffer;
+}
+
+export interface TerminalContextSummary {
+  terminalId: string;
+  assetId: string;
+  assetName: string;
+  address: string;
+  connectionKind: JumpServerConnectionKind;
+  connected: boolean;
+}
+
+export interface TerminalContextSnapshot {
+  activeTerminal?: TerminalContextSummary;
+  connectedTerminals: TerminalContextSummary[];
+  knownTerminals: TerminalContextSummary[];
 }
 
 export class TerminalContextRegistry {
@@ -19,9 +37,14 @@ export class TerminalContextRegistry {
   readonly onDidRemoveContext = this.contextRemoved.event;
 
   setActive(context: ActiveTerminalContext): void {
-    this.contexts.set(context.terminalId, context);
-    this.active = context;
-    this.contextChanged.fire(context);
+    const existing = this.contexts.get(context.terminalId);
+    const next = {
+      ...context,
+      output: existing?.output ?? context.output ?? new TerminalOutputBuffer()
+    };
+    this.contexts.set(next.terminalId, next);
+    this.active = next;
+    this.contextChanged.fire(next);
     this.activeChanged.fire(this.active);
   }
 
@@ -31,6 +54,23 @@ export class TerminalContextRegistry {
 
   getContext(terminalId: string): ActiveTerminalContext | undefined {
     return this.contexts.get(terminalId);
+  }
+
+  appendOutput(terminalId: string, data: Buffer | string): void {
+    this.contexts.get(terminalId)?.output?.append(data);
+  }
+
+  getOutputBuffer(terminalId: string): TerminalOutputBuffer | undefined {
+    return this.contexts.get(terminalId)?.output;
+  }
+
+  getSnapshot(): TerminalContextSnapshot {
+    const knownTerminals = Array.from(this.contexts.values()).map(toSummary);
+    return {
+      activeTerminal: this.active ? toSummary(this.active) : undefined,
+      connectedTerminals: knownTerminals.filter((terminal) => terminal.connected),
+      knownTerminals
+    };
   }
 
   clearIfActive(terminalId: string): void {
@@ -65,4 +105,15 @@ export class TerminalContextRegistry {
       this.activeChanged.fire(this.active);
     }
   }
+}
+
+function toSummary(context: ActiveTerminalContext): TerminalContextSummary {
+  return {
+    terminalId: context.terminalId,
+    assetId: context.asset.id,
+    assetName: context.asset.name,
+    address: context.asset.address,
+    connectionKind: getAssetConnectionKind(context.asset),
+    connected: context.connected
+  };
 }

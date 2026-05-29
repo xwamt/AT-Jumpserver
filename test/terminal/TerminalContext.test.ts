@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { CachedJumpServerAsset } from '../../src/config/schema';
 import { TerminalContextRegistry, type ActiveTerminalContext } from '../../src/terminal/TerminalContext';
 
 function context(terminalId: string, assetId: string, connected = false): ActiveTerminalContext {
@@ -56,4 +57,54 @@ describe('TerminalContextRegistry', () => {
     expect(removed).toEqual(['terminal-2']);
     expect(registry.getContext('terminal-1')?.connected).toBe(true);
   });
+
+  it('returns active connected and known terminal snapshots', () => {
+    const registry = new TerminalContextRegistry();
+    registry.setActive({
+      terminalId: 'terminal-1',
+      asset: asset({ id: 'ssh-1', name: 'ssh-1', protocolNames: ['ssh'] }),
+      connected: true,
+      write: vi.fn()
+    });
+    registry.setActive({
+      terminalId: 'terminal-2',
+      asset: asset({ id: 'mysql-1', name: 'mysql-1', protocolNames: ['mysql'], type: 'mysql' }),
+      connected: false,
+      write: vi.fn()
+    });
+
+    expect(registry.getSnapshot()).toEqual({
+      activeTerminal: expect.objectContaining({ terminalId: 'terminal-2', assetId: 'mysql-1', connectionKind: 'mysql' }),
+      connectedTerminals: [expect.objectContaining({ terminalId: 'terminal-1', connectionKind: 'ssh' })],
+      knownTerminals: [
+        expect.objectContaining({ terminalId: 'terminal-1', connectionKind: 'ssh' }),
+        expect.objectContaining({ terminalId: 'terminal-2', connectionKind: 'mysql' })
+      ]
+    });
+  });
+
+  it('captures output for a terminal context', () => {
+    const registry = new TerminalContextRegistry();
+    registry.setActive(context('terminal-1', 'asset-1', true));
+
+    registry.appendOutput('terminal-1', Buffer.from('hello'));
+
+    expect(registry.getOutputBuffer('terminal-1')?.text()).toBe('hello');
+  });
 });
+
+function asset(overrides: Partial<CachedJumpServerAsset>): CachedJumpServerAsset {
+  return {
+    id: 'asset-1',
+    name: 'asset-1',
+    address: '',
+    platform: '',
+    category: '',
+    type: '',
+    zoneName: '',
+    nodePath: [],
+    protocolNames: [],
+    raw: {},
+    ...overrides
+  };
+}

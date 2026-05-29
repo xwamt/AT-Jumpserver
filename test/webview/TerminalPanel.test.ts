@@ -234,10 +234,11 @@ describe('TerminalPanel rendering helpers', () => {
 
   it('posts upstream bytes to the terminal webview', async () => {
     const panelHost = createPanel();
+    const registry = new TerminalContextRegistry();
     vi.mocked(vscode.window.createWebviewPanel).mockReturnValueOnce(panelHost.panel);
     const rawOutput = Buffer.from('\x1b[31mred\x1b[0m', 'utf8');
 
-    TerminalPanel.open(extensionContext(), asset(), jumpServerClient());
+    TerminalPanel.open(extensionContext(), asset(), jumpServerClient(), registry);
     await flushPromises();
     sessionEvents.at(-1)!.output(rawOutput);
 
@@ -245,6 +246,7 @@ describe('TerminalPanel rendering helpers', () => {
       type: 'outputBytes',
       payload: [...rawOutput]
     });
+    expect(registry.getOutputBuffer(registry.getActive()!.terminalId)?.text()).toBe(rawOutput.toString('utf8'));
   });
 
   it('prints detailed remote disconnect statuses into the terminal', async () => {

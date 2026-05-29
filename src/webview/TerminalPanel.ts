@@ -195,7 +195,9 @@ export class TerminalPanel {
     this.connected = false;
     this.terminalContext?.markDisconnected(this.terminalId);
     this.postStatus('Disconnected');
-    this.postWebviewMessage({ type: 'output', payload: formatTerminalNotice('Connection disconnected') });
+    const notice = formatTerminalNotice('Connection disconnected');
+    this.terminalContext?.appendOutput(this.terminalId, notice);
+    this.postWebviewMessage({ type: 'output', payload: notice });
   }
 
   private bind(): void {
@@ -229,7 +231,10 @@ export class TerminalPanel {
       connectionKind: this.connectionKind,
       client: this.jumpServerClient,
       events: {
-        output: (data) => this.postWebviewMessage({ type: 'outputBytes', payload: [...data] }),
+        output: (data) => {
+          this.terminalContext?.appendOutput(this.terminalId, data);
+          this.postWebviewMessage({ type: 'outputBytes', payload: [...data] });
+        },
         status: (message) => this.handleSessionStatus(message, generation),
         error: (error) => this.postStatus(formatError(error))
       }
@@ -245,7 +250,9 @@ export class TerminalPanel {
       this.connected = false;
       this.terminalContext?.markDisconnected(this.terminalId);
       const detail = message.slice('Disconnected'.length).trim();
-      this.postWebviewMessage({ type: 'output', payload: formatTerminalNotice(`Connection disconnected${detail ? ` ${detail}` : ''}`) });
+      const notice = formatTerminalNotice(`Connection disconnected${detail ? ` ${detail}` : ''}`);
+      this.terminalContext?.appendOutput(this.terminalId, notice);
+      this.postWebviewMessage({ type: 'output', payload: notice });
     }
     this.postStatus(message);
   }
