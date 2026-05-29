@@ -1,8 +1,12 @@
 import * as vscode from 'vscode';
+import { registerAgentTools } from './agent/AgentTools';
+import { JumpServerAgentToolService } from './agent/JumpServerAgentToolService';
 import { JumpServerConfigManager } from './config/JumpServerConfigManager';
 import type { CachedJumpServerAsset } from './config/schema';
 import { JumpServerClient } from './jumpserver/JumpServerClient';
 import { errorMessage } from './jumpserver/redaction';
+import { BridgeServer } from './mcp/BridgeServer';
+import { ensureIdeMcpConfig, resolveIdeMcpConfigTarget } from './mcp/McpConfigInstaller';
 import { assertTextFileEditable, DEFAULT_SFTP_EDIT_MAX_BYTES } from './sftp/SftpFileGuards';
 import { createVscodeSftpEditUi, SftpEditSessionManager } from './sftp/SftpEditSessionManager';
 import { JumpServerSftpManager } from './sftp/JumpServerSftpManager';
@@ -40,6 +44,19 @@ export function activate(context: vscode.ExtensionContext): void {
     sftp: sftpManager,
     ui: createVscodeSftpEditUi(sftpEditStatus)
   });
+  const agentService = new JumpServerAgentToolService({
+    configManager,
+    terminalContext,
+    sftp: sftpManager,
+    confirm: async (message) => {
+      const answer = await vscode.window.showWarningMessage(message, { modal: true }, 'Continue');
+      return answer === 'Continue';
+    }
+  });
+  const bridgeServer = new BridgeServer(agentService);
+  void bridgeServer.start().catch((error) => {
+    void showTimedNotification(`JumpServer MCP bridge failed to start: ${errorMessage(error)}`, 'warning');
+  });
   let disposed = false;
 
   const cleanup = {
@@ -50,6 +67,7 @@ export function activate(context: vscode.ExtensionContext): void {
       disposed = true;
       sftpManager.dispose();
       sftpEditManager.dispose();
+      void bridgeServer.dispose();
       TerminalPanel.disconnectAll();
       if (extensionCleanup === cleanup) {
         extensionCleanup = undefined;
@@ -84,6 +102,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.tabGroups.onDidChangeTabs((event) => {
       void sftpPreviewStore.deletePreviewFilesForClosedTabs(event.closed);
     }),
+    ...registerAgentTools(agentService),
     cleanup,
     vscode.commands.registerCommand('jumpserverManager.configure', () => {
       void JumpServerConfigPanel.open(context, configManager);
@@ -241,6 +260,25 @@ export function activate(context: vscode.ExtensionContext): void {
       await runCommand(async () => {
         await vscode.env.clipboard.writeText(item.entry.path);
         await showTimedNotification('Remote path copied.');
+      });
+    }),
+    vscode.commands.registerCommand('jumpserverManager.installMcpConfig', async () => {
+      await runCommand(async () => {
+        const target = resolveIdeMcpConfigTarget({
+          appName: vscode.env.appName,
+          appRoot: vscode.env.appRoot,
+          uriScheme: vscode.env.uriScheme,
+          extensionPath: context.extensionPath
+        });
+        const installed = await ensureIdeMcpConfig({
+          target,
+          mcpServerPath: vscode.Uri.joinPath(context.extensionUri, 'dist', 'mcp-server.js').fsPath
+        });
+        await showTimedNotification(
+          installed
+            ? `JumpServer MCP config installed: ${installed}`
+            : 'JumpServer MCP config is already installed.'
+        );
       });
     }),
     vscode.commands.registerCommand('jumpserverManager.disconnect', () => {

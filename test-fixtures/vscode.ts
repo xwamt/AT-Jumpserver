@@ -98,9 +98,16 @@ export const commands = {
 };
 
 export const env = {
+  appName: 'Visual Studio Code',
+  appRoot: '',
+  uriScheme: 'vscode',
   clipboard: {
     writeText: vi.fn()
   }
+};
+
+export const lm = {
+  registerTool: vi.fn(() => ({ dispose: vi.fn() }))
 };
 
 export const ProgressLocation = {

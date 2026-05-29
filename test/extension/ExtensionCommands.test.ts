@@ -56,6 +56,13 @@ vi.mock('../../src/utils/notifications', () => ({
   showTimedNotification: notificationsMock.showTimedNotification
 }));
 
+vi.mock('../../src/mcp/BridgeServer', () => ({
+  BridgeServer: vi.fn().mockImplementation(() => ({
+    start: vi.fn(async () => undefined),
+    dispose: vi.fn(async () => undefined)
+  }))
+}));
+
 import { activate, deactivate } from '../../src/extension';
 
 
@@ -180,6 +187,13 @@ describe('extension command wiring', () => {
     expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.sftp.rename', expect.any(Function));
     expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.sftp.newFolder', expect.any(Function));
     expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.sftp.copyPath', expect.any(Function));
+  });
+
+  it('registers JumpServer MCP install command', () => {
+    const context = contextWithSettings();
+    activate(context);
+
+    expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.installMcpConfig', expect.any(Function));
   });
 
   it('does not register a standalone SFTP open command from the asset list', () => {
