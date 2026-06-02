@@ -258,7 +258,6 @@ export async function defaultWebSocketFactory(url: string, options: WebSocket.Cl
 
 export class JumpServerClient {
   private authToken = '';
-  private currentUserId = '';
   private readonly cookies = new Map<string, string>();
   private readonly fetchImpl: FetchLike;
 
@@ -288,10 +287,7 @@ export class JumpServerClient {
 
   async listAssets(input: { limit: number; offset: number }): Promise<CachedJumpServerAsset[]> {
     await this.ensureAuthToken();
-    const userId = await this.getCurrentUserId();
-    const response = await this.request(`/api/v1/perms/users/${encodeURIComponent(userId)}/assets/?limit=${input.limit}&offset=${input.offset}`, {
-      headers: this.restHeaders()
-    });
+    const response = await this.authenticatedRequest(`/api/v1/perms/users/self/assets/?limit=${input.limit}&offset=${input.offset}`);
     const body = await response.json() as ListPage | unknown[];
     const treePaths = await this.safeListAssetTreePaths();
     const items = Array.isArray(body)
@@ -315,27 +311,21 @@ export class JumpServerClient {
 
   async listAssetNodes(): Promise<CachedJumpServerNode[]> {
     await this.ensureAuthToken();
-    const userId = await this.getCurrentUserId();
-    const response = await this.request(`/api/v1/perms/users/${encodeURIComponent(userId)}/nodes/all-with-assets/tree/`, {
-      headers: this.restHeaders()
-    });
+    const response = await this.authenticatedRequest('/api/v1/perms/users/self/nodes/all-with-assets/tree/');
     return extractAssetTreeNodes(await response.json());
   }
 
   async getAssetDetail(assetId: string): Promise<Record<string, any>> {
     await this.ensureAuthToken();
-    const userId = await this.getCurrentUserId();
-    const response = await this.request(`/api/v1/perms/users/${encodeURIComponent(userId)}/assets/${encodeURIComponent(assetId)}/`, {
-      headers: this.restHeaders()
-    });
+    const response = await this.authenticatedRequest(`/api/v1/perms/users/self/assets/${encodeURIComponent(assetId)}/`);
     return await response.json() as Record<string, any>;
   }
 
   async createConnectionToken(input: { assetId: string; account: JumpServerAccountRef; protocol: JumpServerConnectionProtocol }): Promise<{ id: string }> {
     await this.ensureAuthToken();
-    const response = await this.request('/api/v1/authentication/connection-token/', {
+    const response = await this.authenticatedRequest('/api/v1/authentication/connection-token/', {
       method: 'POST',
-      headers: { ...this.restHeaders(), 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json' },
       body: JSON.stringify(buildConnectionTokenPayload(input))
     });
     const body = await response.json() as { id?: unknown };
@@ -349,14 +339,39 @@ export class JumpServerClient {
 
   async getSmartEndpoint(tokenId: string): Promise<JumpServerEndpoint> {
     await this.ensureAuthToken();
-    const response = await this.request(`/api/v1/terminal/endpoints/smart/?protocol=https&token=${encodeURIComponent(tokenId)}`, {
-      headers: this.restHeaders()
-    });
+    const response = await this.authenticatedRequest(`/api/v1/terminal/endpoints/smart/?protocol=https&token=${encodeURIComponent(tokenId)}`);
     return await response.json() as JumpServerEndpoint;
   }
 
   async warmupKokoConnectPage(tokenId: string, timestamp = Date.now()): Promise<void> {
-    const loginPath = '/core/auth/login/?next=/koko/connect/';
+    const authenticated = await this.tryWarmupKokoConnectPage(tokenId, timestamp);
+    if (authenticated) {
+      return;
+    }
+    this.cookies.clear();
+    const retried = await this.tryWarmupKokoConnectPage(tokenId, timestamp);
+    if (!retried) {
+      throw new Error('KoKo web session is not authenticated.');
+    }
+  }
+
+  private async tryWarmupKokoConnectPage(tokenId: string, timestamp: number): Promise<boolean> {
+    const connectUrl = buildKokoConnectUrl(this.settings.baseUrl, tokenId, timestamp);
+    const initialConnectResponse = await this.request(connectUrl, {
+      headers: {
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        Cookie: this.cookieHeader()
+      },
+      redirect: 'manual'
+    }, false);
+    if (initialConnectResponse.ok) {
+      return true;
+    }
+    if (![301, 302, 303, 307, 308].includes(initialConnectResponse.status)) {
+      throw new Error(`KoKo connect warmup failed with HTTP ${initialConnectResponse.status}.`);
+    }
+
+    const loginPath = initialConnectResponse.headers.get('location') || '/core/auth/login/?next=/koko/connect/';
     const loginPage = await this.request(loginPath, {
       headers: { Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' }
     }, false);
@@ -373,7 +388,7 @@ export class JumpServerClient {
       method: 'POST',
       headers: {
         'content-type': 'application/x-www-form-urlencoded',
-        Referer: `${buildOrigin(this.settings.baseUrl)}${loginPath}`,
+        Referer: absoluteJumpServerUrl(this.settings.baseUrl, loginPath),
         Origin: buildOrigin(this.settings.baseUrl),
         Cookie: this.cookieHeader()
       },
@@ -391,7 +406,7 @@ export class JumpServerClient {
     }
 
     await this.request('/api/v1/users/profile/', { headers: { Accept: 'application/json' } }, false);
-    const connectResponse = await this.request(buildKokoConnectUrl(this.settings.baseUrl, tokenId, timestamp), {
+    const connectResponse = await this.request(connectUrl, {
       headers: {
         Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         Cookie: this.cookieHeader()
@@ -399,11 +414,12 @@ export class JumpServerClient {
       redirect: 'manual'
     }, false);
     if ([301, 302, 303, 307, 308].includes(connectResponse.status)) {
-      throw new Error('KoKo web session is not authenticated.');
+      return false;
     }
     if (!connectResponse.ok) {
       throw new Error(`KoKo connect warmup failed with HTTP ${connectResponse.status}.`);
     }
+    return true;
   }
 
   async openKokoWebSocket(input: {
@@ -486,20 +502,36 @@ export class JumpServerClient {
     };
   }
 
-  private async getCurrentUserId(): Promise<string> {
-    if (this.currentUserId) {
-      return this.currentUserId;
+  private async authenticatedRequest(pathOrUrl: string, init: RequestInit = {}): Promise<Response> {
+    await this.ensureAuthToken();
+    let response = await this.request(pathOrUrl, this.withRestHeaders(init), false);
+    if (!isUnauthorizedResponse(response)) {
+      if (!response.ok) {
+        throw new Error(`JumpServer request failed with HTTP ${response.status}.`);
+      }
+      return response;
     }
-    const response = await this.request('/api/v1/users/profile/', {
-      headers: this.restHeaders()
-    });
-    const body = await response.json() as Record<string, unknown>;
-    const id = stringField(body, ['id', 'pk', 'user_id', 'username']);
-    if (!id) {
-      throw new Error('JumpServer profile response did not include user id.');
+    this.resetRestAuth();
+    await this.ensureAuthToken();
+    response = await this.request(pathOrUrl, this.withRestHeaders(init), false);
+    if (!response.ok) {
+      throw new Error(`JumpServer request failed with HTTP ${response.status}.`);
     }
-    this.currentUserId = id;
-    return id;
+    return response;
+  }
+
+  private withRestHeaders(init: RequestInit): RequestInit {
+    return {
+      ...init,
+      headers: {
+        ...headersToRecord(init.headers),
+        ...this.restHeaders()
+      }
+    };
+  }
+
+  private resetRestAuth(): void {
+    this.authToken = '';
   }
 
   private async request(pathOrUrl: string, init: RequestInit = {}, requireOk = true): Promise<Response> {
@@ -530,6 +562,14 @@ export class JumpServerClient {
       }
     }
   }
+}
+
+function isUnauthorizedResponse(response: Response): boolean {
+  return response.status === 401 || response.status === 403;
+}
+
+function absoluteJumpServerUrl(baseUrl: string, pathOrUrl: string): string {
+  return pathOrUrl.startsWith('http') ? pathOrUrl : `${buildOrigin(baseUrl)}${pathOrUrl}`;
 }
 
 export function extractAssetTreePaths(payload: unknown): AssetPathMap {

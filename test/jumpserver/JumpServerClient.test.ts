@@ -213,7 +213,6 @@ describe('JumpServerClient REST flow', () => {
   it('authenticates and sends Bearer plus org headers when listing assets', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(jsonResponse({ token: 'bearer-1' }))
-      .mockResolvedValueOnce(jsonResponse({ id: 'user-1' }))
       .mockResolvedValueOnce(jsonResponse({ results: [{ id: 'asset-1', name: 'web-1' }], count: 1 }))
       .mockResolvedValueOnce(jsonResponse([]));
     const client = new JumpServerClient({
@@ -231,21 +230,14 @@ describe('JumpServerClient REST flow', () => {
       method: 'POST',
       body: JSON.stringify({ username: 'alan', password: 'secret' })
     }));
-    expect(fetchMock).toHaveBeenNthCalledWith(2, 'https://jumpserver.example.com/api/v1/users/profile/', expect.objectContaining({
+    expect(fetchMock).toHaveBeenNthCalledWith(2, 'https://jumpserver.example.com/api/v1/perms/users/self/assets/?limit=200&offset=0', expect.objectContaining({
       headers: expect.objectContaining({
         Authorization: 'Bearer bearer-1',
         Accept: 'application/json',
         'X-JMS-ORG': 'org-1'
       })
     }));
-    expect(fetchMock).toHaveBeenNthCalledWith(3, 'https://jumpserver.example.com/api/v1/perms/users/user-1/assets/?limit=200&offset=0', expect.objectContaining({
-      headers: expect.objectContaining({
-        Authorization: 'Bearer bearer-1',
-        Accept: 'application/json',
-        'X-JMS-ORG': 'org-1'
-      })
-    }));
-    expect(fetchMock).toHaveBeenNthCalledWith(4, 'https://jumpserver.example.com/api/v1/perms/users/user-1/nodes/all-with-assets/tree/', expect.objectContaining({
+    expect(fetchMock).toHaveBeenNthCalledWith(3, 'https://jumpserver.example.com/api/v1/perms/users/self/nodes/all-with-assets/tree/', expect.objectContaining({
       headers: expect.objectContaining({
         Authorization: 'Bearer bearer-1',
         Accept: 'application/json',
@@ -257,7 +249,6 @@ describe('JumpServerClient REST flow', () => {
   it('merges full JumpServer directory paths from the user asset tree endpoint', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(jsonResponse({ token: 'bearer-1' }))
-      .mockResolvedValueOnce(jsonResponse({ id: 'user-1' }))
       .mockResolvedValueOnce(jsonResponse({
         results: [{
           id: 'asset-1',
@@ -312,7 +303,6 @@ describe('JumpServerClient REST flow', () => {
   it('lists JumpServer nodes from the node tree endpoint before assets are synced', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(jsonResponse({ token: 'bearer-1' }))
-      .mockResolvedValueOnce(jsonResponse({ id: 'user-1' }))
       .mockResolvedValueOnce(jsonResponse([
         {
           id: 'node-default',
@@ -348,7 +338,7 @@ describe('JumpServerClient REST flow', () => {
 
     const nodes = await client.listAssetNodes();
 
-    expect(fetchMock).toHaveBeenNthCalledWith(3, 'https://jumpserver.example.com/api/v1/perms/users/user-1/nodes/all-with-assets/tree/', expect.any(Object));
+    expect(fetchMock).toHaveBeenNthCalledWith(2, 'https://jumpserver.example.com/api/v1/perms/users/self/nodes/all-with-assets/tree/', expect.any(Object));
 
     expect(nodes.map((node) => node.path)).toEqual([
       ['DEFAULT'],
@@ -357,6 +347,28 @@ describe('JumpServerClient REST flow', () => {
       ['DEFAULT', 'PROD', 'offline-prod', 'Middleware']
     ]);
     expect(nodes.at(-1)?.assetIds).toEqual(['asset-1']);
+  });
+
+  it('loads asset details from the current-user self endpoint so non-admin users can connect', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ token: 'bearer-1' }))
+      .mockResolvedValueOnce(jsonResponse({
+        id: 'asset-1',
+        name: 'web-1',
+        permed_protocols: [{ name: 'ssh' }],
+        permed_accounts: [{ id: 'account-1', username: 'root', has_secret: true }]
+      }));
+    const client = new JumpServerClient({
+      baseUrl: 'https://jumpserver.example.com',
+      orgId: '',
+      username: 'alan',
+      password: 'secret',
+      verifyTls: true,
+    }, fetchMock);
+
+    await expect(client.getAssetDetail('asset-1')).resolves.toMatchObject({ id: 'asset-1' });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(2, 'https://jumpserver.example.com/api/v1/perms/users/self/assets/asset-1/', expect.any(Object));
   });
 
   it('creates connection token and smart endpoint requests', async () => {
@@ -415,6 +427,7 @@ describe('JumpServerClient REST flow', () => {
 
   it('warms up KoKo web session with csrf and cookies', async () => {
     const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('', { status: 302, headers: { location: '/core/auth/login/?next=%2Fkoko%2Fconnect%2F%3Fdisableautohash%3Dfalse%26token%3Dtoken-1%26_%3D1000' } }))
       .mockResolvedValueOnce(textResponse('<input name="csrfmiddlewaretoken" value="csrf-1">', { headers: { 'set-cookie': 'csrftoken=abc; Path=/' } }))
       .mockResolvedValueOnce(new Response('', { status: 302, headers: { location: '/ui/', 'set-cookie': 'sessionid=session-1; Path=/' } }))
       .mockResolvedValueOnce(textResponse('ok'))
@@ -430,7 +443,10 @@ describe('JumpServerClient REST flow', () => {
 
     await client.warmupKokoConnectPage('token-1', 1000);
 
-    expect(fetchMock).toHaveBeenNthCalledWith(2, 'https://jumpserver.example.com/core/auth/login/?next=/koko/connect/', expect.objectContaining({
+    expect(fetchMock).toHaveBeenNthCalledWith(1, 'https://jumpserver.example.com/koko/connect/?disableautohash=false&token=token-1&_=1000', expect.objectContaining({
+      redirect: 'manual'
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(3, 'https://jumpserver.example.com/core/auth/login/?next=%2Fkoko%2Fconnect%2F%3Fdisableautohash%3Dfalse%26token%3Dtoken-1%26_%3D1000', expect.objectContaining({
       method: 'POST',
       headers: expect.objectContaining({
         Cookie: 'csrftoken=abc'
@@ -443,8 +459,67 @@ describe('JumpServerClient REST flow', () => {
     }));
   });
 
+  it('retries KoKo warmup once with a fresh web session when the connect page redirects to login', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('', { status: 302, headers: { location: '/core/auth/login/?next=%2Fkoko%2Fconnect%2F%3Fdisableautohash%3Dfalse%26token%3Dtoken-1%26_%3D1000' } }))
+      .mockResolvedValueOnce(textResponse('<input name="csrfmiddlewaretoken" value="csrf-1">', { headers: { 'set-cookie': 'csrftoken=abc; Path=/' } }))
+      .mockResolvedValueOnce(new Response('', { status: 302, headers: { location: '/ui/', 'set-cookie': 'sessionid=expired; Path=/' } }))
+      .mockResolvedValueOnce(textResponse('ok'))
+      .mockResolvedValueOnce(jsonResponse({ id: 'user-1' }))
+      .mockResolvedValueOnce(new Response('', { status: 302, headers: { location: '/core/auth/login/' } }))
+      .mockResolvedValueOnce(new Response('', { status: 302, headers: { location: '/core/auth/login/?next=%2Fkoko%2Fconnect%2F%3Fdisableautohash%3Dfalse%26token%3Dtoken-1%26_%3D1000' } }))
+      .mockResolvedValueOnce(textResponse('<input name="csrfmiddlewaretoken" value="csrf-2">', { headers: { 'set-cookie': 'csrftoken=def; Path=/' } }))
+      .mockResolvedValueOnce(new Response('', { status: 302, headers: { location: '/ui/', 'set-cookie': 'sessionid=session-2; Path=/' } }))
+      .mockResolvedValueOnce(textResponse('ok'))
+      .mockResolvedValueOnce(jsonResponse({ id: 'user-1' }))
+      .mockResolvedValueOnce(textResponse('<html>koko</html>'));
+    const client = new JumpServerClient({
+      baseUrl: 'https://jumpserver.example.com',
+      orgId: '',
+      username: 'alan',
+      password: 'secret',
+      verifyTls: true,
+    }, fetchMock);
+
+    await client.warmupKokoConnectPage('token-1', 1000);
+
+    expect(fetchMock).toHaveBeenNthCalledWith(8, 'https://jumpserver.example.com/core/auth/login/?next=%2Fkoko%2Fconnect%2F%3Fdisableautohash%3Dfalse%26token%3Dtoken-1%26_%3D1000', expect.objectContaining({
+      headers: expect.not.objectContaining({ Cookie: expect.stringContaining('sessionid=expired') })
+    }));
+    expect(fetchMock).toHaveBeenLastCalledWith('https://jumpserver.example.com/koko/connect/?disableautohash=false&token=token-1&_=1000', expect.objectContaining({
+      headers: expect.objectContaining({
+        Cookie: 'csrftoken=def; sessionid=session-2'
+      })
+    }));
+  });
+
+  it('refreshes an expired Bearer token once when a REST request returns unauthorized', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ token: 'bearer-old' }))
+      .mockResolvedValueOnce(jsonResponse({ detail: 'token expired' }, { status: 401 }))
+      .mockResolvedValueOnce(jsonResponse({ token: 'bearer-new' }))
+      .mockResolvedValueOnce(jsonResponse([]));
+    const client = new JumpServerClient({
+      baseUrl: 'https://jumpserver.example.com',
+      orgId: '',
+      username: 'alan',
+      password: 'secret',
+      verifyTls: true,
+    }, fetchMock);
+
+    await expect(client.listAssetNodes()).resolves.toEqual([]);
+
+    expect(fetchMock).toHaveBeenNthCalledWith(2, 'https://jumpserver.example.com/api/v1/perms/users/self/nodes/all-with-assets/tree/', expect.objectContaining({
+      headers: expect.objectContaining({ Authorization: 'Bearer bearer-old' })
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(4, 'https://jumpserver.example.com/api/v1/perms/users/self/nodes/all-with-assets/tree/', expect.objectContaining({
+      headers: expect.objectContaining({ Authorization: 'Bearer bearer-new' })
+    }));
+  });
+
   it('opens KoKo SFTP websocket with warmed cookies', async () => {
     const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('', { status: 302, headers: { location: '/core/auth/login/?next=%2Fkoko%2Fconnect%2F%3Fdisableautohash%3Dfalse%26token%3Dtoken-1' } }))
       .mockResolvedValueOnce(textResponse('<input name="csrfmiddlewaretoken" value="csrf-1">', { headers: { 'set-cookie': 'csrftoken=abc; Path=/' } }))
       .mockResolvedValueOnce(new Response('', { status: 302, headers: { location: '/ui/', 'set-cookie': 'sessionid=session-1; Path=/' } }))
       .mockResolvedValueOnce(textResponse('ok'))
