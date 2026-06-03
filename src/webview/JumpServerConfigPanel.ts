@@ -50,6 +50,7 @@ export class JumpServerConfigPanel {
         },
         message.payload.password || undefined
       );
+      await vscode.commands.executeCommand('jumpserverManager.refresh');
       await vscode.window.showInformationMessage('JumpServer configuration saved.');
       panel.dispose();
     });

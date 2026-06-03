@@ -116,4 +116,26 @@ describe('JumpServerConfigPanel', () => {
     expect(panelHost.panel.dispose).toHaveBeenCalled();
     expect(vscode.window.showInformationMessage).toHaveBeenCalledWith('JumpServer configuration saved.');
   });
+
+  it('syncs JumpServer assets every time configuration is saved', async () => {
+    const panelHost = createPanel();
+    vi.spyOn(vscode.window, 'createWebviewPanel').mockReturnValue(panelHost.panel);
+
+    await JumpServerConfigPanel.open(extensionContext(), {
+      getSettings: async () => undefined,
+      saveSettings: async () => undefined
+    });
+    await panelHost.fireMessage({
+      type: 'save',
+      payload: {
+        baseUrl: 'https://jumpserver.example.com/',
+        orgId: 'org-1',
+        username: 'alan',
+        password: 'super-secret',
+        verifyTls: true
+      }
+    });
+
+    expect(vscode.commands.executeCommand).toHaveBeenCalledWith('jumpserverManager.refresh');
+  });
 });
