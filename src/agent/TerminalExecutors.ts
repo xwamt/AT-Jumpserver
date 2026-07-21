@@ -48,8 +48,8 @@ export interface MysqlSqlExecutionResult {
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_TIMEOUT_MS = 120_000;
-const DEFAULT_MAX_OUTPUT_BYTES = 64_000;
-const MAX_OUTPUT_BYTES = 256_000;
+const DEFAULT_MAX_OUTPUT_BYTES = 128_000;
+const MAX_OUTPUT_BYTES = 512_000;
 
 export class ShellTerminalExecutor {
   constructor(private readonly options: { idFactory?: () => string } = {}) {}
@@ -66,7 +66,7 @@ export class ShellTerminalExecutor {
     const collection = input.output.collectUntil({ marker: endMarker, timeoutMs, maxOutputBytes });
     input.write(command);
     const collected = await collection;
-    const stdout = trimBeforeMarker(collected.output, startMarker);
+    const stdout = stripAnsi(trimBeforeMarker(collected.output, startMarker));
     return {
       terminalId: input.terminalId,
       assetId: input.assetId,
@@ -100,7 +100,7 @@ export class MysqlCliExecutor {
       assetId: input.assetId,
       assetName: input.assetName,
       sql: input.sql,
-      output: trimBeforeMarker(collected.output, startMarker),
+      output: stripAnsi(trimBeforeMarker(collected.output, startMarker)),
       durationMs: Date.now() - started,
       timedOut: collected.timedOut,
       truncated: collected.truncated
@@ -127,6 +127,13 @@ function ensureSemicolon(sql: string): string {
 function trimBeforeMarker(text: string, marker: string): string {
   const index = text.indexOf(marker);
   return index >= 0 ? text.slice(index + marker.length) : text;
+}
+
+function stripAnsi(text: string): string {
+  return text
+    .replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '')
+    .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g, '')
+    .replace(/\r/g, '');
 }
 
 function parseExitCode(text: string, marker: string): number | null {

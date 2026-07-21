@@ -40,4 +40,41 @@ describe('TerminalOutputBuffer', () => {
       timedOut: true
     });
   });
+
+  it('still detects end marker after maxOutputBytes truncation from noisy echo', async () => {
+    const buffer = new TerminalOutputBuffer(1024 * 1024);
+    const collection = buffer.collectUntil({
+      marker: '__JMS_SQL_END_abc__',
+      timeoutMs: 1000,
+      maxOutputBytes: 64
+    });
+
+    buffer.append(Buffer.from('x'.repeat(200)));
+    buffer.append(Buffer.from('\nresult rows\n| __JMS_SQL_END_abc__ |\n'));
+
+    await expect(collection).resolves.toMatchObject({
+      timedOut: false,
+      truncated: true,
+      terminator: expect.stringContaining('__JMS_SQL_END_abc__')
+    });
+  });
+
+  it('keeps the recent output near the end marker when truncated', async () => {
+    const buffer = new TerminalOutputBuffer(1024 * 1024);
+    const collection = buffer.collectUntil({
+      marker: 'END',
+      timeoutMs: 1000,
+      maxOutputBytes: 10
+    });
+
+    buffer.append(Buffer.from('0123456789ABCDEF'));
+    buffer.append(Buffer.from('END'));
+
+    const result = await collection;
+    expect(result.timedOut).toBe(false);
+    expect(result.truncated).toBe(true);
+    expect(Buffer.byteLength(result.output, 'utf8')).toBeLessThanOrEqual(10);
+    expect(result.output).toBe('6789ABCDEF');
+    expect(result.terminator).toContain('END');
+  });
 });

@@ -58,4 +58,31 @@ describe('TerminalExecutors', () => {
       truncated: false
     });
   });
+
+  it('detects MySQL end marker after noisy ANSI echo exceeds maxOutputBytes', async () => {
+    const output = new TerminalOutputBuffer(1024 * 1024);
+    const write = vi.fn(() => {
+      const noisyEcho = `${'\u001b[36mS\u001b[0m'.repeat(80)}long-sql-echo\n`;
+      output.append(noisyEcho);
+      output.append('| __JMS_SQL_START_abc__ |\n');
+      output.append(' A | c \n---\n 1 | 61 \n');
+      output.append('| __JMS_SQL_END_abc__ |\n');
+    });
+    const executor = new MysqlCliExecutor({ idFactory: () => 'abc' });
+
+    const result = await executor.execute({
+      terminalId: 'terminal-1',
+      assetId: 'mysql-1',
+      assetName: 'mysql-1',
+      sql: 'SELECT 1;',
+      write,
+      output,
+      timeoutMs: 1000,
+      maxOutputBytes: 64
+    });
+
+    expect(result.timedOut).toBe(false);
+    expect(result.output).toContain('61');
+    expect(result.output).not.toContain('\u001b[');
+  });
 });

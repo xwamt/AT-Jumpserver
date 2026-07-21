@@ -33,9 +33,17 @@ export class TerminalOutputBuffer {
   }
 
   collectUntil(options: CollectUntilOptions): Promise<CollectedTerminalOutput> {
-    let collected = Buffer.alloc(0);
+    // Keep a sliding window large enough for marker detection after noisy CLI echo.
+    // Prefer recent bytes because useful command/SQL results appear near the end marker.
+    let window = Buffer.alloc(0);
     let settled = false;
     let truncated = false;
+    const markerByteLength = Buffer.byteLength(options.marker, 'utf8');
+    const maxWindowBytes = Math.max(
+      options.maxOutputBytes * 4,
+      options.maxOutputBytes + 256 * 1024,
+      markerByteLength + 64 * 1024
+    );
 
     return new Promise((resolve) => {
       const finish = (timedOut: boolean): void => {
@@ -45,27 +53,37 @@ export class TerminalOutputBuffer {
         settled = true;
         clearTimeout(timeout);
         this.events.off('data', onData);
-        const text = collected.toString('utf8');
+
+        const text = window.toString('utf8');
         const index = text.indexOf(options.marker);
+        if (index >= 0) {
+          const before = Buffer.from(text.slice(0, index), 'utf8');
+          const outputBuffer = truncatePreferringTail(before, options.maxOutputBytes);
+          resolve({
+            output: outputBuffer.buffer.toString('utf8'),
+            terminator: text.slice(index),
+            timedOut,
+            truncated: truncated || outputBuffer.truncated
+          });
+          return;
+        }
+
+        const outputBuffer = truncatePreferringTail(window, options.maxOutputBytes);
         resolve({
-          output: index >= 0 ? text.slice(0, index) : text,
-          terminator: index >= 0 ? text.slice(index) : undefined,
+          output: outputBuffer.buffer.toString('utf8'),
+          terminator: undefined,
           timedOut,
-          truncated
+          truncated: truncated || outputBuffer.truncated
         });
       };
 
       const onData = (chunk: Buffer): void => {
-        if (collected.byteLength < options.maxOutputBytes) {
-          const remaining = options.maxOutputBytes - collected.byteLength;
-          collected = Buffer.concat([collected, chunk.subarray(0, remaining)]);
-          if (chunk.byteLength > remaining) {
-            truncated = true;
-          }
-        } else {
+        window = Buffer.concat([window, chunk]);
+        if (window.byteLength > maxWindowBytes) {
           truncated = true;
+          window = window.subarray(window.byteLength - maxWindowBytes);
         }
-        if (collected.toString('utf8').includes(options.marker)) {
+        if (window.toString('utf8').includes(options.marker)) {
           finish(false);
         }
       };
@@ -74,4 +92,17 @@ export class TerminalOutputBuffer {
       this.events.on('data', onData);
     });
   }
+}
+
+function truncatePreferringTail(
+  data: Buffer,
+  maxOutputBytes: number
+): { buffer: Buffer; truncated: boolean } {
+  if (data.byteLength <= maxOutputBytes) {
+    return { buffer: data, truncated: false };
+  }
+  return {
+    buffer: data.subarray(data.byteLength - maxOutputBytes),
+    truncated: true
+  };
 }
