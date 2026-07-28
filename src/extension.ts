@@ -10,7 +10,8 @@ import { syncPackagedHub } from './mcp/hubSync';
 import {
   ensureAtSeriesConfigForCurrentIde,
   uninstallAtSeriesConfigForCurrentIde
-} from './mcp/McpConfigInstaller';import { assertTextFileEditable, DEFAULT_SFTP_EDIT_MAX_BYTES } from './sftp/SftpFileGuards';
+} from './mcp/McpConfigInstaller';
+import { assertTextFileEditable, DEFAULT_SFTP_EDIT_MAX_BYTES } from './sftp/SftpFileGuards';
 import { createVscodeSftpEditUi, SftpEditSessionManager } from './sftp/SftpEditSessionManager';
 import { JumpServerSftpManager } from './sftp/JumpServerSftpManager';
 import { JumpServerSftpSession } from './sftp/JumpServerSftpSession';
@@ -63,6 +64,21 @@ export function activate(context: vscode.ExtensionContext): void {
       return answer === 'Continue';
     }
   });
+  const hubReady = syncPackagedHub(context)
+    .then((result) => {
+      console.log(
+        `JumpServer hub sync ok (updated=${result.updated}, active=${result.activeVersion})`
+      );
+      return result;
+    })
+    .catch((error) => {
+      console.error('JumpServer hub sync failed:', errorMessage(error));
+      void showTimedNotification(
+        `AT Series hub sync failed: ${errorMessage(error)}. MCP may not start until Repair succeeds.`,
+        'warning'
+      );
+      throw error;
+    });
   const bridgeServer = new BridgeServer({
     service: agentService,
     hostApp: detectHostApp(hostEnv),
@@ -74,6 +90,16 @@ export function activate(context: vscode.ExtensionContext): void {
   void bridgeServer.start().catch((error) => {
     void showTimedNotification(`JumpServer MCP bridge failed to start: ${errorMessage(error)}`, 'warning');
   });
+  void hubReady
+    .then(() =>
+      ensureAtSeriesConfigForCurrentIde({
+        ...hostEnv,
+        workspaceFolder: currentWorkspaceFolder()
+      })
+    )
+    .catch((error) => {
+      void showTimedNotification(`AT Series MCP config could not be updated: ${errorMessage(error)}`, 'warning');
+    });
   let disposed = false;
 
   const cleanup = {

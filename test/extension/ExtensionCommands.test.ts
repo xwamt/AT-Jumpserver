@@ -40,6 +40,17 @@ const sftpManagerMock = vi.hoisted(() => ({
   dispose: vi.fn()
 }));
 
+const bridgeServerMock = vi.hoisted(() => ({
+  start: vi.fn(async () => undefined),
+  dispose: vi.fn(async () => undefined)
+}));
+
+const mcpLifecycleMock = vi.hoisted(() => ({
+  syncPackagedHub: vi.fn(async () => ({ updated: false, activeVersion: '0.1.0' })),
+  ensureAtSeriesConfigForCurrentIde: vi.fn(async () => ({ updated: true })),
+  uninstallAtSeriesConfigForCurrentIde: vi.fn(async () => ({ removed: true }))
+}));
+
 vi.mock('../../src/jumpserver/JumpServerClient', () => ({
   JumpServerClient: jumpServerClientMock.JumpServerClient
 }));
@@ -58,9 +69,18 @@ vi.mock('../../src/utils/notifications', () => ({
 
 vi.mock('../../src/mcp/BridgeServer', () => ({
   BridgeServer: vi.fn().mockImplementation(() => ({
-    start: vi.fn(async () => undefined),
-    dispose: vi.fn(async () => undefined)
+    start: bridgeServerMock.start,
+    dispose: bridgeServerMock.dispose
   }))
+}));
+
+vi.mock('../../src/mcp/hubSync', () => ({
+  syncPackagedHub: mcpLifecycleMock.syncPackagedHub
+}));
+
+vi.mock('../../src/mcp/McpConfigInstaller', () => ({
+  ensureAtSeriesConfigForCurrentIde: mcpLifecycleMock.ensureAtSeriesConfigForCurrentIde,
+  uninstallAtSeriesConfigForCurrentIde: mcpLifecycleMock.uninstallAtSeriesConfigForCurrentIde
 }));
 
 import { activate, deactivate } from '../../src/extension';
@@ -150,6 +170,12 @@ beforeEach(() => {
     listAssets: jumpServerClientMock.listAssets,
     openKokoSftpWebSocket: jumpServerClientMock.openKokoSftpWebSocket
   }));
+  mcpLifecycleMock.syncPackagedHub.mockClear();
+  mcpLifecycleMock.ensureAtSeriesConfigForCurrentIde.mockClear();
+  mcpLifecycleMock.uninstallAtSeriesConfigForCurrentIde.mockClear();
+  bridgeServerMock.start.mockClear();
+  bridgeServerMock.dispose.mockClear();
+  delete (vscode.workspace as { workspaceFolders?: unknown }).workspaceFolders;
 
 });
 
@@ -195,6 +221,34 @@ describe('extension command wiring', () => {
 
     expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.installMcpConfig', expect.any(Function));
     expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.uninstallAtSeriesMcpConfig', expect.any(Function));
+  });
+
+  it('syncs packaged hub and ensures AT Series MCP config on activation', async () => {
+    const context = contextWithSettings();
+    activate(context);
+
+    expect(mcpLifecycleMock.syncPackagedHub).toHaveBeenCalledOnce();
+    await vi.waitFor(() => {
+      expect(mcpLifecycleMock.ensureAtSeriesConfigForCurrentIde).toHaveBeenCalledWith({
+        appName: vscode.env.appName,
+        appRoot: vscode.env.appRoot,
+        uriScheme: vscode.env.uriScheme,
+        extensionPath: 'extension-root',
+        workspaceFolder: undefined
+      });
+    });
+  });
+
+  it('dispose unpublishes bridge without uninstalling MCP config', async () => {
+    const context = contextWithSettings();
+    activate(context);
+
+    mcpLifecycleMock.uninstallAtSeriesConfigForCurrentIde.mockClear();
+    bridgeServerMock.dispose.mockClear();
+    deactivate();
+
+    expect(bridgeServerMock.dispose).toHaveBeenCalled();
+    expect(mcpLifecycleMock.uninstallAtSeriesConfigForCurrentIde).not.toHaveBeenCalled();
   });
 
   it('does not register a standalone SFTP open command from the asset list', () => {
