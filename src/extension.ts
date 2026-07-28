@@ -1,5 +1,4 @@
 import * as vscode from 'vscode';
-import { registerAgentTools } from './agent/AgentTools';
 import { JumpServerAgentToolService } from './agent/JumpServerAgentToolService';
 import { JumpServerConfigManager } from './config/JumpServerConfigManager';
 import type { CachedJumpServerAsset } from './config/schema';
@@ -7,8 +6,11 @@ import { JumpServerClient } from './jumpserver/JumpServerClient';
 import { errorMessage } from './jumpserver/redaction';
 import { BridgeServer } from './mcp/BridgeServer';
 import { detectHostApp } from './mcp/hostApp';
-import { ensureIdeMcpConfig, resolveIdeMcpConfigTarget } from './mcp/McpConfigInstaller';
-import { assertTextFileEditable, DEFAULT_SFTP_EDIT_MAX_BYTES } from './sftp/SftpFileGuards';
+import { syncPackagedHub } from './mcp/hubSync';
+import {
+  ensureAtSeriesConfigForCurrentIde,
+  uninstallAtSeriesConfigForCurrentIde
+} from './mcp/McpConfigInstaller';import { assertTextFileEditable, DEFAULT_SFTP_EDIT_MAX_BYTES } from './sftp/SftpFileGuards';
 import { createVscodeSftpEditUi, SftpEditSessionManager } from './sftp/SftpEditSessionManager';
 import { JumpServerSftpManager } from './sftp/JumpServerSftpManager';
 import { JumpServerSftpSession } from './sftp/JumpServerSftpSession';
@@ -45,6 +47,13 @@ export function activate(context: vscode.ExtensionContext): void {
     sftp: sftpManager,
     ui: createVscodeSftpEditUi(sftpEditStatus)
   });
+  const hostEnv = {
+    appName: vscode.env.appName,
+    appRoot: vscode.env.appRoot,
+    uriScheme: vscode.env.uriScheme,
+    extensionPath: context.extensionUri.fsPath
+  };
+  const currentWorkspaceFolder = () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   const agentService = new JumpServerAgentToolService({
     configManager,
     terminalContext,
@@ -56,12 +65,7 @@ export function activate(context: vscode.ExtensionContext): void {
   });
   const bridgeServer = new BridgeServer({
     service: agentService,
-    hostApp: detectHostApp({
-      appName: vscode.env.appName,
-      appRoot: vscode.env.appRoot,
-      uriScheme: vscode.env.uriScheme,
-      extensionPath: context.extensionUri.fsPath
-    }),
+    hostApp: detectHostApp(hostEnv),
     pluginVersion:
       typeof context.extension?.packageJSON?.version === 'string'
         ? context.extension.packageJSON.version
@@ -115,7 +119,6 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.tabGroups.onDidChangeTabs((event) => {
       void sftpPreviewStore.deletePreviewFilesForClosedTabs(event.closed);
     }),
-    ...registerAgentTools(agentService),
     cleanup,
     vscode.commands.registerCommand('jumpserverManager.configure', () => {
       void JumpServerConfigPanel.open(context, configManager);
@@ -277,20 +280,45 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand('jumpserverManager.installMcpConfig', async () => {
       await runCommand(async () => {
-        const target = resolveIdeMcpConfigTarget({
-          appName: vscode.env.appName,
-          appRoot: vscode.env.appRoot,
-          uriScheme: vscode.env.uriScheme,
-          extensionPath: context.extensionPath
+        try {
+          await syncPackagedHub(context);
+        } catch (error) {
+          await showTimedNotification(`AT Series hub sync failed: ${errorMessage(error)}`, 'error');
+          return;
+        }
+        const result = await ensureAtSeriesConfigForCurrentIde({
+          ...hostEnv,
+          workspaceFolder: currentWorkspaceFolder()
         });
-        const installed = await ensureIdeMcpConfig({
-          target,
-          mcpServerPath: vscode.Uri.joinPath(context.extensionUri, 'dist', 'mcp-server.js').fsPath
-        });
+        if (result) {
+          await showTimedNotification(
+            result.updated ? 'AT Series MCP config installed/repaired.' : 'AT Series MCP config is already up to date.'
+          );
+          return;
+        }
         await showTimedNotification(
-          installed
-            ? `JumpServer MCP config installed: ${installed}`
-            : 'JumpServer MCP config is already installed.'
+          'No supported IDE MCP config target was detected. Open a workspace to install Continue config.',
+          'warning'
+        );
+      });
+    }),
+    vscode.commands.registerCommand('jumpserverManager.uninstallAtSeriesMcpConfig', async () => {
+      await runCommand(async () => {
+        const result = await uninstallAtSeriesConfigForCurrentIde({
+          ...hostEnv,
+          workspaceFolder: currentWorkspaceFolder()
+        });
+        if (result?.removed) {
+          await showTimedNotification('AT Series MCP config uninstalled.');
+          return;
+        }
+        if (result) {
+          await showTimedNotification('AT Series MCP config was not present.');
+          return;
+        }
+        await showTimedNotification(
+          'No supported IDE MCP config target was detected. Open a workspace to uninstall Continue config.',
+          'warning'
         );
       });
     }),

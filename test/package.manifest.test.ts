@@ -29,6 +29,7 @@ describe('AT JumpServer Terminal manifest', () => {
       'jumpserverManager.sftp.newFolder',
       'jumpserverManager.sftp.copyPath',
       'jumpserverManager.installMcpConfig',
+      'jumpserverManager.uninstallAtSeriesMcpConfig',
       'jumpserverManager.disconnect',
       'jumpserverManager.reconnect'
     ]);
@@ -55,30 +56,17 @@ describe('AT JumpServer Terminal manifest', () => {
     expect(JSON.stringify(manifest)).not.toContain('media/terminal-activity.svg');
   });
 
-  it('contributes JumpServer MCP tools and install command', () => {
-    const tools = manifest.contributes.languageModelTools ?? [];
-    const toolNames = tools.map((tool: { name: string }) => tool.name);
-    expect(toolNames).toEqual(expect.arrayContaining([
-      'jumpserver_list_assets',
-      'jumpserver_get_terminal_context',
-      'jumpserver_send_terminal_input',
-      'jumpserver_run_terminal_command',
-      'jumpserver_sftp_list_directory',
-      'jumpserver_sftp_stat_path',
-      'jumpserver_sftp_read_file',
-      'jumpserver_sftp_write_file',
-      'jumpserver_sftp_create_file',
-      'jumpserver_sftp_create_directory',
-      'jumpserver_sftp_rename',
-      'jumpserver_sftp_delete',
-      'jumpserver_mysql_get_context',
-      'jumpserver_mysql_send_input',
-      'jumpserver_mysql_execute_sql'
-    ]));
+  it('contributes AT Series MCP install commands without language model tools', () => {
+    expect(manifest.contributes.languageModelTools).toBeUndefined();
+    expect(JSON.stringify(manifest.activationEvents ?? [])).not.toContain('onLanguageModelTool');
     expect(manifest.contributes.commands).toEqual(expect.arrayContaining([
       expect.objectContaining({
         command: 'jumpserverManager.installMcpConfig',
-        title: 'JumpServer: Install MCP Config'
+        title: 'Install/Repair AT Series MCP Config'
+      }),
+      expect.objectContaining({
+        command: 'jumpserverManager.uninstallAtSeriesMcpConfig',
+        title: 'Uninstall AT Series MCP Config'
       })
     ]));
   });

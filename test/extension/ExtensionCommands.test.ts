@@ -189,11 +189,12 @@ describe('extension command wiring', () => {
     expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.sftp.copyPath', expect.any(Function));
   });
 
-  it('registers JumpServer MCP install command', () => {
+  it('registers JumpServer MCP install and uninstall commands', () => {
     const context = contextWithSettings();
     activate(context);
 
     expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.installMcpConfig', expect.any(Function));
+    expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.uninstallAtSeriesMcpConfig', expect.any(Function));
   });
 
   it('does not register a standalone SFTP open command from the asset list', () => {
