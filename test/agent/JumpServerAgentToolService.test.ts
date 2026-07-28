@@ -70,6 +70,79 @@ describe('JumpServerAgentToolService', () => {
     });
     expect(sftp.listDirectory).toHaveBeenCalledWith('/');
   });
+
+  it('requires confirmation before sendTerminalInput', async () => {
+    const write = vi.fn();
+    const confirm = vi.fn(async () => false);
+    const terminalContext = new TerminalContextRegistry();
+    terminalContext.setActive({
+      terminalId: 'terminal-1',
+      asset: asset({ id: 'ssh-1', name: 'web-1', protocolNames: ['ssh'] }),
+      connected: true,
+      write
+    });
+    const service = serviceWith({ confirm, terminalContext });
+
+    await expect(service.sendTerminalInput({ input: 'rm -rf /\n' })).rejects.toThrow(
+      /cancelled/i
+    );
+    expect(confirm).toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it('writes terminal input after confirmation', async () => {
+    const write = vi.fn();
+    const confirm = vi.fn(async () => true);
+    const terminalContext = new TerminalContextRegistry();
+    terminalContext.setActive({
+      terminalId: 'terminal-1',
+      asset: asset({ id: 'ssh-1', name: 'web-1', protocolNames: ['ssh'] }),
+      connected: true,
+      write
+    });
+    const service = serviceWith({ confirm, terminalContext });
+
+    await expect(service.sendTerminalInput({ input: 'whoami\n' })).resolves.toMatchObject({
+      terminalId: 'terminal-1',
+      bytesWritten: expect.any(Number)
+    });
+    expect(write).toHaveBeenCalledWith('whoami\n');
+  });
+
+  it('requires confirmation before mysqlSendInput', async () => {
+    const write = vi.fn();
+    const confirm = vi.fn(async () => false);
+    const terminalContext = new TerminalContextRegistry();
+    terminalContext.setActive({
+      terminalId: 'mysql-terminal',
+      asset: asset({ id: 'mysql-1', name: 'mysql-1', type: 'mysql', platform: 'MySQL', protocolNames: ['mysql'] }),
+      connected: true,
+      write
+    });
+    const service = serviceWith({ confirm, terminalContext });
+    await expect(service.mysqlSendInput({ input: 'DROP TABLE t;\n' })).rejects.toThrow(/cancelled/i);
+    expect(confirm).toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it('writes mysql input after confirmation', async () => {
+    const write = vi.fn();
+    const confirm = vi.fn(async () => true);
+    const terminalContext = new TerminalContextRegistry();
+    terminalContext.setActive({
+      terminalId: 'mysql-terminal',
+      asset: asset({ id: 'mysql-1', name: 'mysql-1', type: 'mysql', platform: 'MySQL', protocolNames: ['mysql'] }),
+      connected: true,
+      write
+    });
+    const service = serviceWith({ confirm, terminalContext });
+
+    await expect(service.mysqlSendInput({ input: 'SELECT 1;\n' })).resolves.toMatchObject({
+      terminalId: 'mysql-terminal',
+      bytesWritten: expect.any(Number)
+    });
+    expect(write).toHaveBeenCalledWith('SELECT 1;\n');
+  });
 });
 
 function serviceWith(overrides: Record<string, unknown>) {

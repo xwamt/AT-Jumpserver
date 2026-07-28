@@ -39,6 +39,9 @@ export class JumpServerAgentToolService {
   async sendTerminalInput(input: { terminalId?: string; input?: string }) {
     const target = this.resolveTerminal(input.terminalId);
     const data = input.input ?? '';
+    await this.requireConfirm(
+      `Send input to JumpServer terminal on ${target.asset.name}?\n\n${previewInput(data)}`
+    );
     target.write(data);
     return { terminalId: target.terminalId, bytesWritten: Buffer.byteLength(data, 'utf8') };
   }
@@ -162,6 +165,9 @@ export class JumpServerAgentToolService {
       throw new Error('A connected JumpServer MySQL terminal is required.');
     }
     const data = input.input ?? '';
+    await this.requireConfirm(
+      `Send input to JumpServer MySQL terminal on ${target.asset.name}?\n\n${previewInput(data)}`
+    );
     target.write(data);
     return { terminalId: target.terminalId, bytesWritten: Buffer.byteLength(data, 'utf8') };
   }
@@ -239,4 +245,11 @@ function clampReadBytes(value: number | undefined): number {
     return 64 * 1024;
   }
   return Math.min(value, 256 * 1024);
+}
+
+function previewInput(value: string, maxChars = 400): string {
+  if (value.length <= maxChars) {
+    return value;
+  }
+  return `${value.slice(0, maxChars)}\n…(truncated)`;
 }
