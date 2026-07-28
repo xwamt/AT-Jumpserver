@@ -184,6 +184,16 @@ export function activate(context: vscode.ExtensionContext): void {
         await tryOpenSftpFiles(sftpManager, sftpTreeProvider, item.asset, terminal.getTerminalId(), false);
       });
     }),
+    vscode.commands.registerCommand('jumpserverManager.copyHostIp', async (item?: AssetTreeItem) => {
+      const address = item?.asset?.address;
+      if (!address) {
+        await vscode.window.showWarningMessage('Host IP is not available.');
+        return;
+      }
+      await runCommand(async () => {
+        await vscode.env.clipboard.writeText(address);
+      });
+    }),
     vscode.commands.registerCommand('jumpserverManager.sftp.refresh', async () => {
       await runCommand(async () => {
         if (!await ensureSftpAssetOpen(sftpManager)) {

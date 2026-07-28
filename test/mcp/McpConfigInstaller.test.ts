@@ -54,7 +54,7 @@ describe('McpConfigInstaller', () => {
     const result = await ensureAtSeriesConfigForCurrentIde({
       appName: 'Cursor',
       uriScheme: 'cursor',
-      extensionPath: join(home, '.cursor', 'extensions', 'local.at-jumpserver-terminal-0.1.3'),
+      extensionPath: join(home, '.cursor', 'extensions', 'local.at-jumpserver-terminal-0.1.5'),
       home
     });
 
@@ -81,7 +81,7 @@ describe('McpConfigInstaller', () => {
     await ensureAtSeriesConfigForCurrentIde({
       appName: 'Cursor',
       uriScheme: 'cursor',
-      extensionPath: join(home, '.cursor', 'extensions', 'local.at-jumpserver-terminal-0.1.3'),
+      extensionPath: join(home, '.cursor', 'extensions', 'local.at-jumpserver-terminal-0.1.5'),
       home
     });
 
@@ -132,7 +132,7 @@ describe('McpConfigInstaller', () => {
     const result = await uninstallAtSeriesConfigForCurrentIde({
       appName: 'Cursor',
       uriScheme: 'cursor',
-      extensionPath: join(home, '.cursor', 'extensions', 'local.at-jumpserver-terminal-0.1.3'),
+      extensionPath: join(home, '.cursor', 'extensions', 'local.at-jumpserver-terminal-0.1.5'),
       home
     });
 

@@ -1,6 +1,8 @@
 # AT JumpServer Terminal
 
-AT JumpServer Terminal is a VS Code extension for opening browser-style JumpServer SSH and MySQL terminal sessions from the editor.
+AT JumpServer Terminal is a VS Code / Cursor extension for opening browser-style JumpServer SSH and MySQL terminal sessions from the editor.
+
+**Current version: 0.1.5**
 
 ## Supported In This Version
 
@@ -12,9 +14,10 @@ AT JumpServer Terminal is a VS Code extension for opening browser-style JumpServ
 - SFTP upload, download, new folder, rename, delete, copy path, and directory navigation through JumpServer KoKo
 - SFTP preview for small text files
 - SFTP edit sessions with first-save sync confirmation and conflict prompts
+- Copy Host IP from the asset list context menu
 - xterm.js terminal UI
 - JumpServer KoKo WebSocket terminal sessions
-- MCP tools for JumpServer assets, terminal context, SFTP, SSH terminal commands, and MySQL CLI SQL execution
+- MCP tools for JumpServer assets, terminal context, SFTP, SSH terminal commands, and MySQL CLI SQL execution (via AT Series hub)
 
 ## Not Supported In This Version
 
@@ -36,15 +39,27 @@ AT JumpServer Terminal is a VS Code extension for opening browser-style JumpServ
 7. Connect to an SSH asset, then use the Files view for the terminal-backed SFTP session.
 8. Optional: run `Install/Repair AT Series MCP Config` to expose JumpServer tools to MCP-capable agents.
 
-## AT Series MCP
+## AT Series MCP (split-out hub)
 
-JumpServer tools are exposed through the shared **AT Series** MCP hub, not a per-plugin `mcp-server.js` entry.
+Starting with the AT Series Hub adaptation, **the MCP server is no longer shipped as a per-plugin `mcp-server.js` / Language Model Tools entry inside this extension**.
 
-- **IDE entry:** one MCP server named `AT Series` → `node ~/.at-series/mcp/hub.js`
-- **Hub package:** [`@at-series/mcp-hub`](https://www.npmjs.com/package/@at-series/mcp-hub) (Protocol v1)
-- **Extension role:** Bridge on `127.0.0.1` (`GET /health`, `GET /tools`, `POST /invoke`), registry publish under `~/.at-series/bridges/<hostApp>/`, packaged `dist/hub.js` sync on activate
-- **Install/repair:** command palette `Install/Repair AT Series MCP Config` (Kiro, Cursor, Continue)
-- **Credentials:** stay in the extension host; the hub and MCP client never read JumpServer passwords or VS Code secret storage
+The shared MCP runtime was extracted into the npm package **[`@at-series/mcp-hub`](https://www.npmjs.com/package/@at-series/mcp-hub)** and is introduced as a normal dependency:
+
+```json
+"dependencies": {
+  "@at-series/mcp-hub": "^0.1.1"
+}
+```
+
+How it fits together:
+
+| Piece | Role |
+|-------|------|
+| `@at-series/mcp-hub` (npm) | Shared hub process Protocol v1 — one IDE MCP server named **AT Series** → `node ~/.at-series/mcp/hub.js` |
+| This extension | Local Bridge on `127.0.0.1` (`GET /health`, `GET /tools`, `POST /invoke`), registry publish under `~/.at-series/bridges/<hostApp>/`, syncs packaged `dist/hub.js` on activate |
+| IDE config | `Install/Repair AT Series MCP Config` (Kiro, Cursor, Continue) |
+
+Credentials stay in the extension host; the hub and MCP client never read JumpServer passwords or VS Code secret storage.
 
 Architecture: [ADR-001](docs/decisions/ADR-001-at-series-mcp-hub.md). Sibling reference: [at-terminal-series hub adaptation](https://github.com/xwamt/At-Terminal/blob/main/docs/decisions/ADR-005-at-series-hub-adaptation.md).
 
@@ -95,3 +110,5 @@ npm run build
 - Disconnect and reconnect.
 - Verify bad password and non-SSH assets show clear errors.
 - Verify unsupported database assets show clear errors and do not open a GUI.
+- Verify MCP `jumpserver_run_terminal_command` returns command stdout (not only echoes) after confirmation.
+- Verify asset context menu includes **Copy Host IP**.

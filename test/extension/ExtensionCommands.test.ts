@@ -196,7 +196,38 @@ describe('extension command wiring', () => {
     expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.validate', expect.any(Function));
     expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.refresh', expect.any(Function));
     expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.connect', expect.any(Function));
+    expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.copyHostIp', expect.any(Function));
     expect(vscode.commands.registerCommand).not.toHaveBeenCalledWith('sshManager.connect', expect.any(Function));
+  });
+
+  it('copies the selected asset host IP', async () => {
+    activate(contextWithSettings());
+    const copyHostIp = registeredCommand('jumpserverManager.copyHostIp');
+
+    await copyHostIp({ asset: { address: '10.0.0.11' } });
+
+    expect(vscode.env.clipboard.writeText).toHaveBeenCalledWith('10.0.0.11');
+    expect(vscode.window.showWarningMessage).not.toHaveBeenCalled();
+  });
+
+  it('warns without changing the clipboard when the asset host IP is empty', async () => {
+    activate(contextWithSettings());
+    const copyHostIp = registeredCommand('jumpserverManager.copyHostIp');
+
+    await copyHostIp({ asset: { address: '' } });
+
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledWith('Host IP is not available.');
+    expect(vscode.env.clipboard.writeText).not.toHaveBeenCalled();
+  });
+
+  it('warns without changing the clipboard when the command argument is invalid', async () => {
+    activate(contextWithSettings());
+    const copyHostIp = registeredCommand('jumpserverManager.copyHostIp');
+
+    await copyHostIp(undefined);
+
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledWith('Host IP is not available.');
+    expect(vscode.env.clipboard.writeText).not.toHaveBeenCalled();
   });
 
   it('registers JumpServer SFTP file commands', () => {

@@ -21,10 +21,24 @@ export interface JumpServerAgentToolServiceDependencies {
 export class JumpServerAgentToolService {
   private readonly shellExecutor: ShellTerminalExecutor;
   private readonly mysqlExecutor: MysqlCliExecutor;
+  private readonly terminalQueues = new Map<string, Promise<unknown>>();
 
   constructor(private readonly dependencies: JumpServerAgentToolServiceDependencies) {
     this.shellExecutor = dependencies.shellExecutor ?? new ShellTerminalExecutor();
     this.mysqlExecutor = dependencies.mysqlExecutor ?? new MysqlCliExecutor();
+  }
+
+  private enqueueTerminal<T>(terminalId: string, task: () => Promise<T>): Promise<T> {
+    const previous = this.terminalQueues.get(terminalId) ?? Promise.resolve();
+    const next = previous.catch(() => undefined).then(task);
+    this.terminalQueues.set(
+      terminalId,
+      next.then(
+        () => undefined,
+        () => undefined
+      )
+    );
+    return next;
   }
 
   async listAssets() {
@@ -64,17 +78,22 @@ export class JumpServerAgentToolService {
     if (!await this.dependencies.confirm(`Run JumpServer SSH command on ${target.asset.name}?\n\n${command}`)) {
       throw new Error('Terminal command was cancelled.');
     }
-    const output = this.requireOutput(target.terminalId);
-    return await this.shellExecutor.execute({
-      terminalId: target.terminalId,
-      assetId: target.asset.id,
-      assetName: target.asset.name,
-      command,
-      cwd: input.cwd,
-      timeoutMs: input.timeoutMs,
-      maxOutputBytes: input.maxOutputBytes,
-      write: target.write,
-      output
+    // Serialize per terminal so parallel MCP tool calls cannot interleave wrappers
+    // on the same PTY (which looks like "one confirm ran three commands").
+    return await this.enqueueTerminal(target.terminalId, async () => {
+      const liveTarget = this.resolveTerminal(target.terminalId);
+      const output = this.requireOutput(liveTarget.terminalId);
+      return await this.shellExecutor.execute({
+        terminalId: liveTarget.terminalId,
+        assetId: liveTarget.asset.id,
+        assetName: liveTarget.asset.name,
+        command,
+        cwd: input.cwd,
+        timeoutMs: input.timeoutMs,
+        maxOutputBytes: input.maxOutputBytes,
+        write: liveTarget.write,
+        output
+      });
     });
   }
 
@@ -187,16 +206,19 @@ export class JumpServerAgentToolService {
         throw new Error('MySQL SQL execution was cancelled.');
       }
     }
-    const output = this.requireOutput(target.terminalId);
-    return await this.mysqlExecutor.execute({
-      terminalId: target.terminalId,
-      assetId: target.asset.id,
-      assetName: target.asset.name,
-      sql,
-      timeoutMs: input.timeoutMs,
-      maxOutputBytes: input.maxOutputBytes,
-      write: target.write,
-      output
+    return await this.enqueueTerminal(target.terminalId, async () => {
+      const liveTarget = this.resolveTerminal(target.terminalId);
+      const output = this.requireOutput(liveTarget.terminalId);
+      return await this.mysqlExecutor.execute({
+        terminalId: liveTarget.terminalId,
+        assetId: liveTarget.asset.id,
+        assetName: liveTarget.asset.name,
+        sql,
+        timeoutMs: input.timeoutMs,
+        maxOutputBytes: input.maxOutputBytes,
+        write: liveTarget.write,
+        output
+      });
     });
   }
 

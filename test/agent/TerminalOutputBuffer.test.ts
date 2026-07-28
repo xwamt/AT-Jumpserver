@@ -77,4 +77,24 @@ describe('TerminalOutputBuffer', () => {
     expect(result.output).toBe('6789ABCDEF');
     expect(result.terminator).toContain('END');
   });
+
+  it('ignores marker text until completePattern matches', async () => {
+    const buffer = new TerminalOutputBuffer(1024);
+    const collection = buffer.collectUntil({
+      marker: '__JMS_CMD_END_abc__',
+      completePattern: /__JMS_CMD_END_abc__\d+/,
+      timeoutMs: 1000,
+      maxOutputBytes: 1024
+    });
+
+    buffer.append(Buffer.from("printf '\\n__JMS_CMD_END_abc__%s\\n' \"$?\"\n"));
+    buffer.append(Buffer.from('command output\n'));
+    buffer.append(Buffer.from('__JMS_CMD_END_abc__0\n'));
+
+    await expect(collection).resolves.toMatchObject({
+      timedOut: false,
+      output: expect.stringContaining('command output'),
+      terminator: expect.stringMatching(/^__JMS_CMD_END_abc__0/)
+    });
+  });
 });

@@ -27,7 +27,7 @@ describe('syncPackagedHubAt', () => {
 
     const result = await syncPackagedHubAt(
       bundlePath,
-      { hubVersion: '0.1.0', pluginVersion: '0.1.3' },
+      { hubVersion: '0.1.0', pluginVersion: '0.1.5' },
       home
     );
 
@@ -38,7 +38,7 @@ describe('syncPackagedHubAt', () => {
     expect(meta).toMatchObject({
       version: '0.1.0',
       writtenByPluginId: AT_JUMPSERVER_PLUGIN_ID,
-      writtenByPluginVersion: '0.1.3'
+      writtenByPluginVersion: '0.1.5'
     });
   });
 
@@ -55,7 +55,7 @@ describe('syncPackagedHubAt', () => {
     const sidecar = JSON.parse(await readFile(join(bundleDir, 'hub-version.json'), 'utf8'));
     const result = await syncPackagedHubAt(
       bundlePath,
-      { hubVersion: sidecar.version, pluginVersion: '0.1.3' },
+      { hubVersion: sidecar.version, pluginVersion: '0.1.5' },
       home
     );
     expect(result.activeVersion).toBe('0.1.0');
@@ -72,7 +72,7 @@ describe('syncPackagedHubAt', () => {
         version: '0.2.0',
         protocolVersion: 1,
         writtenByPluginId: AT_JUMPSERVER_PLUGIN_ID,
-        writtenByPluginVersion: '0.1.3',
+        writtenByPluginVersion: '0.1.5',
         writtenAt: 1,
         bundleSha256: 'abc'
       }),
@@ -84,7 +84,7 @@ describe('syncPackagedHubAt', () => {
 
     const result = await syncPackagedHubAt(
       bundlePath,
-      { hubVersion: '0.1.0', pluginVersion: '0.1.3' },
+      { hubVersion: '0.1.0', pluginVersion: '0.1.5' },
       home
     );
 

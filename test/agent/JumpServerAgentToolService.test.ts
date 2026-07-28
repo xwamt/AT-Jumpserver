@@ -143,6 +143,45 @@ describe('JumpServerAgentToolService', () => {
     });
     expect(write).toHaveBeenCalledWith('SELECT 1;\n');
   });
+
+  it('runs one shell wrapper write per confirmed command and serializes parallel calls', async () => {
+    let writeCount = 0;
+    const terminalContext = new TerminalContextRegistry();
+    const write = vi.fn((data: string) => {
+      writeCount += 1;
+      const call = writeCount;
+      const idMatch = data.match(/'([0-9a-f]{32})'/);
+      const id = idMatch?.[1] ?? `id${call}`;
+      terminalContext.getOutputBuffer('terminal-1')?.append(`prompt$ ${data}`);
+      setTimeout(() => {
+        terminalContext.getOutputBuffer('terminal-1')?.append(
+          `__JMS_CMD_START_${id}__\nresult-${call}\n__JMS_CMD_END_${id}__0\n`
+        );
+      }, call === 1 ? 40 : 10);
+    });
+    const confirm = vi.fn(async () => true);
+    terminalContext.setActive({
+      terminalId: 'terminal-1',
+      asset: asset({ id: 'ssh-1', name: 'uat-service', protocolNames: ['ssh'] }),
+      connected: true,
+      write
+    });
+    const service = serviceWith({ confirm, terminalContext });
+
+    const [first, second] = await Promise.all([
+      service.runTerminalCommand({ command: 'echo one' }),
+      service.runTerminalCommand({ command: 'echo two' })
+    ]);
+
+    expect(confirm).toHaveBeenCalledTimes(2);
+    expect(write).toHaveBeenCalledTimes(2);
+    expect(write.mock.calls[0][0].trimEnd().includes('\n')).toBe(false);
+    expect(write.mock.calls[1][0].trimEnd().includes('\n')).toBe(false);
+    expect(first.stdout).toContain('result-1');
+    expect(second.stdout).toContain('result-2');
+    expect(first.exitCode).toBe(0);
+    expect(second.exitCode).toBe(0);
+  });
 });
 
 function serviceWith(overrides: Record<string, unknown>) {

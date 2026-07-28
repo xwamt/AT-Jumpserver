@@ -1,12 +1,26 @@
 import { describe, expect, it, vi } from 'vitest';
 import { TerminalOutputBuffer } from '../../src/agent/TerminalOutputBuffer';
-import { MysqlCliExecutor, ShellTerminalExecutor } from '../../src/agent/TerminalExecutors';
+import { MysqlCliExecutor, ShellTerminalExecutor, wrapShellCommand } from '../../src/agent/TerminalExecutors';
 
 describe('TerminalExecutors', () => {
+  it('wraps shell commands as a single prompt line', () => {
+    const wrapped = wrapShellCommand('# 目的：查看内存\nfree -h', undefined, 'abc');
+    expect(wrapped.endsWith('\n')).toBe(true);
+    expect(wrapped.trimEnd().includes('\n')).toBe(false);
+    expect(wrapped).toContain("eval 'free -h'");
+    expect(wrapped).not.toContain('目的');
+    expect(wrapped).not.toContain('__JMS_CMD_START_abc__');
+    expect(wrapped).not.toContain('__JMS_CMD_END_abc__');
+  });
+
   it('runs shell commands with marker-bounded output', async () => {
     const output = new TerminalOutputBuffer();
     const write = vi.fn((input: string) => {
-      expect(input).toContain('__JMS_CMD_START_');
+      expect(input).toContain("__JMS_CMD_START_'");
+      expect(input).toContain("'abc'");
+      expect(input).not.toContain('__JMS_CMD_START_abc__');
+      expect(input).not.toContain('__JMS_CMD_END_abc__');
+      expect(input.trimEnd().includes('\n')).toBe(false);
       output.append('ignored echo\n');
       output.append('__JMS_CMD_START_abc__\nhello\n__JMS_CMD_END_abc__0\n');
     });
@@ -30,10 +44,84 @@ describe('TerminalExecutors', () => {
     });
   });
 
+  it('does not finish early when terminal echo contains end-marker text without start marker', async () => {
+    const output = new TerminalOutputBuffer();
+    const write = vi.fn((input: string) => {
+      // Simulate JumpServer PTY echo of the single wrapper line first.
+      output.append(`ubuntu@host:~$ ${input}`);
+      queueMicrotask(() => {
+        output.append('__JMS_CMD_START_abc__\n');
+        output.append('              total        used        free\n');
+        output.append('Mem:           30Gi        28Gi       435Mi\n');
+        output.append('__JMS_CMD_END_abc__0\n');
+      });
+    });
+    const executor = new ShellTerminalExecutor({ idFactory: () => 'abc' });
+
+    const result = await executor.execute({
+      terminalId: 'terminal-1',
+      assetId: 'asset-1',
+      assetName: 'uat-service',
+      command: 'free -h',
+      write,
+      output,
+      timeoutMs: 1000,
+      maxOutputBytes: 4096
+    });
+
+    expect(result.timedOut).toBe(false);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain('30Gi');
+    expect(result.stdout).toContain('435Mi');
+    expect(write).toHaveBeenCalledTimes(1);
+  });
+
+  it('captures command stdout from a chunked JumpServer-style transcript', async () => {
+    const output = new TerminalOutputBuffer();
+    const write = vi.fn((input: string) => {
+      const id = '6740aa5ccb5f40a3a9839ea66426ff64';
+      // Echo arrives first (may include $? text) — must not complete collection.
+      output.append(`ubuntu@ip-10-1-149-41:~$ ${input}`);
+      setTimeout(() => {
+        output.append(`\n__JMS_CMD_START_${id}__\n`);
+      }, 5);
+      setTimeout(() => {
+        output.append('              total        used        free      shared  buff/cache   available\n');
+        output.append('Mem:            30Gi        28Gi       435Mi        20Gi         24Gi       1.9Gi\n');
+        output.append('Swap:          8.0Gi          0B       8.0Gi\n');
+      }, 15);
+      setTimeout(() => {
+        output.append(`\n__JMS_CMD_END_${id}__0\n`);
+      }, 25);
+    });
+    const executor = new ShellTerminalExecutor({
+      idFactory: () => '6740aa5ccb5f40a3a9839ea66426ff64'
+    });
+
+    const result = await executor.execute({
+      terminalId: 'terminal-1',
+      assetId: 'asset-1',
+      assetName: 'uat-service',
+      command: '# 目的：查看整体内存概况\nfree -h',
+      write,
+      output,
+      timeoutMs: 1000,
+      maxOutputBytes: 8192
+    });
+
+    expect(result.timedOut).toBe(false);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain('Mem:');
+    expect(result.stdout).toContain('30Gi');
+    expect(result.stdout).toContain('1.9Gi');
+  });
+
   it('runs MySQL SQL with marker-bounded output', async () => {
     const output = new TerminalOutputBuffer();
     const write = vi.fn((input: string) => {
-      expect(input).toContain("SELECT '__JMS_SQL_START_abc__';");
+      expect(input).toContain("SELECT CONCAT('__JMS_SQL_START_', 'abc', '__');");
+      expect(input).not.toContain("SELECT '__JMS_SQL_START_abc__';");
+      output.append(input);
       output.append('+-------------------------+\n');
       output.append('| __JMS_SQL_START_abc__ |\n');
       output.append('1 row in set\n');

@@ -62,8 +62,30 @@ export class ShellTerminalExecutor {
     const maxOutputBytes = clamp(input.maxOutputBytes, DEFAULT_MAX_OUTPUT_BYTES, MAX_OUTPUT_BYTES);
     const started = Date.now();
 
-    const command = wrapShellCommand(input.command, input.cwd, startMarker, endMarker);
-    const collection = input.output.collectUntil({ marker: endMarker, timeoutMs, maxOutputBytes });
+    const command = wrapShellCommand(input.command, input.cwd, id);
+    const endWithCode = new RegExp(`${escapeRegExp(endMarker)}\\d+`);
+    // Require the real start marker before the end+exit-code terminator so echo of
+    // the wrapper line cannot complete collection early.
+    const collection = input.output.collectUntil({
+      marker: endMarker,
+      isComplete: (text) => {
+        const start = text.indexOf(startMarker);
+        if (start < 0) {
+          return false;
+        }
+        return endWithCode.test(text.slice(start));
+      },
+      findTerminatorIndex: (text) => {
+        const start = text.indexOf(startMarker);
+        if (start < 0) {
+          return -1;
+        }
+        const match = endWithCode.exec(text.slice(start));
+        return match ? start + match.index : -1;
+      },
+      timeoutMs,
+      maxOutputBytes
+    });
     input.write(command);
     const collected = await collection;
     const stdout = stripAnsi(trimBeforeMarker(collected.output, startMarker));
@@ -92,8 +114,29 @@ export class MysqlCliExecutor {
     const timeoutMs = clamp(input.timeoutMs, DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS);
     const maxOutputBytes = clamp(input.maxOutputBytes, DEFAULT_MAX_OUTPUT_BYTES, MAX_OUTPUT_BYTES);
     const started = Date.now();
-    const collection = input.output.collectUntil({ marker: endMarker, timeoutMs, maxOutputBytes });
-    input.write(`SELECT '${startMarker}';\n${ensureSemicolon(input.sql)}\nSELECT '${endMarker}';\n`);
+    const collection = input.output.collectUntil({
+      marker: endMarker,
+      isComplete: (text) => {
+        const start = text.indexOf(startMarker);
+        return start >= 0 && text.indexOf(endMarker, start + startMarker.length) >= 0;
+      },
+      findTerminatorIndex: (text) => {
+        const start = text.indexOf(startMarker);
+        if (start < 0) {
+          return -1;
+        }
+        return text.indexOf(endMarker, start + startMarker.length);
+      },
+      timeoutMs,
+      maxOutputBytes
+    });
+    // Build markers with CONCAT so typed/echoed SQL does not contain the full marker string.
+    // Keep on as few lines as possible: start, SQL, end.
+    input.write(
+      `SELECT CONCAT('__JMS_SQL_START_', '${escapeSqlLiteral(id)}', '__');\n` +
+      `${ensureSemicolon(input.sql)}\n` +
+      `SELECT CONCAT('__JMS_SQL_END_', '${escapeSqlLiteral(id)}', '__');\n`
+    );
     const collected = await collection;
     return {
       terminalId: input.terminalId,
@@ -108,15 +151,42 @@ export class MysqlCliExecutor {
   }
 }
 
-function wrapShellCommand(command: string, cwd: string | undefined, startMarker: string, endMarker: string): string {
-  const body = cwd?.trim()
-    ? `cd ${quotePosix(cwd.trim())} && ${command}`
-    : command;
-  return `printf '\\n${startMarker}\\n'\n${body}\nprintf '\\n${endMarker}%s\\n' "$?"\n`;
+/**
+ * One shell prompt entry per MCP confirmation: start marker + command + end marker.
+ * Marker fragments stay split across printf args so echo cannot satisfy collectors.
+ */
+export function wrapShellCommand(command: string, cwd: string | undefined, id: string): string {
+  const normalized = normalizeShellCommand(command);
+  const script = cwd?.trim()
+    ? `cd ${quotePosix(cwd.trim())} && eval ${quotePosix(normalized)}`
+    : `eval ${quotePosix(normalized)}`;
+  return (
+    `printf '\\n%s%s%s\\n' '__JMS_CMD_START_' ${quotePosix(id)} '__'; ` +
+    `${script}; ` +
+    `printf '\\n%s%s%d\\n' '__JMS_CMD_END_' ${quotePosix(id)}'__' "$?";\n`
+  );
+}
+
+/** Drop comment-only lines and join onto one shell line (avoids PS2 continuations). */
+export function normalizeShellCommand(command: string): string {
+  const lines = command
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith('#'));
+  return lines.join('; ');
 }
 
 function quotePosix(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function escapeSqlLiteral(value: string): string {
+  return value.replaceAll("'", "''");
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function ensureSemicolon(sql: string): string {
@@ -125,7 +195,8 @@ function ensureSemicolon(sql: string): string {
 }
 
 function trimBeforeMarker(text: string, marker: string): string {
-  const index = text.indexOf(marker);
+  // Prefer the last start marker (executed printf/SELECT output) over an earlier echo.
+  const index = text.lastIndexOf(marker);
   return index >= 0 ? text.slice(index + marker.length) : text;
 }
 
@@ -137,7 +208,7 @@ function stripAnsi(text: string): string {
 }
 
 function parseExitCode(text: string, marker: string): number | null {
-  const match = text.match(new RegExp(`${marker}(\\d+)`));
+  const match = text.match(new RegExp(`${escapeRegExp(marker)}(\\d+)`));
   return match ? Number(match[1]) : null;
 }
 

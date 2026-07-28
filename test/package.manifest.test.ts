@@ -8,7 +8,7 @@ describe('AT JumpServer Terminal manifest', () => {
   it('declares JumpServer terminal, SFTP file commands, and MCP install command', () => {
     expect(manifest.name).toBe('at-jumpserver-terminal');
     expect(manifest.displayName).toBe('AT JumpServer Terminal');
-    expect(manifest.version).toBe('0.1.3');
+    expect(manifest.version).toBe('0.1.5');
     expect(manifest.contributes.viewsContainers.activitybar[0].id).toBe('jumpserverManager');
     expect(manifest.contributes.viewsContainers.activitybar[0].icon).toBe('media/at-terminal-activity.svg');
 
@@ -18,6 +18,7 @@ describe('AT JumpServer Terminal manifest', () => {
       'jumpserverManager.validate',
       'jumpserverManager.refresh',
       'jumpserverManager.connect',
+      'jumpserverManager.copyHostIp',
       'jumpserverManager.sftp.refresh',
       'jumpserverManager.sftp.goUp',
       'jumpserverManager.sftp.upload',
@@ -98,13 +99,34 @@ describe('AT JumpServer Terminal manifest', () => {
     expect(connectMenu.when).toContain('jumpserverUnsupportedAsset');
   });
 
+  it('shows Copy Host IP for SSH, MySQL, and unsupported JumpServer assets', () => {
+    expect(manifest.contributes.commands).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        command: 'jumpserverManager.copyHostIp',
+        title: 'Copy Host IP',
+        icon: '$(copy)'
+      })
+    ]));
+    const copyHostIpMenu = manifest.contributes.menus['view/item/context'].find(
+      (item: { command: string }) => item.command === 'jumpserverManager.copyHostIp'
+    );
+
+    expect(copyHostIpMenu).toMatchObject({ group: '3_copy@1' });
+    expect(copyHostIpMenu.when).toContain('view == jumpserverManager.assets');
+    expect(copyHostIpMenu.when).toContain('jumpserverAsset');
+    expect(copyHostIpMenu.when).toContain('jumpserverMysqlAsset');
+    expect(copyHostIpMenu.when).toContain('jumpserverUnsupportedAsset');
+  });
+
   it('does not show a standalone Open Files action on assets', () => {
     const assetMenus = manifest.contributes.menus['view/item/context'].filter(
       (item: { when: string }) => item.when.includes('view == jumpserverManager.assets')
     );
 
-    expect(assetMenus).toHaveLength(1);
-    expect(assetMenus[0].command).toBe('jumpserverManager.connect');
+    expect(assetMenus.map((item: { command: string }) => item.command)).toEqual([
+      'jumpserverManager.connect',
+      'jumpserverManager.copyHostIp'
+    ]);
     expect(JSON.stringify(manifest)).not.toContain('jumpserverManager.sftp.open');
   });
 
