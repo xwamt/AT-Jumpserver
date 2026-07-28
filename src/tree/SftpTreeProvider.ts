@@ -1,0 +1,51 @@
+import * as vscode from 'vscode';
+import type { JumpServerSftpTreeState } from '../sftp/JumpServerSftpManager';
+import type { JumpServerSftpEntry } from '../sftp/SftpTypes';
+import {
+  SftpDirectoryTreeItem,
+  SftpFileTreeItem,
+  SftpParentDirectoryTreeItem,
+  SftpPlaceholderTreeItem
+} from './SftpTreeItems';
+
+export interface SftpTreeSource {
+  getState(): JumpServerSftpTreeState;
+  listDirectory?(path?: string): Promise<JumpServerSftpEntry[]>;
+}
+
+export type SftpTreeNode = SftpPlaceholderTreeItem | SftpParentDirectoryTreeItem | SftpDirectoryTreeItem | SftpFileTreeItem;
+
+export class SftpTreeProvider implements vscode.TreeDataProvider<SftpTreeNode> {
+  private readonly changed = new vscode.EventEmitter<SftpTreeNode | undefined>();
+  readonly onDidChangeTreeData = this.changed.event;
+
+  constructor(private readonly source: SftpTreeSource) {}
+
+  refresh(item?: SftpTreeNode): void {
+    this.changed.fire(item);
+  }
+
+  getTreeItem(element: SftpTreeNode): vscode.TreeItem {
+    return element;
+  }
+
+  async getChildren(element?: SftpTreeNode): Promise<SftpTreeNode[]> {
+    const state = this.source.getState();
+    if (state.kind === 'none') {
+      return element ? [] : [new SftpPlaceholderTreeItem('Open files from a JumpServer asset')];
+    }
+    if (state.kind === 'disconnected') {
+      return element ? [] : state.entries.map((entry) => this.toTreeItem(entry, true));
+    }
+    const path = element instanceof SftpDirectoryTreeItem ? element.entry.path : state.rootPath;
+    const entries = await this.source.listDirectory?.(path) ?? [];
+    const children = entries.map((entry) => this.toTreeItem(entry, false));
+    return element || state.rootPath === '/' ? children : [new SftpParentDirectoryTreeItem(), ...children];
+  }
+
+  private toTreeItem(entry: JumpServerSftpEntry, disconnected: boolean): SftpTreeNode {
+    return entry.type === 'directory'
+      ? new SftpDirectoryTreeItem(entry, disconnected)
+      : new SftpFileTreeItem(entry, disconnected);
+  }
+}

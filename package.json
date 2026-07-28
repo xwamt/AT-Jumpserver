@@ -1,0 +1,523 @@
+{
+  "name": "at-jumpserver-terminal",
+  "displayName": "AT JumpServer Terminal",
+  "description": "JumpServer-backed terminal for VS Code.",
+  "version": "0.1.3",
+  "publisher": "local",
+  "icon": "media/at-terminal-icon.png",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onView:jumpserverManager.assets",
+    "onView:jumpserverManager.sftpFiles",
+    "onLanguageModelTool:jumpserver_list_assets",
+    "onLanguageModelTool:jumpserver_get_terminal_context",
+    "onLanguageModelTool:jumpserver_send_terminal_input",
+    "onLanguageModelTool:jumpserver_run_terminal_command",
+    "onLanguageModelTool:jumpserver_sftp_list_directory",
+    "onLanguageModelTool:jumpserver_sftp_stat_path",
+    "onLanguageModelTool:jumpserver_sftp_read_file",
+    "onLanguageModelTool:jumpserver_sftp_write_file",
+    "onLanguageModelTool:jumpserver_sftp_create_file",
+    "onLanguageModelTool:jumpserver_sftp_create_directory",
+    "onLanguageModelTool:jumpserver_sftp_rename",
+    "onLanguageModelTool:jumpserver_sftp_delete",
+    "onLanguageModelTool:jumpserver_mysql_get_context",
+    "onLanguageModelTool:jumpserver_mysql_send_input",
+    "onLanguageModelTool:jumpserver_mysql_execute_sql"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "languageModelTools": [
+      {
+        "name": "jumpserver_list_assets",
+        "tags": ["jumpserver", "asset", "read-only"],
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "jumpserver_list_assets",
+        "displayName": "JumpServer List Assets",
+        "userDescription": "List cached AT JumpServer assets.",
+        "modelDescription": "List cached JumpServer assets without exposing credentials.",
+        "inputSchema": { "type": "object", "properties": {} }
+      },
+      {
+        "name": "jumpserver_get_terminal_context",
+        "tags": ["jumpserver", "terminal", "read-only"],
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "jumpserver_get_terminal_context",
+        "displayName": "JumpServer Terminal Context",
+        "userDescription": "Show active and known JumpServer terminals.",
+        "modelDescription": "Return active, connected, and known JumpServer terminal contexts without credentials.",
+        "inputSchema": { "type": "object", "properties": {} }
+      },
+      {
+        "name": "jumpserver_send_terminal_input",
+        "tags": ["jumpserver", "terminal"],
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "jumpserver_send_terminal_input",
+        "displayName": "JumpServer Send Terminal Input",
+        "userDescription": "Send input to a connected JumpServer terminal.",
+        "modelDescription": "Send raw input to a connected JumpServer SSH or MySQL terminal.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "terminalId": { "type": "string", "description": "JumpServer terminal id, or active for the active terminal." },
+            "input": { "type": "string", "description": "Raw terminal input to send." }
+          },
+          "required": ["input"]
+        }
+      },
+      {
+        "name": "jumpserver_run_terminal_command",
+        "tags": ["jumpserver", "ssh", "terminal"],
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "jumpserver_run_terminal_command",
+        "displayName": "JumpServer Run SSH Command",
+        "userDescription": "Run a non-interactive command through a connected JumpServer SSH terminal.",
+        "modelDescription": "Run a bounded non-interactive shell command through an existing JumpServer SSH terminal and return captured output metadata.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "terminalId": { "type": "string", "description": "JumpServer SSH terminal id, or active for the active terminal." },
+            "command": { "type": "string", "description": "Non-interactive shell command to run." },
+            "cwd": { "type": "string", "description": "Optional POSIX working directory." },
+            "timeoutMs": { "type": "number", "description": "Optional timeout in milliseconds." },
+            "maxOutputBytes": { "type": "number", "description": "Optional max bytes of output to capture." }
+          },
+          "required": ["command"]
+        }
+      },
+      {
+        "name": "jumpserver_sftp_list_directory",
+        "tags": ["jumpserver", "sftp", "read-only"],
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "jumpserver_sftp_list_directory",
+        "displayName": "JumpServer SFTP List Directory",
+        "userDescription": "List a JumpServer SFTP directory.",
+        "modelDescription": "List remote directory entries through an active JumpServer SFTP session.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "connectionKey": { "type": "string", "description": "JumpServer SFTP connection key." },
+            "terminalId": { "type": "string", "description": "JumpServer terminal id." },
+            "path": { "type": "string", "description": "Remote POSIX path." }
+          }
+        }
+      },
+      {
+        "name": "jumpserver_sftp_stat_path",
+        "tags": ["jumpserver", "sftp", "read-only"],
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "jumpserver_sftp_stat_path",
+        "displayName": "JumpServer SFTP Stat Path",
+        "userDescription": "Show JumpServer SFTP path metadata.",
+        "modelDescription": "Return metadata for a remote path through an active JumpServer SFTP session.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "connectionKey": { "type": "string", "description": "JumpServer SFTP connection key." },
+            "terminalId": { "type": "string", "description": "JumpServer terminal id." },
+            "path": { "type": "string", "description": "Remote POSIX path." }
+          },
+          "required": ["path"]
+        }
+      },
+      {
+        "name": "jumpserver_sftp_read_file",
+        "tags": ["jumpserver", "sftp", "read-only"],
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "jumpserver_sftp_read_file",
+        "displayName": "JumpServer SFTP Read File",
+        "userDescription": "Read a bounded JumpServer SFTP text file.",
+        "modelDescription": "Read bounded UTF-8 text from a remote file through an active JumpServer SFTP session.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "connectionKey": { "type": "string", "description": "JumpServer SFTP connection key." },
+            "terminalId": { "type": "string", "description": "JumpServer terminal id." },
+            "path": { "type": "string", "description": "Remote POSIX path." },
+            "maxBytes": { "type": "number", "description": "Optional max bytes to read." }
+          },
+          "required": ["path"]
+        }
+      },
+      {
+        "name": "jumpserver_sftp_write_file",
+        "tags": ["jumpserver", "sftp"],
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "jumpserver_sftp_write_file",
+        "displayName": "JumpServer SFTP Write File",
+        "userDescription": "Write UTF-8 text through JumpServer SFTP.",
+        "modelDescription": "Write UTF-8 text to a remote file through JumpServer SFTP after confirmation.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "connectionKey": { "type": "string", "description": "JumpServer SFTP connection key." },
+            "terminalId": { "type": "string", "description": "JumpServer terminal id." },
+            "path": { "type": "string", "description": "Remote POSIX path." },
+            "content": { "type": "string", "description": "UTF-8 file content." },
+            "overwrite": { "type": "boolean", "description": "Set true to replace an existing file." }
+          },
+          "required": ["path", "content"]
+        }
+      },
+      {
+        "name": "jumpserver_sftp_create_file",
+        "tags": ["jumpserver", "sftp"],
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "jumpserver_sftp_create_file",
+        "displayName": "JumpServer SFTP Create File",
+        "userDescription": "Create a file through JumpServer SFTP.",
+        "modelDescription": "Create a remote file through JumpServer SFTP after confirmation.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "connectionKey": { "type": "string", "description": "JumpServer SFTP connection key." },
+            "terminalId": { "type": "string", "description": "JumpServer terminal id." },
+            "path": { "type": "string", "description": "Remote POSIX path." },
+            "content": { "type": "string", "description": "Optional UTF-8 file content." }
+          },
+          "required": ["path"]
+        }
+      },
+      {
+        "name": "jumpserver_sftp_create_directory",
+        "tags": ["jumpserver", "sftp"],
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "jumpserver_sftp_create_directory",
+        "displayName": "JumpServer SFTP Create Directory",
+        "userDescription": "Create a directory through JumpServer SFTP.",
+        "modelDescription": "Create a remote directory through JumpServer SFTP after confirmation.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "connectionKey": { "type": "string", "description": "JumpServer SFTP connection key." },
+            "terminalId": { "type": "string", "description": "JumpServer terminal id." },
+            "path": { "type": "string", "description": "Remote POSIX path." }
+          },
+          "required": ["path"]
+        }
+      },
+      {
+        "name": "jumpserver_sftp_rename",
+        "tags": ["jumpserver", "sftp"],
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "jumpserver_sftp_rename",
+        "displayName": "JumpServer SFTP Rename",
+        "userDescription": "Rename a path through JumpServer SFTP.",
+        "modelDescription": "Rename a remote file or directory through JumpServer SFTP after confirmation.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "connectionKey": { "type": "string", "description": "JumpServer SFTP connection key." },
+            "terminalId": { "type": "string", "description": "JumpServer terminal id." },
+            "oldPath": { "type": "string", "description": "Existing remote POSIX path." },
+            "newPath": { "type": "string", "description": "New remote POSIX path." }
+          },
+          "required": ["oldPath", "newPath"]
+        }
+      },
+      {
+        "name": "jumpserver_sftp_delete",
+        "tags": ["jumpserver", "sftp"],
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "jumpserver_sftp_delete",
+        "displayName": "JumpServer SFTP Delete",
+        "userDescription": "Delete a path through JumpServer SFTP.",
+        "modelDescription": "Delete a remote file or directory through JumpServer SFTP after confirmation.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "connectionKey": { "type": "string", "description": "JumpServer SFTP connection key." },
+            "terminalId": { "type": "string", "description": "JumpServer terminal id." },
+            "path": { "type": "string", "description": "Remote POSIX path." }
+          },
+          "required": ["path"]
+        }
+      },
+      {
+        "name": "jumpserver_mysql_get_context",
+        "tags": ["jumpserver", "mysql", "read-only"],
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "jumpserver_mysql_get_context",
+        "displayName": "JumpServer MySQL Context",
+        "userDescription": "Show connected JumpServer MySQL terminals.",
+        "modelDescription": "Return active, connected, and known JumpServer MySQL terminal contexts.",
+        "inputSchema": { "type": "object", "properties": {} }
+      },
+      {
+        "name": "jumpserver_mysql_send_input",
+        "tags": ["jumpserver", "mysql", "terminal"],
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "jumpserver_mysql_send_input",
+        "displayName": "JumpServer MySQL Send Input",
+        "userDescription": "Send raw input to a JumpServer MySQL CLI terminal.",
+        "modelDescription": "Send raw input to an existing connected JumpServer MySQL CLI terminal.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "terminalId": { "type": "string", "description": "JumpServer MySQL terminal id, or active for the active terminal." },
+            "input": { "type": "string", "description": "Raw MySQL CLI input to send." }
+          },
+          "required": ["input"]
+        }
+      },
+      {
+        "name": "jumpserver_mysql_execute_sql",
+        "tags": ["jumpserver", "mysql"],
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "jumpserver_mysql_execute_sql",
+        "displayName": "JumpServer MySQL Execute SQL",
+        "userDescription": "Execute SQL through a connected JumpServer MySQL CLI terminal.",
+        "modelDescription": "Execute bounded SQL through an existing JumpServer MySQL CLI terminal and return captured CLI output.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "terminalId": { "type": "string", "description": "JumpServer MySQL terminal id, or active for the active terminal." },
+            "sql": { "type": "string", "description": "SQL to execute." },
+            "timeoutMs": { "type": "number", "description": "Optional timeout in milliseconds." },
+            "maxOutputBytes": { "type": "number", "description": "Optional max bytes of output to capture." }
+          },
+          "required": ["sql"]
+        }
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "jumpserverManager",
+          "title": "AT JumpServer",
+          "icon": "media/at-terminal-activity.svg"
+        }
+      ]
+    },
+    "views": {
+      "jumpserverManager": [
+        {
+          "id": "jumpserverManager.assets",
+          "name": "Assets"
+        },
+        {
+          "id": "jumpserverManager.sftpFiles",
+          "name": "Files"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "jumpserverManager.configure",
+        "title": "JumpServer: Configure",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "jumpserverManager.validate",
+        "title": "JumpServer: Validate Account"
+      },
+      {
+        "command": "jumpserverManager.refresh",
+        "title": "JumpServer: Refresh Assets",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "jumpserverManager.connect",
+        "title": "JumpServer: Connect"
+      },
+      {
+        "command": "jumpserverManager.sftp.refresh",
+        "title": "JumpServer Files: Refresh",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "jumpserverManager.sftp.goUp",
+        "title": "JumpServer Files: Go Up",
+        "icon": "$(arrow-up)"
+      },
+      {
+        "command": "jumpserverManager.sftp.upload",
+        "title": "JumpServer Files: Upload",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "jumpserverManager.sftp.download",
+        "title": "JumpServer Files: Download",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "jumpserverManager.sftp.preview",
+        "title": "JumpServer Files: Preview",
+        "icon": "$(open-preview)"
+      },
+      {
+        "command": "jumpserverManager.sftp.edit",
+        "title": "JumpServer Files: Edit",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "jumpserverManager.sftp.delete",
+        "title": "JumpServer Files: Delete",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "jumpserverManager.sftp.rename",
+        "title": "JumpServer Files: Rename",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "jumpserverManager.sftp.newFolder",
+        "title": "JumpServer Files: New Folder",
+        "icon": "$(new-folder)"
+      },
+      {
+        "command": "jumpserverManager.sftp.copyPath",
+        "title": "JumpServer Files: Copy Path",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "jumpserverManager.installMcpConfig",
+        "title": "JumpServer: Install MCP Config"
+      },
+      {
+        "command": "jumpserverManager.disconnect",
+        "title": "JumpServer: Disconnect"
+      },
+      {
+        "command": "jumpserverManager.reconnect",
+        "title": "JumpServer: Reconnect"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "jumpserverManager.configure",
+          "when": "view == jumpserverManager.assets",
+          "group": "navigation@1"
+        },
+        {
+          "command": "jumpserverManager.refresh",
+          "when": "view == jumpserverManager.assets",
+          "group": "navigation@2"
+        },
+        {
+          "command": "jumpserverManager.sftp.refresh",
+          "when": "view == jumpserverManager.sftpFiles",
+          "group": "navigation@1"
+        },
+        {
+          "command": "jumpserverManager.sftp.upload",
+          "when": "view == jumpserverManager.sftpFiles",
+          "group": "navigation@2"
+        },
+        {
+          "command": "jumpserverManager.sftp.goUp",
+          "when": "view == jumpserverManager.sftpFiles",
+          "group": "navigation@3"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "jumpserverManager.connect",
+          "when": "view == jumpserverManager.assets && (viewItem == jumpserverAsset || viewItem == jumpserverMysqlAsset || viewItem == jumpserverUnsupportedAsset)",
+          "group": "inline@1"
+        },
+        {
+          "command": "jumpserverManager.sftp.download",
+          "when": "view == jumpserverManager.sftpFiles && viewItem == jumpserverSftpFile",
+          "group": "transfer@2"
+        },
+        {
+          "command": "jumpserverManager.sftp.preview",
+          "when": "view == jumpserverManager.sftpFiles && viewItem == jumpserverSftpFile",
+          "group": "open@2"
+        },
+        {
+          "command": "jumpserverManager.sftp.edit",
+          "when": "view == jumpserverManager.sftpFiles && viewItem == jumpserverSftpFile",
+          "group": "open@1"
+        },
+        {
+          "command": "jumpserverManager.sftp.upload",
+          "when": "view == jumpserverManager.sftpFiles && viewItem == jumpserverSftpDirectory",
+          "group": "inline@1"
+        },
+        {
+          "command": "jumpserverManager.sftp.newFolder",
+          "when": "view == jumpserverManager.sftpFiles && viewItem == jumpserverSftpDirectory",
+          "group": "inline@2"
+        },
+        {
+          "command": "jumpserverManager.sftp.rename",
+          "when": "view == jumpserverManager.sftpFiles && (viewItem == jumpserverSftpFile || viewItem == jumpserverSftpDirectory)",
+          "group": "2_manage@1"
+        },
+        {
+          "command": "jumpserverManager.sftp.delete",
+          "when": "view == jumpserverManager.sftpFiles && (viewItem == jumpserverSftpFile || viewItem == jumpserverSftpDirectory)",
+          "group": "2_manage@2"
+        },
+        {
+          "command": "jumpserverManager.sftp.copyPath",
+          "when": "view == jumpserverManager.sftpFiles && (viewItem == jumpserverSftpFile || viewItem == jumpserverSftpDirectory)",
+          "group": "3_copy@1"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "AT JumpServer Terminal",
+      "properties": {
+        "jumpserverManager.terminalFontSize": {
+          "type": "number",
+          "default": 14,
+          "minimum": 8
+        },
+        "jumpserverManager.terminalFontFamily": {
+          "type": "string",
+          "default": "Cascadia Code, Menlo, monospace"
+        },
+        "jumpserverManager.scrollback": {
+          "type": "number",
+          "default": 5000,
+          "minimum": 100
+        },
+        "jumpserverManager.semanticHighlight": {
+          "type": "boolean",
+          "default": true
+        },
+        "jumpserverManager.idleDisconnectMinutes": {
+          "type": "number",
+          "default": 60,
+          "minimum": 0
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "probe:sftp": "node tools/probe-jumpserver-sftp.mjs",
+    "watch": "node esbuild.config.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/addon-web-links": "^0.11.0",
+    "@xterm/xterm": "^5.5.0",
+    "ws": "^8.18.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.0",
+    "@types/vscode": "^1.85.0",
+    "@types/ws": "^8.5.13",
+    "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "^3.9.1",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  }
+}

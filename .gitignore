@@ -1,0 +1,54 @@
+# Keep Git focused on the extension source, tests, package metadata, and
+# required marketplace assets. Local notes, generated packages, caches, and
+# machine-specific files stay out of the repository.
+
+# Dependencies
+node_modules/
+
+# Build, package, and test output
+dist/
+out/
+coverage/
+.vscode-test/
+*.tsbuildinfo
+*.vsix
+.package-work/
+
+# Local workspace and research state
+.kiro/
+.superpowers/
+.worktrees/
+docs/
+tools/
+*.docx
+
+# Required extension media only
+media/*
+!media/at-terminal-activity.svg
+!media/at-terminal-icon.png
+!media/at-terminal-icon.svg
+
+# Editor and OS files
+.vscode/*
+!.vscode/extensions.json
+!.vscode/launch.json
+!.vscode/tasks.json
+!.vscode/settings.example.json
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs and diagnostics
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Local secrets and machine-specific config
+.env
+.env.*
+!.env.example
+!.env.sample
+*.local
+ATmcp.json
