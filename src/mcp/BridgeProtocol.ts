@@ -1,6 +1,15 @@
+import {
+  AT_SERIES_PROTOCOL_VERSION,
+  AT_SERIES_TOKEN_HEADER,
+  BRIDGE_HOST,
+  BRIDGE_MAX_BODY_BYTES
+} from '@at-series/mcp-hub';
 import type { TerminalContextSnapshot } from '../terminal/TerminalContext';
 
-export const BRIDGE_HOST = '127.0.0.1';
+export { AT_JUMPSERVER_PLUGIN_DISPLAY_NAME } from './toolCatalog';
+export { AT_SERIES_TOKEN_HEADER, BRIDGE_HOST, BRIDGE_MAX_BODY_BYTES, AT_SERIES_PROTOCOL_VERSION };
+
+/** Legacy auth header accepted during migration. */
 export const BRIDGE_TOKEN_HEADER = 'x-at-jumpserver-terminal-token';
 
 export const JUMPSERVER_MCP_TOOL_NAMES = [
@@ -93,5 +102,9 @@ export interface MysqlExecuteSqlBridgeRequest extends TerminalTargetBridgeReques
 }
 
 export interface BridgeErrorResponse {
-  error: string;
+  error: {
+    code: string;
+    message: string;
+    details?: unknown;
+  };
 }
