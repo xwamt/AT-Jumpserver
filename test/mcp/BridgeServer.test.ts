@@ -229,6 +229,38 @@ describe('createBridgeRequestHandler', () => {
       body: { error: { code: 'NOT_FOUND' } }
     });
   });
+
+  it('returns BAD_REQUEST for invalid JSON body on /invoke', async () => {
+    const handler = createHandler();
+
+    await expect(
+      handler({
+        method: 'POST',
+        path: '/invoke',
+        headers: { [AT_SERIES_TOKEN_HEADER]: 'secret' },
+        body: '{not-json'
+      })
+    ).resolves.toMatchObject({
+      status: 400,
+      body: { error: { code: 'BAD_REQUEST', message: 'Invalid JSON body.' } }
+    });
+  });
+
+  it('returns METHOD_NOT_ALLOWED for unsupported HTTP methods', async () => {
+    const handler = createHandler();
+
+    await expect(
+      call(handler, {
+        path: '/health',
+        method: 'DELETE',
+        token: 'secret',
+        tokenHeader: AT_SERIES_TOKEN_HEADER
+      })
+    ).resolves.toMatchObject({
+      status: 405,
+      body: { error: { code: 'METHOD_NOT_ALLOWED', message: 'Method not allowed.' } }
+    });
+  });
 });
 
 describe('readLimitedBody', () => {

@@ -30,11 +30,19 @@ import { AT_JUMPSERVER_PLUGIN_ID, AT_JUMPSERVER_TOOL_CATALOG } from './toolCatal
 /** Heartbeat cadence for `~/.at-series` registry freshness (protocol: ≤30s). */
 const BRIDGE_HEARTBEAT_INTERVAL_MS = 30_000;
 
+export interface BridgePublisherFactoryOptions {
+  bridgeId: string;
+  hostApp: HostApp;
+  home: string;
+}
+
 export interface BridgeServerOptions {
   service: JumpServerAgentToolService;
   home?: string;
   hostApp: HostApp;
   pluginVersion?: string;
+  /** Test hook: override FsBridgePublisher construction. */
+  createPublisher?: (options: BridgePublisherFactoryOptions) => FsBridgePublisher;
 }
 
 export interface BridgeHandlerDependencies {
@@ -71,12 +79,14 @@ export class BridgeServer {
   private readonly home: string;
   private readonly hostApp: HostApp;
   private readonly pluginVersion: string;
+  private readonly createPublisher: (options: BridgePublisherFactoryOptions) => FsBridgePublisher;
 
   constructor(options: BridgeServerOptions) {
     this.service = options.service;
     this.home = options.home ?? homedir();
     this.hostApp = options.hostApp;
     this.pluginVersion = options.pluginVersion ?? DEFAULT_PLUGIN_VERSION;
+    this.createPublisher = options.createPublisher ?? ((publisherOptions) => new FsBridgePublisher(publisherOptions));
   }
 
   async start(): Promise<void> {
@@ -105,30 +115,49 @@ export class BridgeServer {
     this.port = address.port;
 
     const connectedTargets = await readConnectedTargets(this.service);
-    const publisher = new FsBridgePublisher({
+    const publisher = this.createPublisher({
       bridgeId: this.bridgeId,
       hostApp: this.hostApp,
       home: this.home
     });
     this.publisher = publisher;
-    await publisher.publish({
-      protocolVersion: AT_SERIES_PROTOCOL_VERSION,
-      bridgeId: this.bridgeId,
-      pluginId: AT_JUMPSERVER_PLUGIN_ID,
-      pluginDisplayName: AT_JUMPSERVER_PLUGIN_DISPLAY_NAME,
-      pluginVersion: this.pluginVersion,
-      hostApp: this.hostApp,
-      port: address.port,
-      token: this.token,
-      pid: process.pid,
-      updatedAt: Date.now(),
-      tools: AT_JUMPSERVER_TOOL_CATALOG,
-      capabilities: { connectedTargets }
-    });
+    try {
+      await publisher.publish({
+        protocolVersion: AT_SERIES_PROTOCOL_VERSION,
+        bridgeId: this.bridgeId,
+        pluginId: AT_JUMPSERVER_PLUGIN_ID,
+        pluginDisplayName: AT_JUMPSERVER_PLUGIN_DISPLAY_NAME,
+        pluginVersion: this.pluginVersion,
+        hostApp: this.hostApp,
+        port: address.port,
+        token: this.token,
+        pid: process.pid,
+        updatedAt: Date.now(),
+        tools: AT_JUMPSERVER_TOOL_CATALOG,
+        capabilities: { connectedTargets }
+      });
+    } catch (error) {
+      await this.rollbackFailedStart();
+      throw error;
+    }
     this.heartbeatTimer = setInterval(() => {
       void this.tickHeartbeat();
     }, BRIDGE_HEARTBEAT_INTERVAL_MS);
     this.heartbeatTimer.unref?.();
+  }
+
+  private async rollbackFailedStart(): Promise<void> {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = undefined;
+    }
+    this.publisher = undefined;
+    const server = this.server;
+    this.server = undefined;
+    this.port = undefined;
+    if (server) {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   }
 
   async dispose(): Promise<void> {
@@ -392,21 +421,6 @@ async function dispatchTool(
         response: bridgeError(404, 'NOT_FOUND', `Unknown tool: ${name}`)
       };
   }
-}
-
-export function parseBodyWithSchema<T>(
-  body: string | undefined,
-  schema: z.ZodType<T>
-): { ok: true; data: T } | { ok: false; error: string } {
-  let raw: unknown = {};
-  if (body) {
-    try {
-      raw = JSON.parse(body);
-    } catch {
-      return { ok: false, error: 'Invalid JSON body.' };
-    }
-  }
-  return parseArgsWithSchema(raw, schema);
 }
 
 function parseArgsWithSchema<T>(

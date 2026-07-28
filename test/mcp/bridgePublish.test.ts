@@ -2,6 +2,7 @@ import { access, mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { FsBridgePublisher } from '@at-series/mcp-hub';
 import { BridgeServer } from '../../src/mcp/BridgeServer';
 import { AT_JUMPSERVER_PLUGIN_ID } from '../../src/mcp/toolCatalog';
 
@@ -98,5 +99,32 @@ describe('BridgeServer FsBridgePublisher', () => {
     servers.pop();
 
     await expect(access(recordPath)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('rolls back when publish fails so start() can be retried', async () => {
+    const home = await tempHome();
+    let publishCalls = 0;
+    const server = new BridgeServer({
+      service: createService() as never,
+      home,
+      hostApp: 'cursor',
+      pluginVersion: '0.3.0',
+      createPublisher: () =>
+        ({
+          publish: vi.fn(async () => {
+            publishCalls += 1;
+            if (publishCalls === 1) {
+              throw new Error('publish failed');
+            }
+          }),
+          unpublish: vi.fn(async () => {}),
+          heartbeat: vi.fn(async () => {})
+        }) as unknown as FsBridgePublisher
+    });
+    servers.push(server);
+
+    await expect(server.start()).rejects.toThrow('publish failed');
+    await expect(server.start()).resolves.toBeUndefined();
+    expect(publishCalls).toBe(2);
   });
 });
