@@ -34,7 +34,21 @@ AT JumpServer Terminal is a VS Code extension for opening browser-style JumpServ
 5. Run `JumpServer: Refresh Assets`.
 6. Click an SSH or MySQL asset to connect in a terminal.
 7. Connect to an SSH asset, then use the Files view for the terminal-backed SFTP session.
-8. Optional: run `JumpServer: Install MCP Config` to expose JumpServer tools to MCP-capable agents.
+8. Optional: run `Install/Repair AT Series MCP Config` to expose JumpServer tools to MCP-capable agents.
+
+## AT Series MCP
+
+JumpServer tools are exposed through the shared **AT Series** MCP hub, not a per-plugin `mcp-server.js` entry.
+
+- **IDE entry:** one MCP server named `AT Series` → `node ~/.at-series/mcp/hub.js`
+- **Hub package:** [`@at-series/mcp-hub`](https://www.npmjs.com/package/@at-series/mcp-hub) (Protocol v1)
+- **Extension role:** Bridge on `127.0.0.1` (`GET /health`, `GET /tools`, `POST /invoke`), registry publish under `~/.at-series/bridges/<hostApp>/`, packaged `dist/hub.js` sync on activate
+- **Install/repair:** command palette `Install/Repair AT Series MCP Config` (Kiro, Cursor, Continue)
+- **Credentials:** stay in the extension host; the hub and MCP client never read JumpServer passwords or VS Code secret storage
+
+Architecture: [ADR-001](docs/decisions/ADR-001-at-series-mcp-hub.md). Sibling reference: [at-terminal-series hub adaptation](https://github.com/xwamt/At-Terminal/blob/main/docs/decisions/ADR-005-at-series-hub-adaptation.md).
+
+Agent skill: [`at-jumpserver-terminal-mcp`](skills/at-jumpserver-terminal-mcp/SKILL.md).
 
 ## SFTP Development Probe
 

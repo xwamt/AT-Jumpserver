@@ -9,9 +9,9 @@ Use AT JumpServer Terminal MCP as the bridge between an agent and the user's alr
 
 ## Preconditions
 
-Keep the IDE window with AT JumpServer Terminal running and activated. The MCP client starts `node dist/mcp-server.js`, and that sidecar connects back to the local bridge hosted by the extension.
+Keep the IDE window with AT JumpServer Terminal running and activated so the extension can publish its bridge into `~/.at-series`. MCP clients configure a single **AT Series** entry that runs `node ~/.at-series/mcp/hub.js`; the hub routes invokes to the extension bridge. The hub never reads passwords, cookies, JumpServer tokens, or VS Code secret storage.
 
-Prefer the command palette action `JumpServer: Install MCP Config` for Kiro, Cursor, and Continue.
+Prefer the command palette action `Install/Repair AT Series MCP Config` for Kiro, Cursor, and Continue. If `hub.js` is missing, reload the IDE window so hub sync can elect the packaged `dist/hub.js`.
 
 ## Tool Selection
 

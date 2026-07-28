@@ -18,7 +18,12 @@ coverage/
 .kiro/
 .superpowers/
 .worktrees/
-docs/
+# Local docs (track decisions + superpowers only)
+docs/*
+!docs/decisions/
+!docs/decisions/**
+!docs/superpowers/
+!docs/superpowers/**
 tools/
 *.docx
 
