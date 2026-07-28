@@ -1,8 +1,9 @@
 import { homedir } from 'node:os';
-import { readBridgeDiscovery } from './BridgeDiscovery';
+import { listBridgeRecords } from '@at-series/mcp-hub';
 import {
   BRIDGE_HOST,
   BRIDGE_TOKEN_HEADER,
+  type BridgeDiscovery,
   type MysqlExecuteSqlBridgeRequest,
   type RunTerminalCommandBridgeRequest,
   type SendTerminalInputBridgeRequest,
@@ -14,6 +15,25 @@ import {
   type SftpRenameBridgeRequest,
   type SftpWriteFileBridgeRequest
 } from './BridgeProtocol';
+import { AT_JUMPSERVER_PLUGIN_ID } from './toolCatalog';
+
+const BRIDGE_HOST_APPS = ['cursor', 'vscode', 'kiro', 'qoder', 'windsurf', 'continue', 'unknown'] as const;
+
+async function readBridgeDiscovery(home: string): Promise<BridgeDiscovery | undefined> {
+  for (const hostApp of BRIDGE_HOST_APPS) {
+    const records = await listBridgeRecords({ hostApp, home });
+    const match = records.find((record) => record.pluginId === AT_JUMPSERVER_PLUGIN_ID);
+    if (match) {
+      return {
+        port: match.port,
+        token: match.token,
+        pid: match.pid,
+        updatedAt: match.updatedAt
+      };
+    }
+  }
+  return undefined;
+}
 
 interface FetchLikeResponse {
   ok: boolean;

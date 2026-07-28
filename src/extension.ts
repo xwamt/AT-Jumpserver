@@ -6,6 +6,7 @@ import type { CachedJumpServerAsset } from './config/schema';
 import { JumpServerClient } from './jumpserver/JumpServerClient';
 import { errorMessage } from './jumpserver/redaction';
 import { BridgeServer } from './mcp/BridgeServer';
+import { detectHostApp } from './mcp/hostApp';
 import { ensureIdeMcpConfig, resolveIdeMcpConfigTarget } from './mcp/McpConfigInstaller';
 import { assertTextFileEditable, DEFAULT_SFTP_EDIT_MAX_BYTES } from './sftp/SftpFileGuards';
 import { createVscodeSftpEditUi, SftpEditSessionManager } from './sftp/SftpEditSessionManager';
@@ -53,7 +54,19 @@ export function activate(context: vscode.ExtensionContext): void {
       return answer === 'Continue';
     }
   });
-  const bridgeServer = new BridgeServer(agentService);
+  const bridgeServer = new BridgeServer({
+    service: agentService,
+    hostApp: detectHostApp({
+      appName: vscode.env.appName,
+      appRoot: vscode.env.appRoot,
+      uriScheme: vscode.env.uriScheme,
+      extensionPath: context.extensionUri.fsPath
+    }),
+    pluginVersion:
+      typeof context.extension?.packageJSON?.version === 'string'
+        ? context.extension.packageJSON.version
+        : undefined
+  });
   void bridgeServer.start().catch((error) => {
     void showTimedNotification(`JumpServer MCP bridge failed to start: ${errorMessage(error)}`, 'warning');
   });
