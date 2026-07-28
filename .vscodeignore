@@ -1,17 +1,21 @@
 .git/**
 .superpowers/**
 .worktrees/**
+.agents/**
+.kiro/**
+.tmp-*/
+.tmp-*/**
 node_modules/**
 src/**
 test/**
 test-fixtures/**
 tools/**
+scripts/**
 webview/**
 *.vsix
 *.log
 
 .github/**
-.kiro/**
 .vscode/**
 .vscode-test/**
 coverage/**
@@ -27,5 +31,6 @@ desktop.ini
 
 .gitignore
 esbuild.config.mjs
+package-lock.json
 tsconfig.json
 vitest.config.ts
