@@ -495,7 +495,8 @@
     }
   },
   "scripts": {
-    "build": "node esbuild.config.mjs",
+    "copy:hub": "node scripts/copy-hub.mjs",
+    "build": "node esbuild.config.mjs && npm run copy:hub",
     "probe:sftp": "node tools/probe-jumpserver-sftp.mjs",
     "watch": "node esbuild.config.mjs --watch",
     "typecheck": "tsc --noEmit",
