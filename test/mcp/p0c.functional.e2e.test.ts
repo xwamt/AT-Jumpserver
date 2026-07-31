@@ -146,8 +146,7 @@ describe('P0c functional e2e smoke', () => {
       target: 'cursor',
       hostApp: 'cursor',
       hubJsAbsolutePath: hubJsPath(home),
-      home,
-      registryTools: AT_JUMPSERVER_TOOL_CATALOG
+      home
     });
 
     // Seed legacy entry then re-ensure to prove migration path still works after AT Series exists
@@ -166,8 +165,7 @@ describe('P0c functional e2e smoke', () => {
       target: 'cursor',
       hostApp: 'cursor',
       hubJsAbsolutePath: hubJsPath(home),
-      home,
-      registryTools: AT_JUMPSERVER_TOOL_CATALOG
+      home
     });
 
     const after = JSON.parse(await readFile(mcpPath, 'utf8')) as {
@@ -178,12 +176,17 @@ describe('P0c functional e2e smoke', () => {
     expect(after.mcpServers['Other Tool']).toBeTruthy();
     expect(normalizePath(after.mcpServers['AT Series'].args?.[0] ?? '')).toBe(normalizePath(hubJsPath(home)));
     expect(after.mcpServers['AT Series'].env?.AT_SERIES_HOST_APP).toBe('cursor');
+    expect(after.mcpServers['AT Series'].env?.AT_SERIES_TOOL_SELECTION_IDLE_MS).toBe('0');
     const auto = after.mcpServers['AT Series'].autoApprove ?? [];
-    expect(auto).toContain('jumpserver_list_assets');
+    expect(auto).toEqual([
+      'at_list_providers',
+      'at_search_tools',
+      'at_get_tool',
+      'at_select_tools',
+      'at_clear_tool_selection'
+    ]);
+    expect(auto).not.toContain('jumpserver_list_assets');
     expect(auto).not.toContain('jumpserver_send_terminal_input');
-    expect(auto).not.toContain('jumpserver_mysql_send_input');
-    expect(auto).not.toContain('jumpserver_run_terminal_command');
-    expect(auto).not.toContain('jumpserver_sftp_write_file');
 
     await bridge.dispose();
     const afterDispose = await listBridgeRecords({ home, hostApp: 'cursor' });
