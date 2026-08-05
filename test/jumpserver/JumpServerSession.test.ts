@@ -63,6 +63,36 @@ describe('JumpServerSession', () => {
   });
 
 
+  it('creates Redis db_client tokens and opens the same KoKo terminal socket', async () => {
+    const fakeClient = client(socket, 'redis');
+    const session = new JumpServerSession({
+      asset: { id: 'redis-1', name: 'redis-1' },
+      connectionKind: 'redis',
+      client: fakeClient,
+      events
+    });
+
+    await session.connect();
+    socket.emit('message', JSON.stringify({ id: 'connect-1', type: 'CONNECT', data: '{}' }));
+
+    expect(fakeClient.createConnectionToken).toHaveBeenCalledWith({
+      assetId: 'redis-1',
+      account: { id: 'account-1', alias: 'account-alias-1', username: 'root', hasSecret: true },
+      protocol: 'redis'
+    });
+    expect(fakeClient.openKokoWebSocket).toHaveBeenCalledWith({
+      endpoint: { host: 'koko.example.com', https_port: 443 },
+      tokenId: 'token-1',
+      cols: 80,
+      rows: 24
+    });
+    expect(socket.sent.at(-1)).toBe(JSON.stringify({
+      id: 'connect-1',
+      type: 'TERMINAL_INIT',
+      data: JSON.stringify({ cols: 80, rows: 24, code: '' })
+    }));
+  });
+
   it('creates MySQL db_client tokens and opens the same KoKo terminal socket', async () => {
     const fakeClient = client(socket, 'mysql');
     const session = new JumpServerSession({
