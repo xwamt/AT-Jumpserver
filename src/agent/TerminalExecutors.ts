@@ -46,6 +46,23 @@ export interface MysqlSqlExecutionResult {
   truncated: boolean;
 }
 
+export interface RedisCommandExecutionInput extends TerminalExecutionTarget {
+  command: string;
+  timeoutMs?: number;
+  maxOutputBytes?: number;
+}
+
+export interface RedisCommandExecutionResult {
+  terminalId: string;
+  assetId: string;
+  assetName: string;
+  command: string;
+  output: string;
+  durationMs: number;
+  timedOut: boolean;
+  truncated: boolean;
+}
+
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 128_000;
@@ -151,6 +168,52 @@ export class MysqlCliExecutor {
   }
 }
 
+export class RedisCliExecutor {
+  constructor(private readonly options: { idFactory?: () => string } = {}) {}
+
+  async execute(input: RedisCommandExecutionInput): Promise<RedisCommandExecutionResult> {
+    const id = this.options.idFactory?.() ?? randomUUID().replaceAll('-', '');
+    const startMarker = `__JMS_REDIS_START_${id}__`;
+    const endMarker = `__JMS_REDIS_END_${id}__`;
+    const timeoutMs = clamp(input.timeoutMs, DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS);
+    const maxOutputBytes = clamp(input.maxOutputBytes, DEFAULT_MAX_OUTPUT_BYTES, MAX_OUTPUT_BYTES);
+    const started = Date.now();
+    const collection = input.output.collectUntil({
+      marker: endMarker,
+      isComplete: (text) => {
+        const start = findStandaloneRedisMarker(text, startMarker);
+        return start >= 0 && findStandaloneRedisMarker(text, endMarker, start + startMarker.length) >= 0;
+      },
+      findTerminatorIndex: (text) => {
+        const start = findStandaloneRedisMarker(text, startMarker);
+        if (start < 0) {
+          return -1;
+        }
+        return findStandaloneRedisMarker(text, endMarker, start + startMarker.length);
+      },
+      timeoutMs,
+      maxOutputBytes
+    });
+    const command = input.command.trim();
+    input.write(
+      `ECHO ${startMarker}\n` +
+      `${command}\n` +
+      `ECHO ${endMarker}\n`
+    );
+    const collected = await collection;
+    return {
+      terminalId: input.terminalId,
+      assetId: input.assetId,
+      assetName: input.assetName,
+      command,
+      output: stripAnsi(trimBeforeMarker(collected.output, startMarker)),
+      durationMs: Date.now() - started,
+      timedOut: collected.timedOut,
+      truncated: collected.truncated
+    };
+  }
+}
+
 /**
  * One shell prompt entry per MCP confirmation: start marker + command + end marker.
  * Marker fragments stay split across printf args so echo cannot satisfy collectors.
@@ -198,6 +261,20 @@ function trimBeforeMarker(text: string, marker: string): string {
   // Prefer the last start marker (executed printf/SELECT output) over an earlier echo.
   const index = text.lastIndexOf(marker);
   return index >= 0 ? text.slice(index + marker.length) : text;
+}
+
+/** Skip markers embedded in typed `ECHO <marker>` lines; match ECHO response lines only. */
+function findStandaloneRedisMarker(text: string, marker: string, fromIndex = 0): number {
+  let index = text.indexOf(marker, fromIndex);
+  while (index >= 0) {
+    const lineStart = text.lastIndexOf('\n', index - 1) + 1;
+    const prefix = text.slice(lineStart, index);
+    if (!/ECHO\s+$/i.test(prefix)) {
+      return index;
+    }
+    index = text.indexOf(marker, index + marker.length);
+  }
+  return -1;
 }
 
 function stripAnsi(text: string): string {

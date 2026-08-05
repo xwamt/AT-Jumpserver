@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { TerminalOutputBuffer } from '../../src/agent/TerminalOutputBuffer';
-import { MysqlCliExecutor, ShellTerminalExecutor, wrapShellCommand } from '../../src/agent/TerminalExecutors';
+import {
+  MysqlCliExecutor,
+  RedisCliExecutor,
+  ShellTerminalExecutor,
+  wrapShellCommand
+} from '../../src/agent/TerminalExecutors';
 
 describe('TerminalExecutors', () => {
   it('wraps shell commands as a single prompt line', () => {
@@ -172,5 +177,36 @@ describe('TerminalExecutors', () => {
     expect(result.timedOut).toBe(false);
     expect(result.output).toContain('61');
     expect(result.output).not.toContain('\u001b[');
+  });
+
+  it('wraps Redis commands with ECHO markers and returns inner output', async () => {
+    const output = new TerminalOutputBuffer();
+    const write = vi.fn((input: string) => {
+      expect(input).toContain("ECHO __JMS_REDIS_START_abc__");
+      expect(input).toContain('PING');
+      expect(input).toContain("ECHO __JMS_REDIS_END_abc__");
+      output.append(input);
+      output.append('__JMS_REDIS_START_abc__\n');
+      output.append('PONG\n');
+      output.append('__JMS_REDIS_END_abc__\n');
+    });
+    const executor = new RedisCliExecutor({ idFactory: () => 'abc' });
+
+    await expect(executor.execute({
+      terminalId: 'terminal-1',
+      assetId: 'redis-1',
+      assetName: 'redis-1',
+      command: 'PING',
+      write,
+      output,
+      timeoutMs: 1000,
+      maxOutputBytes: 1024
+    })).resolves.toMatchObject({
+      terminalId: 'terminal-1',
+      command: 'PING',
+      output: expect.stringContaining('PONG'),
+      timedOut: false,
+      truncated: false
+    });
   });
 });
