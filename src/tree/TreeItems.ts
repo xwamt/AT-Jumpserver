@@ -23,7 +23,7 @@ export class AssetTreeItem extends vscode.TreeItem {
     this.label = asset.name;
     this.contextValue = contextValueForKind(kind);
     this.description = assetDescription(asset, kind);
-    this.tooltip = `${asset.name}${asset.address ? ` (${asset.address})` : ''}${kind === 'mysql' ? ' - MySQL' : ''}`;
+    this.tooltip = `${asset.name}${asset.address ? ` (${asset.address})` : ''}${kind === 'mysql' ? ' - MySQL' : kind === 'redis' ? ' - Redis' : ''}`;
     this.command = {
       command: 'jumpserverManager.connect',
       title: 'Connect',
@@ -38,6 +38,9 @@ function contextValueForKind(kind: JumpServerConnectionKind): string {
   if (kind === 'mysql') {
     return 'jumpserverMysqlAsset';
   }
+  if (kind === 'redis') {
+    return 'jumpserverRedisAsset';
+  }
   if (kind === 'ssh') {
     return 'jumpserverAsset';
   }
@@ -48,6 +51,9 @@ function assetDescription(asset: CachedJumpServerAsset, kind: JumpServerConnecti
   const base = asset.address || asset.platform || (isDatabaseAsset(asset) ? asset.type : '');
   if (kind === 'mysql') {
     return base ? `${base} - MySQL` : 'MySQL';
+  }
+  if (kind === 'redis') {
+    return base ? `${base} - Redis` : 'Redis';
   }
   return base;
 }

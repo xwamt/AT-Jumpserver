@@ -88,7 +88,7 @@ describe('AT JumpServer Terminal manifest', () => {
     });
   });
 
-  it('shows the connect menu for SSH, MySQL, and unsupported JumpServer assets', () => {
+  it('shows the connect menu for SSH, MySQL, Redis, and unsupported JumpServer assets', () => {
     const connectMenu = manifest.contributes.menus['view/item/context'].find(
       (item: { command: string }) => item.command === 'jumpserverManager.connect'
     );
@@ -96,10 +96,11 @@ describe('AT JumpServer Terminal manifest', () => {
     expect(connectMenu.when).toContain('view == jumpserverManager.assets');
     expect(connectMenu.when).toContain('jumpserverAsset');
     expect(connectMenu.when).toContain('jumpserverMysqlAsset');
+    expect(connectMenu.when).toContain('jumpserverRedisAsset');
     expect(connectMenu.when).toContain('jumpserverUnsupportedAsset');
   });
 
-  it('shows Copy Host IP for SSH, MySQL, and unsupported JumpServer assets', () => {
+  it('shows Copy Host IP for SSH, MySQL, Redis, and unsupported JumpServer assets', () => {
     expect(manifest.contributes.commands).toEqual(expect.arrayContaining([
       expect.objectContaining({
         command: 'jumpserverManager.copyHostIp',
@@ -115,6 +116,7 @@ describe('AT JumpServer Terminal manifest', () => {
     expect(copyHostIpMenu.when).toContain('view == jumpserverManager.assets');
     expect(copyHostIpMenu.when).toContain('jumpserverAsset');
     expect(copyHostIpMenu.when).toContain('jumpserverMysqlAsset');
+    expect(copyHostIpMenu.when).toContain('jumpserverRedisAsset');
     expect(copyHostIpMenu.when).toContain('jumpserverUnsupportedAsset');
   });
 
