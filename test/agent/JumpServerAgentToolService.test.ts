@@ -109,39 +109,145 @@ describe('JumpServerAgentToolService', () => {
     expect(write).toHaveBeenCalledWith('whoami\n');
   });
 
-  it('requires confirmation before mysqlSendInput', async () => {
+  it('does not expose mysqlGetContext/mysqlSendInput', () => {
+    const service = serviceWith({});
+    expect('mysqlGetContext' in service).toBe(false);
+    expect('mysqlSendInput' in service).toBe(false);
+  });
+
+  it('executes read-only Redis commands without confirmation', async () => {
+    const terminalContext = new TerminalContextRegistry();
+    const write = vi.fn((data: string) => {
+      const startMatch = data.match(/__JMS_REDIS_START_([0-9a-f]+)__/);
+      const id = startMatch?.[1] ?? 'unknown';
+      const buffer = terminalContext.getOutputBuffer('redis-terminal');
+      buffer?.append(data);
+      buffer?.append(`__JMS_REDIS_START_${id}__\nPONG\n__JMS_REDIS_END_${id}__\n`);
+    });
+    const confirm = vi.fn(async () => true);
+    terminalContext.setActive({
+      terminalId: 'redis-terminal',
+      asset: asset({
+        id: 'redis-1',
+        name: 'redis-1',
+        type: 'redis',
+        platform: 'Redis',
+        category: 'database',
+        protocolNames: ['redis']
+      }),
+      connected: true,
+      write
+    });
+    const service = serviceWith({ confirm, terminalContext });
+
+    await expect(service.redisExecuteCommand({ command: 'PING' })).resolves.toMatchObject({
+      terminalId: 'redis-terminal',
+      assetId: 'redis-1',
+      command: 'PING',
+      output: expect.stringContaining('PONG'),
+      timedOut: false,
+      truncated: false
+    });
+    expect(confirm).not.toHaveBeenCalled();
+    expect(write).toHaveBeenCalled();
+  });
+
+  it('requires confirmation for state-changing Redis commands', async () => {
     const write = vi.fn();
     const confirm = vi.fn(async () => false);
     const terminalContext = new TerminalContextRegistry();
     terminalContext.setActive({
-      terminalId: 'mysql-terminal',
-      asset: asset({ id: 'mysql-1', name: 'mysql-1', type: 'mysql', platform: 'MySQL', protocolNames: ['mysql'] }),
+      terminalId: 'redis-terminal',
+      asset: asset({
+        id: 'redis-1',
+        name: 'redis-1',
+        type: 'redis',
+        platform: 'Redis',
+        category: 'database',
+        protocolNames: ['redis']
+      }),
       connected: true,
       write
     });
     const service = serviceWith({ confirm, terminalContext });
-    await expect(service.mysqlSendInput({ input: 'DROP TABLE t;\n' })).rejects.toThrow(/cancelled/i);
+
+    await expect(service.redisExecuteCommand({ command: 'SET key value' })).rejects.toThrow(
+      'Redis command execution was cancelled.'
+    );
     expect(confirm).toHaveBeenCalled();
     expect(write).not.toHaveBeenCalled();
   });
 
-  it('writes mysql input after confirmation', async () => {
+  it('rejects blocking Redis commands before writing', async () => {
     const write = vi.fn();
     const confirm = vi.fn(async () => true);
     const terminalContext = new TerminalContextRegistry();
     terminalContext.setActive({
-      terminalId: 'mysql-terminal',
-      asset: asset({ id: 'mysql-1', name: 'mysql-1', type: 'mysql', platform: 'MySQL', protocolNames: ['mysql'] }),
+      terminalId: 'redis-terminal',
+      asset: asset({
+        id: 'redis-1',
+        name: 'redis-1',
+        type: 'redis',
+        platform: 'Redis',
+        category: 'database',
+        protocolNames: ['redis']
+      }),
       connected: true,
       write
     });
     const service = serviceWith({ confirm, terminalContext });
 
-    await expect(service.mysqlSendInput({ input: 'SELECT 1;\n' })).resolves.toMatchObject({
-      terminalId: 'mysql-terminal',
+    await expect(service.redisExecuteCommand({ command: 'SUBSCRIBE ch' })).rejects.toThrow(
+      /blocking|SUBSCRIBE|send_terminal_input/i
+    );
+    expect(write).not.toHaveBeenCalled();
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it('requires a Redis terminal for redisExecuteCommand', async () => {
+    const write = vi.fn();
+    const confirm = vi.fn(async () => true);
+    const terminalContext = new TerminalContextRegistry();
+    terminalContext.setActive({
+      terminalId: 'terminal-1',
+      asset: asset({ id: 'ssh-1', name: 'web-1', protocolNames: ['ssh'] }),
+      connected: true,
+      write
+    });
+    const service = serviceWith({ confirm, terminalContext });
+
+    await expect(service.redisExecuteCommand({ command: 'PING' })).rejects.toThrow(
+      'A connected JumpServer Redis terminal is required.'
+    );
+    expect(write).not.toHaveBeenCalled();
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it('writes Redis terminal input after confirmation via sendTerminalInput', async () => {
+    const write = vi.fn();
+    const confirm = vi.fn(async () => true);
+    const terminalContext = new TerminalContextRegistry();
+    terminalContext.setActive({
+      terminalId: 'redis-terminal',
+      asset: asset({
+        id: 'redis-1',
+        name: 'redis-1',
+        type: 'redis',
+        platform: 'Redis',
+        category: 'database',
+        protocolNames: ['redis']
+      }),
+      connected: true,
+      write
+    });
+    const service = serviceWith({ confirm, terminalContext });
+
+    await expect(service.sendTerminalInput({ input: 'PING\n' })).resolves.toMatchObject({
+      terminalId: 'redis-terminal',
       bytesWritten: expect.any(Number)
     });
-    expect(write).toHaveBeenCalledWith('SELECT 1;\n');
+    expect(confirm).toHaveBeenCalled();
+    expect(write).toHaveBeenCalledWith('PING\n');
   });
 
   it('runs one shell wrapper write per confirmed command and serializes parallel calls', async () => {
