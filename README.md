@@ -17,7 +17,7 @@ AT JumpServer Terminal is a VS Code / Cursor extension for opening browser-style
 - Copy Host IP from the asset list context menu
 - xterm.js terminal UI
 - JumpServer KoKo WebSocket terminal sessions
-- MCP tools for JumpServer assets, terminal context, SFTP, SSH terminal commands, and MySQL CLI SQL execution (via AT Series hub)
+- MCP tools for JumpServer assets, terminal context, SFTP, SSH terminal commands, MySQL CLI SQL execution, and Redis CLI command execution (via AT Series hub)
 
 ## Not Supported In This Version
 
