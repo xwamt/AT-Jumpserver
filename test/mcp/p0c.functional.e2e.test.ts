@@ -98,7 +98,7 @@ describe('P0c functional e2e smoke', () => {
 
     const tools = await fetchJson(`${base}/tools`, { headers: { [AT_SERIES_TOKEN_HEADER]: token } });
     expect(tools.status).toBe(200);
-    expect(tools.json.tools).toHaveLength(15);
+    expect(tools.json.tools).toHaveLength(14);
     expect(tools.json.tools.map((t: { name: string }) => t.name).sort()).toEqual(
       AT_JUMPSERVER_TOOL_CATALOG.map((t) => t.name).sort()
     );
