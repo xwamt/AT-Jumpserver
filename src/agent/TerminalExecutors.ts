@@ -202,12 +202,15 @@ export class RedisCliExecutor {
       `ECHO ${endMarker}\r`
     );
     const collected = await collection;
+    // collectUntil keeps the end marker in `terminator`, not `output`.
+    const captured = `${collected.output}${collected.terminator ?? ''}`;
+    const between = extractBetweenRedisMarkers(captured, startMarker, endMarker);
     return {
       terminalId: input.terminalId,
       assetId: input.assetId,
       assetName: input.assetName,
       command,
-      output: stripAnsi(trimBeforeMarker(collected.output, startMarker)),
+      output: cleanRedisCliCapture(between, command),
       durationMs: Date.now() - started,
       timedOut: collected.timedOut,
       truncated: collected.truncated
@@ -264,13 +267,32 @@ function trimBeforeMarker(text: string, marker: string): string {
   return index >= 0 ? text.slice(index + marker.length) : text;
 }
 
-/** Skip markers embedded in typed `ECHO <marker>` lines; match ECHO response lines only. */
+function extractBetweenRedisMarkers(text: string, startMarker: string, endMarker: string): string {
+  const start = findStandaloneRedisMarker(text, startMarker);
+  if (start < 0) {
+    return text;
+  }
+  const end = findStandaloneRedisMarker(text, endMarker, start + startMarker.length);
+  if (end >= 0) {
+    return text.slice(start + startMarker.length, end);
+  }
+  return text.slice(start + startMarker.length);
+}
+
+/**
+ * Accept only a line whose sole content is the marker (ECHO response).
+ * Rejects typed lines like `127.0.0.1:44563> ECHO __JMS_REDIS_END_…__`.
+ */
 function findStandaloneRedisMarker(text: string, marker: string, fromIndex = 0): number {
   let index = text.indexOf(marker, fromIndex);
   while (index >= 0) {
     const lineStart = redisLineStartBefore(text, index);
-    const prefix = text.slice(lineStart, index);
-    if (!/ECHO\s+$/i.test(prefix)) {
+    let lineEnd = index + marker.length;
+    while (lineEnd < text.length && text[lineEnd] !== '\n' && text[lineEnd] !== '\r') {
+      lineEnd += 1;
+    }
+    const line = text.slice(lineStart, lineEnd).trim();
+    if (line === marker) {
       return index;
     }
     index = text.indexOf(marker, index + marker.length);
@@ -286,6 +308,35 @@ function redisLineStartBefore(text: string, index: number): number {
     }
   }
   return 0;
+}
+
+/** Drop redis-cli prompt redraws and echoed command/ECHO lines from captured body. */
+function cleanRedisCliCapture(text: string, command: string): string {
+  // Normalize CR before stripAnsi — stripAnsi deletes `\r` and would glue lines together.
+  const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const withoutAnsi = stripAnsi(normalized);
+  const commandNorm = command.trim();
+  const kept: string[] = [];
+  for (const line of withoutAnsi.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+    if (/^\d+\.\d+\.\d+\.\d+:\d+>/.test(trimmed)) {
+      continue;
+    }
+    if (trimmed === commandNorm) {
+      continue;
+    }
+    if (/^ECHO\s+/i.test(trimmed)) {
+      continue;
+    }
+    if (/^__JMS_REDIS_(START|END)_[a-z0-9]+__$/i.test(trimmed)) {
+      continue;
+    }
+    kept.push(trimmed);
+  }
+  return kept.join('\n');
 }
 
 function stripAnsi(text: string): string {

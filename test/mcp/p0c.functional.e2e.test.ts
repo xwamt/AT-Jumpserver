@@ -69,7 +69,7 @@ describe('P0c functional e2e smoke', () => {
     const bridge = new BridgeServer({
       service,
       hostApp: 'cursor',
-      pluginVersion: '0.1.7',
+      pluginVersion: '0.1.8',
       home
     });
     await bridge.start();
@@ -133,13 +133,13 @@ describe('P0c functional e2e smoke', () => {
     const bundlePath = join(hubDir, 'packaged-hub.js');
     await writeFile(bundlePath, 'console.log("hub-smoke");\n', 'utf8');
     const sync = await syncHubBundle({
-      version: '0.1.1',
+      version: '0.1.8',
       bundlePath,
       pluginId: AT_JUMPSERVER_PLUGIN_ID,
-      pluginVersion: '0.1.7',
+      pluginVersion: '0.1.8',
       home
     });
-    expect(sync.activeVersion).toBe('0.1.1');
+    expect(sync.activeVersion).toBe('0.1.8');
     await access(hubJsPath(home));
 
     await ensureAtSeriesMcpConfig({
