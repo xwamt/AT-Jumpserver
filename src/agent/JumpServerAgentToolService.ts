@@ -212,6 +212,9 @@ export class JumpServerAgentToolService {
     if (!command) {
       throw new Error('Redis command cannot be empty.');
     }
+    if (/[\r\n]/.test(command)) {
+      throw new Error('Only a single Redis command is supported per jumpserver_redis_execute_command call.');
+    }
     if (isBlockingRedisCommand(command)) {
       throw new Error(
         'Blocking Redis commands are not supported via jumpserver_redis_execute_command. ' +

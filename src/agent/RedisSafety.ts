@@ -19,6 +19,9 @@ const READ_ONLY_VERBS = new Set([
 ]);
 
 export function isBlockingRedisCommand(command: string): boolean {
+  if (hasMultiLineRedisPayload(command)) {
+    return true;
+  }
   const tokens = tokenize(command);
   if (tokens.length === 0) {
     return false;
@@ -34,6 +37,9 @@ export function isBlockingRedisCommand(command: string): boolean {
 }
 
 export function isReadOnlyRedisCommand(command: string): boolean {
+  if (hasMultiLineRedisPayload(command)) {
+    return false;
+  }
   const tokens = tokenize(command);
   if (tokens.length === 0) {
     return false;
@@ -46,10 +52,16 @@ export function isReadOnlyRedisCommand(command: string): boolean {
   return READ_ONLY_VERBS.has(verb);
 }
 
+function hasMultiLineRedisPayload(command: string): boolean {
+  return /[\r\n]/.test(normalizeRedisCommand(command));
+}
+
+function normalizeRedisCommand(command: string): string {
+  return command.replace(/\r\n/g, '\n').trim();
+}
+
 function tokenize(command: string): string[] {
-  return command
-    .replace(/\r\n/g, '\n')
-    .trim()
+  return normalizeRedisCommand(command)
     .split(/\s+/)
     .filter(Boolean);
 }

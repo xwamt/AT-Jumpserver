@@ -50,4 +50,13 @@ describe('RedisSafety', () => {
   it('does not treat plain XREAD without BLOCK as blocking', () => {
     expect(isBlockingRedisCommand('XREAD COUNT 1 STREAMS s 0-0')).toBe(false);
   });
+
+  it.each([
+    'PING\nSUBSCRIBE ch',
+    'GET k\nFLUSHALL',
+    'PING\r\nSUBSCRIBE ch'
+  ])('rejects multi-line payloads: %s', (command) => {
+    expect(isBlockingRedisCommand(command)).toBe(true);
+    expect(isReadOnlyRedisCommand(command)).toBe(false);
+  });
 });

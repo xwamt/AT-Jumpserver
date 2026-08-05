@@ -178,6 +178,35 @@ describe('JumpServerAgentToolService', () => {
     expect(write).not.toHaveBeenCalled();
   });
 
+  it('rejects multi-line Redis execute payloads before writing', async () => {
+    const write = vi.fn();
+    const confirm = vi.fn(async () => true);
+    const terminalContext = new TerminalContextRegistry();
+    terminalContext.setActive({
+      terminalId: 'redis-terminal',
+      asset: asset({
+        id: 'redis-1',
+        name: 'redis-1',
+        type: 'redis',
+        platform: 'Redis',
+        category: 'database',
+        protocolNames: ['redis']
+      }),
+      connected: true,
+      write
+    });
+    const service = serviceWith({ confirm, terminalContext });
+
+    await expect(service.redisExecuteCommand({ command: 'PING\nSUBSCRIBE ch' })).rejects.toThrow(
+      /single Redis command/i
+    );
+    await expect(service.redisExecuteCommand({ command: 'GET k\nFLUSHALL' })).rejects.toThrow(
+      /single Redis command/i
+    );
+    expect(write).not.toHaveBeenCalled();
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
   it('rejects blocking Redis commands before writing', async () => {
     const write = vi.fn();
     const confirm = vi.fn(async () => true);
