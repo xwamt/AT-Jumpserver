@@ -24,7 +24,7 @@ describe('P0c functional e2e smoke', () => {
     }
   });
 
-  it('runs Bridge â†?registry â†?health/tools/invoke â†?confirm cancel â†?installer â†?hub sync â†?dispose', async () => {
+  it('runs Bridge ï¿?registry ï¿?health/tools/invoke ï¿?confirm cancel ï¿?installer ï¿?hub sync ï¿?dispose', async () => {
     const home = await mkdtemp(join(tmpdir(), 'p0c-func-'));
     cleanups.push(async () => {
       await rm(home, { recursive: true, force: true });
@@ -69,7 +69,7 @@ describe('P0c functional e2e smoke', () => {
     const bridge = new BridgeServer({
       service,
       hostApp: 'cursor',
-      pluginVersion: '0.1.5',
+      pluginVersion: '0.1.7',
       home
     });
     await bridge.start();
@@ -136,7 +136,7 @@ describe('P0c functional e2e smoke', () => {
       version: '0.1.1',
       bundlePath,
       pluginId: AT_JUMPSERVER_PLUGIN_ID,
-      pluginVersion: '0.1.5',
+      pluginVersion: '0.1.7',
       home
     });
     expect(sync.activeVersion).toBe('0.1.1');

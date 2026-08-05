@@ -195,10 +195,11 @@ export class RedisCliExecutor {
       maxOutputBytes
     });
     const command = input.command.trim();
+    // redis-cli submits on CR; LF-only writes stick in the edit buffer and never execute.
     input.write(
-      `ECHO ${startMarker}\n` +
-      `${command}\n` +
-      `ECHO ${endMarker}\n`
+      `ECHO ${startMarker}\r` +
+      `${command}\r` +
+      `ECHO ${endMarker}\r`
     );
     const collected = await collection;
     return {
@@ -267,7 +268,7 @@ function trimBeforeMarker(text: string, marker: string): string {
 function findStandaloneRedisMarker(text: string, marker: string, fromIndex = 0): number {
   let index = text.indexOf(marker, fromIndex);
   while (index >= 0) {
-    const lineStart = text.lastIndexOf('\n', index - 1) + 1;
+    const lineStart = redisLineStartBefore(text, index);
     const prefix = text.slice(lineStart, index);
     if (!/ECHO\s+$/i.test(prefix)) {
       return index;
@@ -275,6 +276,16 @@ function findStandaloneRedisMarker(text: string, marker: string, fromIndex = 0):
     index = text.indexOf(marker, index + marker.length);
   }
   return -1;
+}
+
+function redisLineStartBefore(text: string, index: number): number {
+  for (let i = index - 1; i >= 0; i -= 1) {
+    const ch = text[i];
+    if (ch === '\n' || ch === '\r') {
+      return i + 1;
+    }
+  }
+  return 0;
 }
 
 function stripAnsi(text: string): string {
