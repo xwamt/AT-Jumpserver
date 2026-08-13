@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { createServer, type Server } from 'node:http';
 import { homedir } from 'node:os';
 import type { z } from 'zod';
 import {
@@ -30,6 +30,12 @@ import { AT_JUMPSERVER_PLUGIN_ID, AT_JUMPSERVER_TOOL_CATALOG } from './toolCatal
 
 /** Heartbeat cadence for `~/.at-series` registry freshness (protocol: ≤30s). */
 const BRIDGE_HEARTBEAT_INTERVAL_MS = 30_000;
+
+/** Deadline for a client to deliver a whole request; not a response deadline. */
+const BRIDGE_REQUEST_TIMEOUT_MS = 30_000;
+
+/** Deadline for the request line and headers alone. Must not exceed the above. */
+const BRIDGE_HEADERS_TIMEOUT_MS = 10_000;
 
 export interface BridgePublisherFactoryOptions {
   bridgeId: string;
@@ -67,6 +73,24 @@ export interface BridgeResponse {
   body: unknown;
 }
 
+/**
+ * The subset of `http.IncomingMessage` the bridge touches. Narrowing it here
+ * lets tests drive the node path with a stream they can observe, instead of
+ * only being able to assert on what a real socket happened to deliver.
+ */
+export interface BridgeNodeRequest extends AsyncIterable<Buffer | string> {
+  method?: string;
+  url?: string;
+  headers: Record<string, string | string[] | undefined>;
+}
+
+/** The subset of `http.ServerResponse` the bridge touches. */
+export interface BridgeNodeResponse {
+  statusCode: number;
+  setHeader(name: string, value: string): void;
+  end(chunk?: string): void;
+}
+
 const DEFAULT_PLUGIN_VERSION = '0.0.0';
 
 export class BridgeServer {
@@ -95,16 +119,18 @@ export class BridgeServer {
       return;
     }
     this.token = randomBytes(32).toString('hex');
-    const handler = createBridgeRequestHandler({
+    this.server = createServer(createBridgeNodeListener({
       service: this.service,
       token: this.token,
       bridgeId: this.bridgeId,
       hostApp: this.hostApp,
       pluginVersion: this.pluginVersion
-    });
-    this.server = createServer((request, response) => {
-      void handleNodeRequest(handler, request, response);
-    });
+    }));
+    // Node's defaults (5 min / 1 min) let a local process pin sockets open by
+    // dribbling a request. These bound receipt of the request only, so they do
+    // not cap how long a tool call may take to answer.
+    this.server.requestTimeout = BRIDGE_REQUEST_TIMEOUT_MS;
+    this.server.headersTimeout = BRIDGE_HEADERS_TIMEOUT_MS;
     await new Promise<void>((resolve, reject) => {
       this.server!.once('error', reject);
       this.server!.listen(0, BRIDGE_HOST, () => resolve());
@@ -506,21 +532,41 @@ function bridgeError(
   };
 }
 
+/**
+ * Wires a `createBridgeRequestHandler` into the node HTTP plumbing: body
+ * limiting, JSON framing, and the pre-body auth gate.
+ */
+export function createBridgeNodeListener(
+  dependencies: BridgeHandlerDependencies
+): (request: BridgeNodeRequest, response: BridgeNodeResponse) => void {
+  const handler = createBridgeRequestHandler(dependencies);
+  return (request, response) => {
+    void handleNodeRequest(handler, dependencies.token, request, response);
+  };
+}
+
 async function handleNodeRequest(
   handler: ReturnType<typeof createBridgeRequestHandler>,
-  request: IncomingMessage,
-  response: ServerResponse
+  token: string,
+  request: BridgeNodeRequest,
+  response: BridgeNodeResponse
 ): Promise<void> {
   try {
+    // The token lives in a header, so it can be checked before a single body
+    // byte is buffered. Reading first would let every local process make the
+    // extension host hold BRIDGE_MAX_BODY_BYTES per concurrent request without
+    // ever presenting a credential.
+    if (!isAuthorized(request.headers, token)) {
+      writeJson(response, 401, {
+        error: { code: 'UNAUTHORIZED', message: 'Unauthorized MCP bridge request.' }
+      });
+      return;
+    }
     const limited = await readLimitedBody(request, BRIDGE_MAX_BODY_BYTES);
     if (!limited.ok) {
-      response.statusCode = limited.status;
-      response.setHeader('content-type', 'application/json; charset=utf-8');
-      response.end(
-        JSON.stringify({
-          error: { code: 'PAYLOAD_TOO_LARGE', message: limited.error }
-        })
-      );
+      writeJson(response, limited.status, {
+        error: { code: 'PAYLOAD_TOO_LARGE', message: limited.error }
+      });
       return;
     }
     const result = await handler({
@@ -529,16 +575,16 @@ async function handleNodeRequest(
       headers: request.headers,
       body: limited.body
     });
-    response.statusCode = result.status;
-    response.setHeader('content-type', 'application/json; charset=utf-8');
-    response.end(JSON.stringify(result.body));
+    writeJson(response, result.status, result.body);
   } catch (error) {
-    response.statusCode = 500;
-    response.setHeader('content-type', 'application/json; charset=utf-8');
-    response.end(
-      JSON.stringify({
-        error: { code: 'INTERNAL_ERROR', message: formatError(error) }
-      })
-    );
+    writeJson(response, 500, {
+      error: { code: 'INTERNAL_ERROR', message: formatError(error) }
+    });
   }
+}
+
+function writeJson(response: BridgeNodeResponse, status: number, body: unknown): void {
+  response.statusCode = status;
+  response.setHeader('content-type', 'application/json; charset=utf-8');
+  response.end(JSON.stringify(body));
 }
