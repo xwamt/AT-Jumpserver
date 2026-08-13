@@ -28,7 +28,7 @@ describe('P0c functional e2e smoke', () => {
     }
   });
 
-  it('runs Bridge �?registry �?health/tools/invoke �?confirm cancel �?installer �?hub sync �?dispose', async () => {
+  it('runs Bridge -> registry -> health/tools/invoke -> confirm cancel -> installer -> hub sync -> dispose', async () => {
     const home = await mkdtemp(join(tmpdir(), 'p0c-func-'));
     cleanups.push(async () => {
       await rm(home, { recursive: true, force: true });
