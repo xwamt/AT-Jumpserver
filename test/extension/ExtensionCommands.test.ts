@@ -14,6 +14,7 @@ const notificationsMock = vi.hoisted(() => ({
 const jumpServerClientMock = vi.hoisted(() => ({
   calls: [] as string[],
   ensureAuthToken: vi.fn(),
+  getUserProfile: vi.fn(),
   listAssetNodes: vi.fn(),
   listAssets: vi.fn(),
   openKokoSftpWebSocket: vi.fn(),
@@ -51,7 +52,10 @@ const mcpLifecycleMock = vi.hoisted(() => ({
   uninstallAtSeriesConfigForCurrentIde: vi.fn(async () => ({ removed: true }))
 }));
 
-vi.mock('../../src/jumpserver/JumpServerClient', () => ({
+vi.mock('../../src/jumpserver/JumpServerClient', async (importOriginal) => ({
+  // Keep the real pure helpers so the refresh command exercises the actual
+  // node-tree-to-path derivation rather than a stub of it.
+  ...await importOriginal<typeof import('../../src/jumpserver/JumpServerClient')>(),
   JumpServerClient: jumpServerClientMock.JumpServerClient
 }));
 
@@ -118,9 +122,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   jumpServerClientMock.calls.length = 0;
   jumpServerClientMock.ensureAuthToken.mockResolvedValue('token-1');
+  jumpServerClientMock.getUserProfile.mockResolvedValue({ id: 'user-1', username: 'alan' });
   jumpServerClientMock.listAssetNodes.mockImplementation(async () => {
     jumpServerClientMock.calls.push('nodes');
-    return [{ id: 'node-default', name: 'DEFAULT', path: ['DEFAULT'], assetIds: [], raw: {} }];
+    return [{ id: 'node-default', name: 'DEFAULT', path: ['DEFAULT'], assetIds: ['asset-1'], raw: {} }];
   });
   jumpServerClientMock.listAssets.mockImplementation(async () => {
     jumpServerClientMock.calls.push('assets');
@@ -166,6 +171,7 @@ beforeEach(() => {
   }));
   jumpServerClientMock.JumpServerClient.mockImplementation(() => ({
     ensureAuthToken: jumpServerClientMock.ensureAuthToken,
+    getUserProfile: jumpServerClientMock.getUserProfile,
     listAssetNodes: jumpServerClientMock.listAssetNodes,
     listAssets: jumpServerClientMock.listAssets,
     openKokoSftpWebSocket: jumpServerClientMock.openKokoSftpWebSocket
@@ -410,6 +416,31 @@ describe('extension command wiring', () => {
     expect(jumpServerClientMock.calls).toEqual(['nodes', 'assets']);
     expect(context.globalState.update).toHaveBeenCalledWith('jumpserverManager.cachedAssetNodes', expect.any(Array));
     expect(context.globalState.update).toHaveBeenCalledWith('jumpserverManager.cachedAssets', expect.any(Array));
+  });
+
+  it('hands the already-fetched node tree to the asset sync instead of refetching it', async () => {
+    activate(contextWithSettings());
+    const refresh = registeredCommand('jumpserverManager.refresh');
+
+    await refresh();
+
+    expect(jumpServerClientMock.listAssetNodes).toHaveBeenCalledTimes(1);
+    expect(jumpServerClientMock.listAssets).toHaveBeenCalledWith(
+      expect.objectContaining({ treePaths: new Map([['asset-1', ['DEFAULT']]]) })
+    );
+  });
+
+  it('verifies the account against the user profile without pulling the whole node tree', async () => {
+    activate(contextWithSettings());
+    const validate = registeredCommand('jumpserverManager.validate');
+
+    await validate();
+
+    expect(jumpServerClientMock.ensureAuthToken).toHaveBeenCalledTimes(1);
+    expect(jumpServerClientMock.getUserProfile).toHaveBeenCalledTimes(1);
+    expect(jumpServerClientMock.listAssetNodes).not.toHaveBeenCalled();
+    expect(jumpServerClientMock.listAssets).not.toHaveBeenCalled();
+    expect(notificationsMock.showTimedNotification).toHaveBeenCalledWith('JumpServer account verified.');
   });
 
   it('opens the unified terminal panel for MySQL assets', async () => {

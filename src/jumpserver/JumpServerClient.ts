@@ -437,7 +437,7 @@ export class JumpServerClient {
     return this.authToken;
   }
 
-  async listAssets(input: { limit: number; offset: number }): Promise<CachedJumpServerAsset[]> {
+  async listAssets(input: { limit: number; offset: number; treePaths?: AssetPathMap }): Promise<CachedJumpServerAsset[]> {
     await this.ensureAuthToken();
     const response = await this.authenticatedRequest(
       `/api/v1/perms/users/self/assets/?limit=${input.limit}&offset=${input.offset}`,
@@ -445,7 +445,9 @@ export class JumpServerClient {
       this.timeouts.listingMs
     );
     const body = await response.json() as ListPage | unknown[];
-    const treePaths = await this.safeListAssetTreePaths();
+    // all-with-assets/tree/ is the heaviest endpoint JumpServer exposes; a
+    // caller that already holds the nodes must be able to say so.
+    const treePaths = input.treePaths ?? await this.safeListAssetTreePaths();
     const items = Array.isArray(body)
       ? body
       : Array.isArray(body.results)
@@ -473,6 +475,13 @@ export class JumpServerClient {
       this.timeouts.listingMs
     );
     return extractAssetTreeNodes(await response.json());
+  }
+
+  /** Cheapest call that proves the credentials and the org header work. */
+  async getUserProfile(): Promise<Record<string, unknown>> {
+    await this.ensureAuthToken();
+    const response = await this.authenticatedRequest('/api/v1/users/profile/');
+    return await response.json() as Record<string, unknown>;
   }
 
   async getAssetDetail(assetId: string): Promise<Record<string, any>> {
@@ -758,6 +767,11 @@ export function extractAssetTreeNodes(payload: unknown): CachedJumpServerNode[] 
     walkAssetTreeNode(item, [], nodes);
   }
   return nodes;
+}
+
+/** Lets a caller reuse a node tree it already paid for. */
+export function assetPathsFromNodes(nodes: CachedJumpServerNode[]): AssetPathMap {
+  return nodesToAssetPathMap(nodes);
 }
 
 function nodesToAssetPathMap(nodes: CachedJumpServerNode[]): AssetPathMap {

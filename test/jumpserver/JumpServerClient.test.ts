@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SELF_SIGNED_CERT, SELF_SIGNED_KEY } from '../../test-fixtures/selfSignedTls';
 import { listenHttp, listenHttps, type TestServer } from './testHttpServer';
 import {
+  assetPathsFromNodes,
   cookiesForUrl,
   defaultWebSocketFactory,
   parseSetCookieHeader,
@@ -217,6 +218,58 @@ function textResponse(body: string, init: ResponseInit = {}): Response {
     ...init
   });
 }
+
+describe('JumpServerClient node tree reuse', () => {
+  const settings = {
+    baseUrl: 'https://jumpserver.example.com',
+    orgId: '',
+    username: 'alan',
+    password: 'secret',
+    verifyTls: true
+  };
+
+  it('derives asset paths from nodes the caller already fetched', () => {
+    expect(
+      assetPathsFromNodes([
+        { id: 'n1', name: 'PROD', path: ['DEFAULT', 'PROD'], assetIds: ['asset-1', 'asset-2'], raw: {} },
+        { id: 'n2', name: 'UAT', path: ['DEFAULT', 'UAT'], assetIds: ['asset-3'], raw: {} }
+      ])
+    ).toEqual(new Map([
+      ['asset-1', ['DEFAULT', 'PROD']],
+      ['asset-2', ['DEFAULT', 'PROD']],
+      ['asset-3', ['DEFAULT', 'UAT']]
+    ]));
+  });
+
+  it('skips the node tree endpoint when the caller injects the paths', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ token: 'bearer-1' }))
+      .mockResolvedValueOnce(jsonResponse({ results: [{ id: 'asset-1', name: 'web-1' }], count: 1 }));
+    const client = new JumpServerClient(settings, fetchMock);
+
+    const assets = await client.listAssets({
+      limit: 200,
+      offset: 0,
+      treePaths: new Map([['asset-1', ['DEFAULT', 'PROD']]])
+    });
+
+    expect(assets[0]).toMatchObject({ nodePath: ['DEFAULT', 'PROD'], zoneName: 'PROD' });
+    expect(fetchMock.mock.calls.map(([url]) => url as string).filter((url) => url.includes('all-with-assets'))).toEqual([]);
+  });
+
+  it('verifies the account against the user profile without listing anything', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ token: 'bearer-1' }))
+      .mockResolvedValueOnce(jsonResponse({ id: 'user-1', username: 'alan' }));
+    const client = new JumpServerClient(settings, fetchMock);
+
+    await expect(client.getUserProfile()).resolves.toMatchObject({ username: 'alan' });
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      'https://jumpserver.example.com/api/v1/authentication/auth/',
+      'https://jumpserver.example.com/api/v1/users/profile/'
+    ]);
+  });
+});
 
 describe('JumpServerClient timeouts', () => {
   const settings = {

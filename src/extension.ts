@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { JumpServerAgentToolService } from './agent/JumpServerAgentToolService';
 import { JumpServerConfigManager } from './config/JumpServerConfigManager';
 import type { CachedJumpServerAsset } from './config/schema';
-import { JumpServerClient } from './jumpserver/JumpServerClient';
+import { assetPathsFromNodes, JumpServerClient } from './jumpserver/JumpServerClient';
 import { errorMessage } from './jumpserver/redaction';
 import { BridgeServer } from './mcp/BridgeServer';
 import { syncPackagedHub } from './mcp/hubSync';
@@ -153,7 +153,8 @@ export function activate(context: vscode.ExtensionContext): void {
       await runCommand(async () => {
         const client = await createClient(configManager);
         await client.ensureAuthToken();
-        await client.listAssets({ limit: 1, offset: 0 });
+        // Verifying an account should not drag the whole node tree along.
+        await client.getUserProfile();
         await showTimedNotification('JumpServer account verified.');
       });
     }),
@@ -163,7 +164,7 @@ export function activate(context: vscode.ExtensionContext): void {
         const nodes = await client.listAssetNodes();
         await configManager.saveCachedAssetNodes(nodes);
         treeProvider.refresh();
-        const assets = await client.listAssets({ limit: 200, offset: 0 });
+        const assets = await client.listAssets({ limit: 200, offset: 0, treePaths: assetPathsFromNodes(nodes) });
         await configManager.saveCachedAssets(assets);
         treeProvider.refresh();
         await showTimedNotification(`JumpServer assets refreshed: ${assets.length}`);
