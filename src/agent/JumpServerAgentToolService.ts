@@ -41,9 +41,25 @@ export class JumpServerAgentToolService {
     return next;
   }
 
-  async listAssets() {
+  async listAssets(input: { limit?: number; offset?: number; search?: string } = {}) {
     const assets = await this.dependencies.configManager.listCachedAssets();
-    return { assets: assets.map(assetSummary) };
+    const search = input.search?.trim().toLowerCase();
+    const filtered = search
+      ? assets.filter((asset) => {
+          const haystack = [asset.id, asset.name, asset.address, ...(asset.nodePath ?? [])].join(' ').toLowerCase();
+          return haystack.includes(search);
+        })
+      : assets;
+    const limit = clampPositiveInteger(input.limit, DEFAULT_LIST_ASSETS_LIMIT, MAX_LIST_ASSETS_LIMIT);
+    const offset = Number.isInteger(input.offset) && (input.offset as number) >= 0 ? (input.offset as number) : 0;
+    const page = filtered.slice(offset, offset + limit);
+    return {
+      assets: page.map(assetSummary),
+      total: filtered.length,
+      offset,
+      limit,
+      truncated: offset + page.length < filtered.length
+    };
   }
 
   async getTerminalContext() {
@@ -97,10 +113,24 @@ export class JumpServerAgentToolService {
     });
   }
 
-  async sftpListDirectory(input: { connectionKey?: string; terminalId?: string; path?: string }) {
+  async sftpListDirectory(input: {
+    connectionKey?: string;
+    terminalId?: string;
+    path?: string;
+    maxEntries?: number;
+  }) {
+    const entries = await this.dependencies.sftp.listDirectory(input.path);
+    const maxEntries = clampPositiveInteger(
+      input.maxEntries,
+      DEFAULT_SFTP_LIST_MAX_ENTRIES,
+      MAX_SFTP_LIST_MAX_ENTRIES
+    );
+    const truncated = entries.length > maxEntries;
     return {
       path: input.path,
-      entries: await this.dependencies.sftp.listDirectory(input.path)
+      entries: truncated ? entries.slice(0, maxEntries) : entries,
+      truncated,
+      total: entries.length
     };
   }
 
@@ -262,11 +292,23 @@ function assetSummary(asset: CachedJumpServerAsset) {
   };
 }
 
+const DEFAULT_LIST_ASSETS_LIMIT = 200;
+const MAX_LIST_ASSETS_LIMIT = 500;
+const DEFAULT_SFTP_LIST_MAX_ENTRIES = 500;
+const MAX_SFTP_LIST_MAX_ENTRIES = 5_000;
+
 function clampReadBytes(value: number | undefined): number {
   if (!Number.isInteger(value) || value === undefined || value <= 0) {
     return 64 * 1024;
   }
   return Math.min(value, 256 * 1024);
+}
+
+function clampPositiveInteger(value: number | undefined, fallback: number, max: number): number {
+  if (!Number.isInteger(value) || value === undefined || value <= 0) {
+    return fallback;
+  }
+  return Math.min(value, max);
 }
 
 function previewInput(value: string, maxChars = 400): string {

@@ -4,6 +4,14 @@ const terminalTargetFields = {
   terminalId: z.string().min(1).optional()
 };
 
+export const listAssetsBridgeSchema = z
+  .object({
+    limit: z.number().int().positive().optional(),
+    offset: z.number().int().nonnegative().optional(),
+    search: z.string().optional()
+  })
+  .strict();
+
 export const sendTerminalInputBridgeSchema = z
   .object({
     ...terminalTargetFields,
@@ -29,7 +37,8 @@ const sftpTargetFields = {
 export const sftpListDirectoryBridgeSchema = z
   .object({
     ...sftpTargetFields,
-    path: z.string().min(1).optional()
+    path: z.string().min(1).optional(),
+    maxEntries: z.number().int().positive().optional()
   })
   .strict();
 

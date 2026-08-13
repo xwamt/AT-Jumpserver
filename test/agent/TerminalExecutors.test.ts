@@ -173,4 +173,78 @@ describe('TerminalExecutors', () => {
     expect(result.output).toContain('61');
     expect(result.output).not.toContain('\u001b[');
   });
+
+  it('defaults shell maxOutputBytes to 64KB and clamps hard max to 256KB', async () => {
+    const output = {
+      collectUntil: vi.fn(async (options: { maxOutputBytes: number }) => {
+        expect(options.maxOutputBytes).toBe(expectedMax);
+        return {
+          output: '__JMS_CMD_START_abc__\nok\n__JMS_CMD_END_abc__0\n',
+          terminator: '__JMS_CMD_END_abc__0',
+          timedOut: false,
+          truncated: false
+        };
+      })
+    };
+    const write = vi.fn();
+    const executor = new ShellTerminalExecutor({ idFactory: () => 'abc' });
+
+    let expectedMax = 64_000;
+    await executor.execute({
+      terminalId: 'terminal-1',
+      assetId: 'asset-1',
+      assetName: 'ssh-1',
+      command: 'echo ok',
+      write,
+      output: output as never
+    });
+
+    expectedMax = 256_000;
+    await executor.execute({
+      terminalId: 'terminal-1',
+      assetId: 'asset-1',
+      assetName: 'ssh-1',
+      command: 'echo ok',
+      write,
+      output: output as never,
+      maxOutputBytes: 512_000
+    });
+  });
+
+  it('defaults mysql maxOutputBytes to 64KB and clamps hard max to 256KB', async () => {
+    const output = {
+      collectUntil: vi.fn(async (options: { maxOutputBytes: number }) => {
+        expect(options.maxOutputBytes).toBe(expectedMax);
+        return {
+          output: '| __JMS_SQL_START_abc__ |\nok\n| __JMS_SQL_END_abc__ |\n',
+          terminator: '| __JMS_SQL_END_abc__ |',
+          timedOut: false,
+          truncated: false
+        };
+      })
+    };
+    const write = vi.fn();
+    const executor = new MysqlCliExecutor({ idFactory: () => 'abc' });
+
+    let expectedMax = 64_000;
+    await executor.execute({
+      terminalId: 'terminal-1',
+      assetId: 'mysql-1',
+      assetName: 'mysql-1',
+      sql: 'SELECT 1;',
+      write,
+      output: output as never
+    });
+
+    expectedMax = 256_000;
+    await executor.execute({
+      terminalId: 'terminal-1',
+      assetId: 'mysql-1',
+      assetName: 'mysql-1',
+      sql: 'SELECT 1;',
+      write,
+      output: output as never,
+      maxOutputBytes: 512_000
+    });
+  });
 });

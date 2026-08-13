@@ -33,11 +33,25 @@ export const AT_JUMPSERVER_TOOL_CATALOG: ToolCatalogEntry[] = [
   {
     name: 'jumpserver_list_assets',
     title: 'JumpServer List Assets',
-    description: 'List cached AT JumpServer Terminal assets without exposing credentials.',
+    description:
+      'List cached AT JumpServer Terminal assets without exposing credentials. Supports optional search plus limit/offset pagination (default limit 200, hard max 500). When truncated is true, page with offset instead of dumping the full cache.',
     risk: 'read',
     inputSchema: {
       type: 'object',
-      properties: {}
+      properties: {
+        search: {
+          type: 'string',
+          description: 'Optional case-insensitive filter matched against asset id, name, address, and node path.'
+        },
+        limit: {
+          type: 'number',
+          description: 'Optional page size (default 200, hard max 500).'
+        },
+        offset: {
+          type: 'number',
+          description: 'Optional zero-based offset into the filtered asset list.'
+        }
+      }
     }
   },
   {
@@ -70,7 +84,8 @@ export const AT_JUMPSERVER_TOOL_CATALOG: ToolCatalogEntry[] = [
   {
     name: 'jumpserver_run_terminal_command',
     title: 'JumpServer Run SSH Command',
-    description: 'Run a non-interactive command through an existing connected JumpServer SSH terminal.',
+    description:
+      'Run a non-interactive command through an existing connected JumpServer SSH terminal. Output defaults to 64KB (hard max 256KB). When truncated is true, narrow the command (grep/head/tail) instead of only raising maxOutputBytes.',
     risk: 'exec',
     inputSchema: {
       type: 'object',
@@ -90,7 +105,7 @@ export const AT_JUMPSERVER_TOOL_CATALOG: ToolCatalogEntry[] = [
         },
         maxOutputBytes: {
           type: 'number',
-          description: 'Optional max bytes of output to capture.'
+          description: 'Optional max bytes of output to capture (default 64KB, hard max 256KB).'
         }
       },
       required: ['command']
@@ -99,7 +114,8 @@ export const AT_JUMPSERVER_TOOL_CATALOG: ToolCatalogEntry[] = [
   {
     name: 'jumpserver_sftp_list_directory',
     title: 'JumpServer SFTP List Directory',
-    description: 'List a remote directory through the active JumpServer SFTP session.',
+    description:
+      'List a remote directory through the active JumpServer SFTP session. Returns at most maxEntries entries (default 500). When truncated is true, narrow the path or raise maxEntries deliberately.',
     risk: 'read',
     inputSchema: {
       type: 'object',
@@ -108,6 +124,10 @@ export const AT_JUMPSERVER_TOOL_CATALOG: ToolCatalogEntry[] = [
         path: {
           type: 'string',
           description: 'Remote POSIX path.'
+        },
+        maxEntries: {
+          type: 'number',
+          description: 'Optional max directory entries to return (default 500, hard max 5000).'
         }
       }
     }
@@ -126,7 +146,8 @@ export const AT_JUMPSERVER_TOOL_CATALOG: ToolCatalogEntry[] = [
   {
     name: 'jumpserver_sftp_read_file',
     title: 'JumpServer SFTP Read File',
-    description: 'Read bounded UTF-8 text from a remote file through JumpServer SFTP.',
+    description:
+      'Read bounded UTF-8 text from a remote file through JumpServer SFTP. Reads at most maxBytes (default 64KB, hard max 256KB) without buffering the whole file; oversized text returns truncated content with truncated=true. Rejects binary-looking content.',
     risk: 'read',
     inputSchema: {
       type: 'object',
@@ -134,7 +155,7 @@ export const AT_JUMPSERVER_TOOL_CATALOG: ToolCatalogEntry[] = [
         ...sftpPathProperties,
         maxBytes: {
           type: 'number',
-          description: 'Optional max bytes to read.'
+          description: 'Optional max bytes to read (default 64KB, hard max 256KB).'
         }
       },
       required: ['path']
@@ -251,7 +272,8 @@ export const AT_JUMPSERVER_TOOL_CATALOG: ToolCatalogEntry[] = [
   {
     name: 'jumpserver_mysql_execute_sql',
     title: 'JumpServer MySQL Execute SQL',
-    description: 'Execute SQL through an existing connected JumpServer MySQL CLI terminal.',
+    description:
+      'Execute SQL through an existing connected JumpServer MySQL CLI terminal. Always include LIMIT on SELECT-style queries. Output defaults to 64KB (hard max 256KB). When truncated is true, tighten LIMIT/WHERE instead of only raising maxOutputBytes.',
     risk: 'exec',
     inputSchema: {
       type: 'object',
@@ -259,7 +281,7 @@ export const AT_JUMPSERVER_TOOL_CATALOG: ToolCatalogEntry[] = [
         ...terminalIdProperty,
         sql: {
           type: 'string',
-          description: 'SQL to execute.'
+          description: 'SQL to execute. Prefer SELECT ... LIMIT N for large tables.'
         },
         timeoutMs: {
           type: 'number',
@@ -267,7 +289,7 @@ export const AT_JUMPSERVER_TOOL_CATALOG: ToolCatalogEntry[] = [
         },
         maxOutputBytes: {
           type: 'number',
-          description: 'Optional max bytes of output to capture.'
+          description: 'Optional max bytes of output to capture (default 64KB, hard max 256KB).'
         }
       },
       required: ['sql']

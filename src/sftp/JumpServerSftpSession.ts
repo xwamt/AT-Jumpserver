@@ -30,6 +30,9 @@ export interface JumpServerSftpSessionClient {
 interface PendingCommand {
   cmd: SftpCommand;
   chunks: Buffer[];
+  /** When set, binary download chunks are capped so the full file is never buffered. */
+  maxBytes?: number;
+  keptBytes: number;
   resolve(value: ResolvedCommand): void;
   reject(error: Error): void;
 }
@@ -127,11 +130,9 @@ export class JumpServerSftpSession {
   }
 
   async readFile(path: string, maxBytes: number): Promise<Buffer> {
-    const content = await this.downloadFile(path, false);
-    if (content.byteLength > maxBytes) {
-      throw new Error(`Remote file exceeds preview limit: ${path}`);
-    }
-    return content;
+    return this.sendCommand('download', { path, is_dir: false }, { maxBytes }).then(({ pending }) =>
+      Buffer.concat(pending.chunks)
+    );
   }
 
   writeFile(path: string, content: Buffer): Promise<void> {
@@ -154,10 +155,19 @@ export class JumpServerSftpSession {
       return Promise.reject(new Error('SFTP connection is not available.'));
     }
     const id = typeof extra.id === 'string' ? extra.id : randomUUID();
-    const { id: _id, ...extraPayload } = extra;
+    const { id: _id, maxBytes, ...extraPayload } = extra;
     const payload = { id, type: 'SFTP_DATA', cmd, data: JSON.stringify(data), ...extraPayload };
     return new Promise<ResolvedCommand>((resolve, reject) => {
-      const pendingCommand: PendingCommand = { cmd, chunks: [], resolve, reject };
+      const pendingCommand: PendingCommand = {
+        cmd,
+        chunks: [],
+        keptBytes: 0,
+        ...(typeof maxBytes === 'number' && Number.isFinite(maxBytes) && maxBytes > 0
+          ? { maxBytes: Math.floor(maxBytes) }
+          : {}),
+        resolve,
+        reject
+      };
       this.pending.set(id, pendingCommand);
       this.socket?.send(JSON.stringify(payload));
     });
@@ -203,7 +213,22 @@ export class JumpServerSftpSession {
       return;
     }
     if (message.type === 'SFTP_BINARY') {
-      pending.chunks.push(decodeSftpRaw(message.raw));
+      const chunk = decodeSftpRaw(message.raw);
+      if (pending.maxBytes !== undefined) {
+        const remaining = pending.maxBytes - pending.keptBytes;
+        if (remaining <= 0) {
+          return;
+        }
+        if (chunk.byteLength > remaining) {
+          pending.chunks.push(chunk.subarray(0, remaining));
+          pending.keptBytes = pending.maxBytes;
+          return;
+        }
+        pending.chunks.push(chunk);
+        pending.keptBytes += chunk.byteLength;
+        return;
+      }
+      pending.chunks.push(chunk);
       return;
     }
     if (message.type === 'SFTP_DATA') {

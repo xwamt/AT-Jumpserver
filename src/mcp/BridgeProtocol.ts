@@ -47,6 +47,12 @@ export interface RemoveBridgeDiscoveryOwner {
 
 export type GetTerminalContextBridgeResponse = TerminalContextSnapshot;
 
+export interface ListAssetsBridgeRequest {
+  limit?: number;
+  offset?: number;
+  search?: string;
+}
+
 export interface TerminalTargetBridgeRequest {
   terminalId?: string;
 }
@@ -73,6 +79,7 @@ export interface SftpPathBridgeRequest extends SftpTargetBridgeRequest {
 
 export interface SftpListDirectoryBridgeRequest extends SftpTargetBridgeRequest {
   path?: string;
+  maxEntries?: number;
 }
 
 export interface SftpReadFileBridgeRequest extends SftpPathBridgeRequest {

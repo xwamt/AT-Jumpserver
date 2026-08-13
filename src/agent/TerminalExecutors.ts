@@ -48,8 +48,8 @@ export interface MysqlSqlExecutionResult {
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_TIMEOUT_MS = 120_000;
-const DEFAULT_MAX_OUTPUT_BYTES = 128_000;
-const MAX_OUTPUT_BYTES = 512_000;
+const DEFAULT_MAX_OUTPUT_BYTES = 64_000;
+const MAX_OUTPUT_BYTES = 256_000;
 
 export class ShellTerminalExecutor {
   constructor(private readonly options: { idFactory?: () => string } = {}) {}

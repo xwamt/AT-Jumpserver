@@ -29,9 +29,38 @@ describe('JumpServerAgentToolService', () => {
         assetId: 'asset-1',
         name: 'db',
         connectionKind: 'mysql'
-      })]
+      })],
+      total: 1,
+      offset: 0,
+      limit: 200,
+      truncated: false
     });
     expect(JSON.stringify(result)).not.toContain('hidden');
+  });
+
+  it('paginates and searches listAssets', async () => {
+    const service = serviceWith({
+      configManager: {
+        listCachedAssets: async () => [
+          asset({ id: 'a1', name: 'web-alpha', address: '10.0.0.1' }),
+          asset({ id: 'a2', name: 'web-beta', address: '10.0.0.2' }),
+          asset({ id: 'a3', name: 'db-gamma', address: '10.0.0.3' })
+        ]
+      }
+    });
+
+    await expect(service.listAssets({ search: 'web', limit: 1, offset: 0 })).resolves.toMatchObject({
+      assets: [{ assetId: 'a1', name: 'web-alpha' }],
+      total: 2,
+      offset: 0,
+      limit: 1,
+      truncated: true
+    });
+    await expect(service.listAssets({ search: 'web', limit: 1, offset: 1 })).resolves.toMatchObject({
+      assets: [{ assetId: 'a2', name: 'web-beta' }],
+      total: 2,
+      truncated: false
+    });
   });
 
   it('returns terminal context snapshots', async () => {
@@ -66,9 +95,39 @@ describe('JumpServerAgentToolService', () => {
 
     await expect(service.sftpListDirectory({ path: '/' })).resolves.toEqual({
       path: '/',
-      entries: [{ name: 'app.txt', path: '/app.txt', type: 'file' }]
+      entries: [{ name: 'app.txt', path: '/app.txt', type: 'file' }],
+      truncated: false,
+      total: 1
     });
     expect(sftp.listDirectory).toHaveBeenCalledWith('/');
+  });
+
+  it('truncates sftp list directory at maxEntries default 500', async () => {
+    const entries = Array.from({ length: 520 }, (_, index) => ({
+      name: `f${index}.txt`,
+      path: `/f${index}.txt`,
+      type: 'file' as const
+    }));
+    const sftp = { listDirectory: vi.fn(async () => entries) };
+    const service = serviceWith({ sftp });
+
+    const result = await service.sftpListDirectory({ path: '/' });
+    expect(result.entries).toHaveLength(500);
+    expect(result.truncated).toBe(true);
+    expect(result.total).toBe(520);
+  });
+
+  it('marks sftpReadFile truncated when content hits maxBytes', async () => {
+    const content = Buffer.alloc(64, 0x61);
+    const sftp = { readFile: vi.fn(async (_path: string, maxBytes: number) => content.subarray(0, maxBytes)) };
+    const service = serviceWith({ sftp });
+
+    await expect(service.sftpReadFile({ path: '/a.txt', maxBytes: 8 })).resolves.toEqual({
+      path: '/a.txt',
+      content: 'aaaaaaaa',
+      truncated: true
+    });
+    expect(sftp.readFile).toHaveBeenCalledWith('/a.txt', 8, undefined);
   });
 
   it('requires confirmation before sendTerminalInput', async () => {

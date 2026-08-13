@@ -13,6 +13,7 @@ import {
 import type { JumpServerAgentToolService } from '../agent/JumpServerAgentToolService';
 import { formatError } from '../utils/errors';
 import {
+  listAssetsBridgeSchema,
   mysqlExecuteSqlBridgeSchema,
   mysqlSendInputBridgeSchema,
   runTerminalCommandBridgeSchema,
@@ -315,8 +316,13 @@ async function dispatchTool(
   args: Record<string, unknown>
 ): Promise<{ ok: true; value: unknown } | { ok: false; response: BridgeResponse }> {
   switch (name) {
-    case 'jumpserver_list_assets':
-      return { ok: true, value: await service.listAssets() };
+    case 'jumpserver_list_assets': {
+      const parsed = parseArgsWithSchema(args, listAssetsBridgeSchema);
+      if (!parsed.ok) {
+        return { ok: false, response: bridgeError(422, 'VALIDATION_ERROR', parsed.error) };
+      }
+      return { ok: true, value: await service.listAssets(parsed.data) };
+    }
     case 'jumpserver_get_terminal_context':
       return { ok: true, value: await service.getTerminalContext() };
     case 'jumpserver_send_terminal_input': {

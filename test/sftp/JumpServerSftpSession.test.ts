@@ -93,6 +93,35 @@ describe('JumpServerSftpSession', () => {
     await expect(download).resolves.toEqual(Buffer.from('hello'));
   });
 
+  it('readFile caps buffered chunks at maxBytes without keeping the full download', async () => {
+    const socket = new FakeSocket();
+    const session = new JumpServerSftpSession({ asset: { id: 'asset-1', name: 'web-1' }, client: client(socket) });
+    const connect = session.connect();
+    await flushPromises();
+    socket.emitMessage({ id: 'ws-1', type: 'CONNECT', data: '{}' });
+    await connect;
+
+    const read = session.readFile('/tmp/big.txt', 8);
+    const sent = JSON.parse(String(socket.send.mock.calls.at(-1)?.[0]));
+    expect(sent).not.toHaveProperty('maxBytes');
+
+    socket.emitMessage({
+      id: sent.id,
+      type: 'SFTP_BINARY',
+      cmd: 'download',
+      raw: Buffer.from('0123456789ABCDEF').toString('base64')
+    });
+    socket.emitMessage({
+      id: sent.id,
+      type: 'SFTP_BINARY',
+      cmd: 'download',
+      raw: Buffer.alloc(1024, 0x41).toString('base64')
+    });
+    socket.emitMessage({ id: sent.id, type: 'SFTP_DATA', cmd: 'download', data: 'big.txt' });
+
+    await expect(read).resolves.toEqual(Buffer.from('01234567'));
+  });
+
   it('uploads with KoKo numeric upload ids and offset payload', async () => {
     const socket = new FakeSocket();
     const session = new JumpServerSftpSession({ asset: { id: 'asset-1', name: 'web-1' }, client: client(socket) });
