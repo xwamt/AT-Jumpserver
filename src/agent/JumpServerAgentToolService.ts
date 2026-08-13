@@ -11,7 +11,8 @@ export interface JumpServerAgentToolServiceDependencies {
   configManager: Pick<JumpServerConfigManager, 'listCachedAssets'>;
   terminalContext: TerminalContextRegistry;
   sftp: Pick<JumpServerSftpManager,
-    'listDirectory' | 'stat' | 'readFile' | 'writeFile' | 'createFile' | 'mkdir' | 'rename' | 'deleteEntry'
+    | 'listDirectory' | 'stat' | 'readFile' | 'writeFile' | 'createFile' | 'mkdir' | 'rename' | 'deleteEntry'
+    | 'getConnectionAsset'
   >;
   confirm(message: string): Promise<boolean>;
   shellExecutor?: ShellTerminalExecutor;
@@ -119,7 +120,7 @@ export class JumpServerAgentToolService {
     path?: string;
     maxEntries?: number;
   }) {
-    const entries = await this.dependencies.sftp.listDirectory(input.path);
+    const entries = await this.dependencies.sftp.listDirectory(input.path, connectionKeyOf(input));
     const maxEntries = clampPositiveInteger(
       input.maxEntries,
       DEFAULT_SFTP_LIST_MAX_ENTRIES,
@@ -135,12 +136,12 @@ export class JumpServerAgentToolService {
   }
 
   async sftpStatPath(input: { connectionKey?: string; terminalId?: string; path: string }) {
-    return await this.dependencies.sftp.stat(input.path, input.connectionKey ?? input.terminalId);
+    return await this.dependencies.sftp.stat(input.path, connectionKeyOf(input));
   }
 
   async sftpReadFile(input: { connectionKey?: string; terminalId?: string; path: string; maxBytes?: number }) {
     const maxBytes = clampReadBytes(input.maxBytes);
-    const buffer = await this.dependencies.sftp.readFile(input.path, maxBytes, input.connectionKey ?? input.terminalId);
+    const buffer = await this.dependencies.sftp.readFile(input.path, maxBytes, connectionKeyOf(input));
     if (buffer.includes(0)) {
       throw new Error('Remote file appears to be binary.');
     }
@@ -154,48 +155,42 @@ export class JumpServerAgentToolService {
     content: string;
     overwrite?: boolean;
   }) {
-    await this.requireConfirm(`Write JumpServer SFTP file ${input.path}?`);
-    await this.dependencies.sftp.writeFile(
-      input.path,
-      Buffer.from(input.content, 'utf8'),
-      input.connectionKey ?? input.terminalId
-    );
+    await this.requireConfirm(`Write JumpServer SFTP file ${input.path} on ${this.sftpTarget(input)}?`);
+    await this.dependencies.sftp.writeFile(input.path, Buffer.from(input.content, 'utf8'), connectionKeyOf(input));
     return { path: input.path, bytesWritten: Buffer.byteLength(input.content, 'utf8') };
   }
 
   async sftpCreateFile(input: { connectionKey?: string; terminalId?: string; path: string; content?: string }) {
-    await this.requireConfirm(`Create JumpServer SFTP file ${input.path}?`);
+    await this.requireConfirm(`Create JumpServer SFTP file ${input.path} on ${this.sftpTarget(input)}?`);
     if (input.content === undefined) {
-      await this.dependencies.sftp.createFile(input.path, input.connectionKey ?? input.terminalId);
+      await this.dependencies.sftp.createFile(input.path, connectionKeyOf(input));
     } else {
-      await this.dependencies.sftp.writeFile(
-        input.path,
-        Buffer.from(input.content, 'utf8'),
-        input.connectionKey ?? input.terminalId
-      );
+      await this.dependencies.sftp.writeFile(input.path, Buffer.from(input.content, 'utf8'), connectionKeyOf(input));
     }
     return { path: input.path };
   }
 
   async sftpCreateDirectory(input: { connectionKey?: string; terminalId?: string; path: string }) {
-    await this.requireConfirm(`Create JumpServer SFTP directory ${input.path}?`);
-    await this.dependencies.sftp.mkdir(input.path);
+    await this.requireConfirm(`Create JumpServer SFTP directory ${input.path} on ${this.sftpTarget(input)}?`);
+    await this.dependencies.sftp.mkdir(input.path, connectionKeyOf(input));
     return { path: input.path };
   }
 
   async sftpRename(input: { connectionKey?: string; terminalId?: string; oldPath: string; newPath: string }) {
-    await this.requireConfirm(`Rename JumpServer SFTP path ${input.oldPath} to ${input.newPath}?`);
-    await this.dependencies.sftp.rename(input.oldPath, input.newPath);
+    await this.requireConfirm(
+      `Rename JumpServer SFTP path ${input.oldPath} to ${input.newPath} on ${this.sftpTarget(input)}?`
+    );
+    await this.dependencies.sftp.rename(input.oldPath, input.newPath, connectionKeyOf(input));
     return { oldPath: input.oldPath, newPath: input.newPath };
   }
 
   async sftpDelete(input: { connectionKey?: string; terminalId?: string; path: string; type?: JumpServerSftpEntry['type'] }) {
-    await this.requireConfirm(`Delete JumpServer SFTP path ${input.path}?`);
+    await this.requireConfirm(`Delete JumpServer SFTP path ${input.path} on ${this.sftpTarget(input)}?`);
     await this.dependencies.sftp.deleteEntry({
       name: input.path.split('/').filter(Boolean).pop() || input.path,
       path: input.path,
       type: input.type ?? 'file'
-    });
+    }, connectionKeyOf(input));
     return { path: input.path, deleted: true };
   }
 
@@ -271,11 +266,26 @@ export class JumpServerAgentToolService {
     return output;
   }
 
+  private sftpTarget(input: { connectionKey?: string; terminalId?: string }): string {
+    return formatAssetTarget(this.dependencies.sftp.getConnectionAsset(connectionKeyOf(input)));
+  }
+
   private async requireConfirm(message: string): Promise<void> {
     if (!await this.dependencies.confirm(message)) {
       throw new Error('JumpServer operation was cancelled.');
     }
   }
+}
+
+function connectionKeyOf(input: { connectionKey?: string; terminalId?: string }): string | undefined {
+  return input.connectionKey ?? input.terminalId;
+}
+
+export function formatAssetTarget(asset: Pick<CachedJumpServerAsset, 'name' | 'address'> | undefined): string {
+  if (!asset) {
+    return 'an unidentified JumpServer connection';
+  }
+  return asset.address ? `${asset.name} (${asset.address})` : asset.name;
 }
 
 function assetSummary(asset: CachedJumpServerAsset) {

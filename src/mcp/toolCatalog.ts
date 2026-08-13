@@ -13,11 +13,12 @@ const terminalIdProperty = {
 const sftpTargetProperties = {
   connectionKey: {
     type: 'string',
-    description: 'JumpServer SFTP connection key.'
+    description:
+      'JumpServer SFTP connection key selecting which connected asset to act on. Omit to use the active connection, whichever asset that currently is.'
   },
   terminalId: {
     type: 'string',
-    description: 'JumpServer terminal id.'
+    description: 'JumpServer terminal id. Used as the connection key when connectionKey is omitted.'
   }
 } as const;
 
@@ -115,7 +116,7 @@ export const AT_JUMPSERVER_TOOL_CATALOG: ToolCatalogEntry[] = [
     name: 'jumpserver_sftp_list_directory',
     title: 'JumpServer SFTP List Directory',
     description:
-      'List a remote directory through the active JumpServer SFTP session. Returns at most maxEntries entries (default 500). When truncated is true, narrow the path or raise maxEntries deliberately.',
+      'List a remote directory through the JumpServer SFTP session named by connectionKey, or the active session when it is omitted. Returns at most maxEntries entries (default 500). When truncated is true, narrow the path or raise maxEntries deliberately.',
     risk: 'read',
     inputSchema: {
       type: 'object',
@@ -202,7 +203,8 @@ export const AT_JUMPSERVER_TOOL_CATALOG: ToolCatalogEntry[] = [
   {
     name: 'jumpserver_sftp_create_directory',
     title: 'JumpServer SFTP Create Directory',
-    description: 'Create a remote directory through JumpServer SFTP after confirmation.',
+    description:
+      'Create a remote directory on the JumpServer SFTP session named by connectionKey, or the active session when it is omitted, after confirmation. The confirmation names the target asset and address.',
     risk: 'write',
     inputSchema: {
       type: 'object',
@@ -213,7 +215,8 @@ export const AT_JUMPSERVER_TOOL_CATALOG: ToolCatalogEntry[] = [
   {
     name: 'jumpserver_sftp_rename',
     title: 'JumpServer SFTP Rename',
-    description: 'Rename a remote file or directory through JumpServer SFTP after confirmation.',
+    description:
+      'Rename a remote file or directory on the JumpServer SFTP session named by connectionKey, or the active session when it is omitted, after confirmation. The confirmation names the target asset and address.',
     risk: 'write',
     inputSchema: {
       type: 'object',
@@ -234,7 +237,8 @@ export const AT_JUMPSERVER_TOOL_CATALOG: ToolCatalogEntry[] = [
   {
     name: 'jumpserver_sftp_delete',
     title: 'JumpServer SFTP Delete',
-    description: 'Delete a remote file or directory through JumpServer SFTP after confirmation.',
+    description:
+      'Delete a remote file or directory on the JumpServer SFTP session named by connectionKey, or the active session when it is omitted, after confirmation. The confirmation names the target asset and address.',
     risk: 'write',
     inputSchema: {
       type: 'object',

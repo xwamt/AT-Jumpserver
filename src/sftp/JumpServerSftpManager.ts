@@ -115,16 +115,21 @@ export class JumpServerSftpManager {
     return this.activeTerminalId;
   }
 
-  async ensureRoot(): Promise<string> {
-    const connection = this.requireConnection();
+  getConnectionAsset(connectionKey?: string): CachedJumpServerAsset | undefined {
+    const connection = connectionKey ? this.connections.get(connectionKey) : this.getActiveConnection();
+    return connection?.asset;
+  }
+
+  async ensureRoot(connectionKey?: string): Promise<string> {
+    const connection = this.requireConnection(connectionKey);
     const session = await this.ensureSession(connection);
     connection.rootPath = await session.realpath('.');
     return connection.rootPath;
   }
 
-  async listDirectory(path?: string): Promise<JumpServerSftpEntry[]> {
-    const connection = this.requireConnection();
-    const root = connection.rootPath ?? await this.ensureRoot();
+  async listDirectory(path?: string, connectionKey?: string): Promise<JumpServerSftpEntry[]> {
+    const connection = this.requireConnection(connectionKey);
+    const root = connection.rootPath ?? await this.ensureRoot(connectionKey);
     const target = path ?? root;
     const entries = await (await this.ensureSession(connection)).listDirectory(target);
     if (target === root) {
@@ -147,16 +152,16 @@ export class JumpServerSftpManager {
     return await this.changeDirectory(dirname(state.rootPath));
   }
 
-  async mkdir(path: string): Promise<void> {
-    await (await this.ensureSession(this.requireConnection())).mkdir(path);
+  async mkdir(path: string, connectionKey?: string): Promise<void> {
+    await (await this.ensureSession(this.requireConnection(connectionKey))).mkdir(path);
   }
 
-  async rename(oldPath: string, newPath: string): Promise<void> {
-    await (await this.ensureSession(this.requireConnection())).rename(oldPath, newPath);
+  async rename(oldPath: string, newPath: string, connectionKey?: string): Promise<void> {
+    await (await this.ensureSession(this.requireConnection(connectionKey))).rename(oldPath, newPath);
   }
 
-  async deleteEntry(entry: JumpServerSftpEntry): Promise<void> {
-    await (await this.ensureSession(this.requireConnection())).deleteEntry(entry.path);
+  async deleteEntry(entry: JumpServerSftpEntry, connectionKey?: string): Promise<void> {
+    await (await this.ensureSession(this.requireConnection(connectionKey))).deleteEntry(entry.path);
   }
 
   async uploadFile(localPath: string, remotePath: string, connectionKey?: string): Promise<void> {

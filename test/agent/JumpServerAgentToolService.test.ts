@@ -99,7 +99,7 @@ describe('JumpServerAgentToolService', () => {
       truncated: false,
       total: 1
     });
-    expect(sftp.listDirectory).toHaveBeenCalledWith('/');
+    expect(sftp.listDirectory).toHaveBeenCalledWith('/', undefined);
   });
 
   it('truncates sftp list directory at maxEntries default 500', async () => {
@@ -203,6 +203,65 @@ describe('JumpServerAgentToolService', () => {
     expect(write).toHaveBeenCalledWith('SELECT 1;\n');
   });
 
+  it('routes sftpCreateDirectory to the connection the caller named', async () => {
+    const sftp = { mkdir: vi.fn(async () => undefined) };
+    const service = serviceWith({ sftp });
+
+    await service.sftpCreateDirectory({ connectionKey: 'terminal-prod', path: '/data/new' });
+
+    expect(sftp.mkdir).toHaveBeenCalledWith('/data/new', 'terminal-prod');
+  });
+
+  it('routes sftpRename to the connection the caller named', async () => {
+    const sftp = { rename: vi.fn(async () => undefined) };
+    const service = serviceWith({ sftp });
+
+    await service.sftpRename({ connectionKey: 'terminal-prod', oldPath: '/data/a', newPath: '/data/b' });
+
+    expect(sftp.rename).toHaveBeenCalledWith('/data/a', '/data/b', 'terminal-prod');
+  });
+
+  it('routes sftpDelete to the connection the caller named', async () => {
+    const sftp = { deleteEntry: vi.fn(async () => undefined) };
+    const service = serviceWith({ sftp });
+
+    await service.sftpDelete({ connectionKey: 'terminal-prod', path: '/data/report.csv' });
+
+    expect(sftp.deleteEntry).toHaveBeenCalledWith(
+      { name: 'report.csv', path: '/data/report.csv', type: 'file' },
+      'terminal-prod'
+    );
+  });
+
+  it('routes sftpListDirectory to the connection the caller named', async () => {
+    const sftp = { listDirectory: vi.fn(async () => []) };
+    const service = serviceWith({ sftp });
+
+    await service.sftpListDirectory({ connectionKey: 'terminal-prod', path: '/data' });
+
+    expect(sftp.listDirectory).toHaveBeenCalledWith('/data', 'terminal-prod');
+  });
+
+  it('names the target asset and address in every SFTP write confirmation', async () => {
+    const confirm = vi.fn(async () => true);
+    const sftp = {
+      getConnectionAsset: vi.fn(() => asset({ id: 'asset-9', name: 'prod-db', address: '10.0.0.9' }))
+    };
+    const service = serviceWith({ confirm, sftp });
+
+    await service.sftpCreateDirectory({ connectionKey: 'terminal-prod', path: '/data/new' });
+    await service.sftpRename({ connectionKey: 'terminal-prod', oldPath: '/data/a', newPath: '/data/b' });
+    await service.sftpDelete({ connectionKey: 'terminal-prod', path: '/data/b' });
+    await service.sftpWriteFile({ connectionKey: 'terminal-prod', path: '/data/c', content: 'x' });
+    await service.sftpCreateFile({ connectionKey: 'terminal-prod', path: '/data/d' });
+
+    expect(confirm).toHaveBeenCalledTimes(5);
+    for (const [message] of confirm.mock.calls as unknown as [string][]) {
+      expect(message).toContain('prod-db (10.0.0.9)');
+    }
+    expect(sftp.getConnectionAsset).toHaveBeenCalledWith('terminal-prod');
+  });
+
   it('runs one shell wrapper write per confirmed command and serializes parallel calls', async () => {
     let writeCount = 0;
     const terminalContext = new TerminalContextRegistry();
@@ -268,6 +327,7 @@ function serviceWith(overrides: Record<string, unknown>) {
       mkdir: async () => undefined,
       rename: async () => undefined,
       deleteEntry: async () => undefined,
+      getConnectionAsset: () => undefined,
       ...(overrides.sftp as object)
     } as never,
     confirm: (overrides.confirm as never) ?? vi.fn(async () => true)

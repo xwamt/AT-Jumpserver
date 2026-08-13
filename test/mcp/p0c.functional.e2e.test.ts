@@ -66,7 +66,8 @@ describe('P0c functional e2e smoke', () => {
         createFile: async () => undefined,
         mkdir: async () => undefined,
         rename: async () => undefined,
-        deleteEntry: async () => undefined
+        deleteEntry: async () => undefined,
+        getConnectionAsset: () => undefined
       },
       confirm
     });

@@ -184,4 +184,42 @@ describe('JumpServerSftpManager', () => {
     expect(secondSession.writeFile).not.toHaveBeenCalled();
     expect(secondSession.createFile).not.toHaveBeenCalled();
   });
+
+  it('routes list/mkdir/rename/delete by explicit connection key', async () => {
+    const firstSession = session();
+    const secondSession = session();
+    const manager = new JumpServerSftpManager({
+      createSession: vi.fn()
+        .mockReturnValueOnce(firstSession)
+        .mockReturnValueOnce(secondSession)
+    });
+
+    await manager.openAsset(asset({ id: 'asset-1' }), 'terminal-1');
+    await manager.openAsset(asset({ id: 'asset-2' }), 'terminal-2');
+
+    await manager.listDirectory('/data', 'terminal-1');
+    await manager.mkdir('/data/new-dir', 'terminal-1');
+    await manager.rename('/data/old', '/data/new', 'terminal-1');
+    await manager.deleteEntry({ name: 'new', path: '/data/new', type: 'file' }, 'terminal-1');
+
+    expect(firstSession.listDirectory).toHaveBeenCalledWith('/data');
+    expect(firstSession.mkdir).toHaveBeenCalledWith('/data/new-dir');
+    expect(firstSession.rename).toHaveBeenCalledWith('/data/old', '/data/new');
+    expect(firstSession.deleteEntry).toHaveBeenCalledWith('/data/new');
+
+    expect(secondSession.mkdir).not.toHaveBeenCalled();
+    expect(secondSession.rename).not.toHaveBeenCalled();
+    expect(secondSession.deleteEntry).not.toHaveBeenCalled();
+  });
+
+  it('exposes the asset behind a connection key so callers can name it', async () => {
+    const manager = new JumpServerSftpManager({ createSession: () => session() });
+
+    await manager.openAsset(asset({ id: 'asset-1', name: 'prod-db', address: '10.0.0.9' }), 'terminal-1');
+    await manager.openAsset(asset({ id: 'asset-2', name: 'uat-web', address: '10.0.1.4' }), 'terminal-2');
+
+    expect(manager.getConnectionAsset('terminal-1')).toMatchObject({ name: 'prod-db', address: '10.0.0.9' });
+    expect(manager.getConnectionAsset()).toMatchObject({ name: 'uat-web', address: '10.0.1.4' });
+    expect(manager.getConnectionAsset('terminal-unknown')).toBeUndefined();
+  });
 });
