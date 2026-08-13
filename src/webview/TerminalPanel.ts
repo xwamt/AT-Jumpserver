@@ -30,6 +30,15 @@ export interface ConfigurationLike {
   get<T>(key: string, defaultValue: T): T;
 }
 
+/**
+ * KoKo delivers one WebSocket frame per PTY burst, and every postMessage hop
+ * costs a structured-clone plus a JSON round trip. Holding frames for a display
+ * frame's worth of time collapses a `cat` of a large file from thousands of
+ * hops into dozens without adding perceptible latency to interactive typing.
+ */
+const OUTPUT_FLUSH_INTERVAL_MS = 8;
+const OUTPUT_FLUSH_BYTES = 64 * 1024;
+
 export function resolveTerminalSettings(configuration: ConfigurationLike): TerminalSettings {
   return {
     scrollback: configuration.get('scrollback', 5000),
@@ -87,6 +96,9 @@ export class TerminalPanel {
   private connected = false;
   private disposed = false;
   private connectionGeneration = 0;
+  private pendingOutput: Buffer[] = [];
+  private pendingOutputBytes = 0;
+  private outputFlushTimer: ReturnType<typeof setTimeout> | undefined;
 
   private constructor(
     private readonly panel: vscode.WebviewPanel,
@@ -214,6 +226,12 @@ export class TerminalPanel {
 
     this.panel.onDidDispose(() => {
       this.disposed = true;
+      if (this.outputFlushTimer) {
+        clearTimeout(this.outputFlushTimer);
+        this.outputFlushTimer = undefined;
+      }
+      this.pendingOutput = [];
+      this.pendingOutputBytes = 0;
       this.connectionGeneration++;
       this.session.dispose();
       this.connected = false;
@@ -232,8 +250,10 @@ export class TerminalPanel {
       client: this.jumpServerClient,
       events: {
         output: (data) => {
+          // The context buffer feeds MCP marker detection, so it must never be
+          // delayed by the webview's coalescing window.
           this.terminalContext?.appendOutput(this.terminalId, data);
-          this.postWebviewMessage({ type: 'outputBytes', payload: [...data] });
+          this.queueOutput(data);
         },
         status: (message) => this.handleSessionStatus(message, generation),
         error: (error) => this.postStatus(formatError(error))
@@ -266,7 +286,42 @@ export class TerminalPanel {
     });
   }
 
+  private queueOutput(data: Buffer): void {
+    if (data.byteLength === 0) {
+      return;
+    }
+    this.pendingOutput.push(data);
+    this.pendingOutputBytes += data.byteLength;
+    if (this.pendingOutputBytes >= OUTPUT_FLUSH_BYTES) {
+      this.flushOutput();
+      return;
+    }
+    this.outputFlushTimer ??= setTimeout(() => this.flushOutput(), OUTPUT_FLUSH_INTERVAL_MS);
+  }
+
+  private flushOutput(): void {
+    if (this.outputFlushTimer) {
+      clearTimeout(this.outputFlushTimer);
+      this.outputFlushTimer = undefined;
+    }
+    if (this.pendingOutput.length === 0) {
+      return;
+    }
+    const merged = Buffer.concat(this.pendingOutput, this.pendingOutputBytes);
+    this.pendingOutput = [];
+    this.pendingOutputBytes = 0;
+    // base64 costs ~1.33x on the wire; a JSON array of byte literals costs >4x
+    // and forces the webview to walk every element before it can draw.
+    this.sendToWebview({ type: 'outputBase64', payload: merged.toString('base64') });
+  }
+
   private postWebviewMessage(message: unknown): void {
+    // Anything else the panel says must appear after the bytes it follows.
+    this.flushOutput();
+    this.sendToWebview(message);
+  }
+
+  private sendToWebview(message: unknown): void {
     if (this.disposed) {
       return;
     }

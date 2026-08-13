@@ -118,6 +118,11 @@ async function flushPromises(): Promise<void> {
   await Promise.resolve();
 }
 
+/** Outlasts the panel's output coalescing window. */
+async function advanceOutputFlush(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 30));
+}
+
 beforeEach(() => {
   deactivate();
   connect.mockResolvedValue(undefined);
@@ -232,7 +237,7 @@ describe('TerminalPanel rendering helpers', () => {
     });
   });
 
-  it('posts upstream bytes to the terminal webview', async () => {
+  it('posts upstream bytes to the terminal webview as base64', async () => {
     const panelHost = createPanel();
     const registry = new TerminalContextRegistry();
     vi.mocked(vscode.window.createWebviewPanel).mockReturnValueOnce(panelHost.panel);
@@ -241,12 +246,97 @@ describe('TerminalPanel rendering helpers', () => {
     TerminalPanel.open(extensionContext(), asset(), jumpServerClient(), registry);
     await flushPromises();
     sessionEvents.at(-1)!.output(rawOutput);
+    await advanceOutputFlush();
 
     expect(panelHost.panel.webview.postMessage).toHaveBeenCalledWith({
-      type: 'outputBytes',
-      payload: [...rawOutput]
+      type: 'outputBase64',
+      payload: rawOutput.toString('base64')
     });
     expect(registry.getOutputBuffer(registry.getActive()!.terminalId)?.text()).toBe(rawOutput.toString('utf8'));
+  });
+
+  it('coalesces a burst of upstream frames into one webview message', async () => {
+    const panelHost = createPanel();
+    vi.mocked(vscode.window.createWebviewPanel).mockReturnValueOnce(panelHost.panel);
+
+    TerminalPanel.open(extensionContext(), asset(), jumpServerClient());
+    await flushPromises();
+    vi.mocked(panelHost.panel.webview.postMessage).mockClear();
+    const events = sessionEvents.at(-1)!;
+    for (const frame of ['one', 'two', 'three']) {
+      events.output(Buffer.from(frame, 'utf8'));
+    }
+
+    expect(panelHost.panel.webview.postMessage).not.toHaveBeenCalled();
+    await advanceOutputFlush();
+
+    expect(panelHost.panel.webview.postMessage).toHaveBeenCalledTimes(1);
+    expect(panelHost.panel.webview.postMessage).toHaveBeenCalledWith({
+      type: 'outputBase64',
+      payload: Buffer.from('onetwothree', 'utf8').toString('base64')
+    });
+  });
+
+  it('flushes without waiting once a burst reaches the byte threshold', async () => {
+    const panelHost = createPanel();
+    vi.mocked(vscode.window.createWebviewPanel).mockReturnValueOnce(panelHost.panel);
+
+    TerminalPanel.open(extensionContext(), asset(), jumpServerClient());
+    await flushPromises();
+    vi.mocked(panelHost.panel.webview.postMessage).mockClear();
+    const frame = Buffer.alloc(32 * 1024, 0x61);
+    sessionEvents.at(-1)!.output(frame);
+    sessionEvents.at(-1)!.output(frame);
+
+    expect(panelHost.panel.webview.postMessage).toHaveBeenCalledTimes(1);
+    expect(panelHost.panel.webview.postMessage).toHaveBeenCalledWith({
+      type: 'outputBase64',
+      payload: Buffer.concat([frame, frame]).toString('base64')
+    });
+  });
+
+  it('collapses a 10 MB burst into far fewer webview messages than PTY frames', async () => {
+    const panelHost = createPanel();
+    vi.mocked(vscode.window.createWebviewPanel).mockReturnValueOnce(panelHost.panel);
+
+    TerminalPanel.open(extensionContext(), asset(), jumpServerClient());
+    await flushPromises();
+    vi.mocked(panelHost.panel.webview.postMessage).mockClear();
+    const frame = Buffer.alloc(4096, 0x61);
+    const events = sessionEvents.at(-1)!;
+    for (let index = 0; index < 2500; index += 1) {
+      events.output(frame);
+    }
+    await advanceOutputFlush();
+
+    const posted = vi.mocked(panelHost.panel.webview.postMessage).mock.calls
+      .map(([message]) => message as { type: string; payload: string });
+    // 10 MiB at a 64 KiB flush threshold, versus 2500 frames before batching.
+    expect(posted.length).toBeLessThanOrEqual(200);
+    const delivered = posted.reduce((total, message) => total + Buffer.from(message.payload, 'base64').byteLength, 0);
+    expect(delivered).toBe(2500 * 4096);
+  });
+
+  it('flushes buffered output before a later status message so the terminal stays ordered', async () => {
+    const panelHost = createPanel();
+    vi.mocked(vscode.window.createWebviewPanel).mockReturnValueOnce(panelHost.panel);
+
+    TerminalPanel.open(extensionContext(), asset(), jumpServerClient());
+    await flushPromises();
+    vi.mocked(panelHost.panel.webview.postMessage).mockClear();
+    const events = sessionEvents.at(-1)!;
+    events.output(Buffer.from('tail output', 'utf8'));
+    events.status('Disconnected (code 1000)');
+
+    const posted = vi.mocked(panelHost.panel.webview.postMessage).mock.calls.map(([message]) => message);
+    expect(posted[0]).toEqual({
+      type: 'outputBase64',
+      payload: Buffer.from('tail output', 'utf8').toString('base64')
+    });
+    expect(posted[1]).toEqual({
+      type: 'output',
+      payload: formatTerminalNotice('Connection disconnected (code 1000)')
+    });
   });
 
   it('prints detailed remote disconnect statuses into the terminal', async () => {
