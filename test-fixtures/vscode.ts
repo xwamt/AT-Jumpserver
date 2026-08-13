@@ -84,6 +84,7 @@ export const window = {
   createStatusBarItem: vi.fn(() => ({ text: '', tooltip: '', show: vi.fn(), hide: vi.fn(), dispose: vi.fn() })),
   createWebviewPanel: vi.fn(),
   showInputBox: vi.fn(),
+  showErrorMessage: vi.fn(),
   showInformationMessage: vi.fn(),
   showOpenDialog: vi.fn(),
   showSaveDialog: vi.fn(),

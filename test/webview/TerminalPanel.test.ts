@@ -188,6 +188,49 @@ describe('TerminalPanel rendering helpers', () => {
     });
   });
 
+  /**
+   * These values come out of the user's settings.json, so their declared types
+   * are a promise the settings file never made. A missing CSP `unsafe-inline`
+   * keeps this out of script-execution territory, but an unescaped quote still
+   * lets one setting invent attributes on the terminal element.
+   */
+  it('escapes every settings value it interpolates, not just the font family', () => {
+    const body = renderTerminalBody({
+      scrollback: '5000" data-injected-scrollback="yes' as unknown as number,
+      fontSize: '16" data-injected-size="yes' as unknown as number,
+      fontFamily: 'JetBrains Mono',
+      semanticHighlight: 'true" data-injected-highlight="yes' as unknown as boolean,
+      idleDisconnectMinutes: 60
+    });
+
+    expect(body).not.toContain('data-injected-scrollback="yes"');
+    expect(body).not.toContain('data-injected-size="yes"');
+    expect(body).not.toContain('data-injected-highlight="yes"');
+    expect(body).toContain('data-scrollback="5000&quot; data-injected-scrollback=&quot;yes"');
+  });
+
+  /**
+   * `rows <= 0` is false for the string "abc", so an unvalidated dimension used
+   * to travel all the way into the JSON sent to KoKo.
+   */
+  it('rejects resize dimensions that are not positive integers', () => {
+    const session = { write: vi.fn(), resize: vi.fn() };
+    const rejected = [
+      { rows: 'abc', cols: 80 },
+      { rows: 24, cols: Number.NaN },
+      { rows: 24, cols: Number.POSITIVE_INFINITY },
+      { rows: 24.5, cols: 80 },
+      { rows: 0, cols: 80 },
+      { rows: 24 }
+    ];
+
+    for (const dimensions of rejected) {
+      expect(handleTerminalMessage({ type: 'resize', ...dimensions } as never, session)).toBe(false);
+    }
+
+    expect(session.resize).not.toHaveBeenCalled();
+  });
+
   it('treats ready messages as resize messages so the remote PTY matches xterm', () => {
     const session = {
       write: vi.fn(),

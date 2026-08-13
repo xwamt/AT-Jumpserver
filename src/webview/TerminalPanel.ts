@@ -68,7 +68,7 @@ export function renderTerminalBody(settings: TerminalSettings): string {
     <span class="terminal-status-text">Starting...</span>
     <span class="terminal-host">xterm.js</span>
   </header>
-  <section id="terminal" class="terminal-surface" data-scrollback="${settings.scrollback}" data-font-size="${settings.fontSize}" data-font-family="${escapeAttr(settings.fontFamily)}" data-semantic-highlight="${settings.semanticHighlight}"></section>
+  <section id="terminal" class="terminal-surface" data-scrollback="${escapeAttr(settings.scrollback)}" data-font-size="${escapeAttr(settings.fontSize)}" data-font-family="${escapeAttr(settings.fontFamily)}" data-semantic-highlight="${escapeAttr(settings.semanticHighlight)}"></section>
 </main>`;
 }
 
@@ -82,10 +82,22 @@ export function handleTerminalMessage(message: TerminalMessage, session: Termina
     return true;
   }
   if (message.type === 'ready' || message.type === 'resize') {
+    if (!isTerminalDimension(message.rows) || !isTerminalDimension(message.cols)) {
+      return false;
+    }
     session.resize(message.rows, message.cols);
     return true;
   }
   return false;
+}
+
+/**
+ * `rows <= 0` is false for the string "abc", which is how an unvalidated
+ * dimension used to reach the JSON sent to KoKo. A PTY has a whole number of
+ * rows, so anything else is a bug in the sender and not a size to forward.
+ */
+function isTerminalDimension(value: number): boolean {
+  return Number.isInteger(value) && value > 0;
 }
 
 export class TerminalPanel {
@@ -407,6 +419,16 @@ export function renderTerminalHtml(webview: vscode.Webview, assets: WebviewAsset
   return renderWebviewHtml(webview, assets, renderTerminalBody(settings));
 }
 
-function escapeAttr(value: string): string {
-  return value.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+/**
+ * Takes `unknown` on purpose. Every value here is read from settings.json, so
+ * the declared `number` and `boolean` are what the schema asks for rather than
+ * what arrives; stringifying inside the escaper is what stops the next data
+ * attribute added to this element from quietly skipping the escape.
+ */
+function escapeAttr(value: unknown): string {
+  return String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('"', '&quot;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;');
 }

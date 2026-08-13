@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as vscode from 'vscode';
+import { parseJumpServerSettings } from '../../src/config/schema';
 import {
   createConfigAssets,
   JumpServerConfigPanel,
@@ -115,6 +116,52 @@ describe('JumpServerConfigPanel', () => {
     );
     expect(panelHost.panel.dispose).toHaveBeenCalled();
     expect(vscode.window.showInformationMessage).toHaveBeenCalledWith('JumpServer configuration saved.');
+  });
+
+  /**
+   * `parseJumpServerSettings` runs inside `saveSettings`, and its ZodError used
+   * to escape an async listener nobody awaits: the panel stayed open, nothing
+   * was written, and the user was told none of it.
+   */
+  it('names the field that failed validation instead of failing silently', async () => {
+    const panelHost = createPanel();
+    vi.spyOn(vscode.window, 'createWebviewPanel').mockReturnValue(panelHost.panel);
+
+    await JumpServerConfigPanel.open(extensionContext(), {
+      getSettings: async () => undefined,
+      saveSettings: async (settings) => {
+        parseJumpServerSettings(settings);
+      }
+    });
+    await panelHost.fireMessage({
+      type: 'save',
+      payload: {
+        baseUrl: 'jumpserver.example.com',
+        orgId: 'org-1',
+        username: 'alan',
+        password: 'super-secret',
+        verifyTls: true
+      }
+    });
+
+    expect(vscode.window.showErrorMessage).toHaveBeenCalledWith(expect.stringContaining('baseUrl'));
+    expect(vscode.window.showErrorMessage).toHaveBeenCalledWith(expect.stringContaining('http://'));
+    // The form has to stay open on the value the user still needs to correct.
+    expect(panelHost.panel.dispose).not.toHaveBeenCalled();
+    expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+  });
+
+  it('reports a save message that arrived without a payload', async () => {
+    const panelHost = createPanel();
+    const saveSettings = vi.fn();
+    vi.spyOn(vscode.window, 'createWebviewPanel').mockReturnValue(panelHost.panel);
+
+    await JumpServerConfigPanel.open(extensionContext(), { getSettings: async () => undefined, saveSettings });
+    await expect(panelHost.fireMessage({ type: 'save' })).resolves.toBeUndefined();
+
+    expect(saveSettings).not.toHaveBeenCalled();
+    expect(vscode.window.showErrorMessage).toHaveBeenCalled();
+    expect(panelHost.panel.dispose).not.toHaveBeenCalled();
   });
 
   it('syncs JumpServer assets every time configuration is saved', async () => {

@@ -1,5 +1,7 @@
 import * as vscode from 'vscode';
+import { ZodError } from 'zod';
 import type { JumpServerSettings } from '../config/schema';
+import { formatError } from '../utils/errors';
 import { renderWebviewHtml, type WebviewAsset } from './html';
 
 export interface JumpServerConfigPanelStore {
@@ -36,25 +38,53 @@ export class JumpServerConfigPanel {
       renderJumpServerConfigBody(settings)
     );
     panel.webview.onDidReceiveMessage(async (message: ConfigMessage) => {
-      if (message.type !== 'save') {
+      if (message?.type !== 'save') {
         return;
       }
-      const now = Date.now();
-      await store.saveSettings(
-        {
-          baseUrl: message.payload.baseUrl,
-          orgId: message.payload.orgId,
-          username: message.payload.username,
-          verifyTls: message.payload.verifyTls,
-          updatedAt: now
-        },
-        message.payload.password || undefined
-      );
+      // Nothing awaits this listener, so anything thrown here disappears: the
+      // panel would stay open on unsaved values with no hint that the save was
+      // rejected, which is strictly worse than an error the user can act on.
+      const payload = message.payload;
+      if (!payload || typeof payload !== 'object') {
+        await vscode.window.showErrorMessage(
+          'JumpServer configuration was not saved: the form sent no values.'
+        );
+        return;
+      }
+      try {
+        await store.saveSettings(
+          {
+            baseUrl: payload.baseUrl,
+            orgId: payload.orgId,
+            username: payload.username,
+            verifyTls: payload.verifyTls,
+            updatedAt: Date.now()
+          },
+          payload.password || undefined
+        );
+      } catch (error) {
+        await vscode.window.showErrorMessage(`JumpServer configuration was not saved. ${formatSettingsError(error)}`);
+        return;
+      }
       await vscode.commands.executeCommand('jumpserverManager.refresh');
       await vscode.window.showInformationMessage('JumpServer configuration saved.');
       panel.dispose();
     });
   }
+}
+
+/**
+ * A ZodError's own `message` is a JSON dump of every issue - accurate and
+ * unreadable. The form has five fields, so naming the ones that failed is all
+ * a user needs to fix it.
+ */
+export function formatSettingsError(error: unknown): string {
+  if (!(error instanceof ZodError)) {
+    return formatError(error);
+  }
+  return error.issues
+    .map((issue) => `${issue.path.join('.') || 'settings'}: ${issue.message}`)
+    .join('; ');
 }
 
 export function createConfigAssets(extensionUri: vscode.Uri): WebviewAsset {
