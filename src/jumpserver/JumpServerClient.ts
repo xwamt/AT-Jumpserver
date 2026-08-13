@@ -1,8 +1,7 @@
 import type { CachedJumpServerAsset, CachedJumpServerNode } from '../config/schema';
 import type { JumpServerAccountRef, JumpServerConnectionProtocol, JumpServerEndpoint, JumpServerSettingsWithPassword } from './types';
+import { createJumpServerFetch, type FetchLike } from './restTransport';
 import WebSocket from 'ws';
-
-type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 export type KokoWebSocket = Pick<WebSocket, 'send' | 'close' | 'on'>;
 export type WebSocketFactory = (url: string, options: WebSocket.ClientOptions) => Promise<KokoWebSocket>;
 
@@ -350,7 +349,7 @@ export class JumpServerClient {
     private readonly settings: JumpServerSettingsWithPassword,
     fetchImpl?: FetchLike
   ) {
-    this.fetchImpl = fetchImpl ?? fetch;
+    this.fetchImpl = fetchImpl ?? createJumpServerFetch({ verifyTls: settings.verifyTls });
   }
 
   async ensureAuthToken(): Promise<string> {

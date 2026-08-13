@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { listenHttp, type TestServer } from './testHttpServer';
+import { SELF_SIGNED_CERT, SELF_SIGNED_KEY } from '../../test-fixtures/selfSignedTls';
+import { listenHttp, listenHttps, type TestServer } from './testHttpServer';
 import {
   cookiesForUrl,
   parseSetCookieHeader,
@@ -656,6 +657,49 @@ describe('JumpServerClient cross-origin redirect defense', () => {
     await client.warmupKokoConnectPage('token-1', 1000).catch(() => undefined);
 
     expect(attacker.requests).toEqual([]);
+  });
+});
+
+describe('JumpServerClient REST TLS verification', () => {
+  const servers: TestServer[] = [];
+
+  afterEach(async () => {
+    await Promise.all(servers.splice(0).map((server) => server.close()));
+  });
+
+  async function selfSignedJumpServer(): Promise<TestServer> {
+    const server = await listenHttps({ cert: SELF_SIGNED_CERT, key: SELF_SIGNED_KEY }, (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"token":"bearer-1"}');
+    });
+    servers.push(server);
+    return server;
+  }
+
+  it('reaches a self-signed JumpServer over REST when verifyTls is off', async () => {
+    const server = await selfSignedJumpServer();
+    const client = new JumpServerClient({
+      baseUrl: server.url,
+      orgId: '',
+      username: 'alan',
+      password: 'secret',
+      verifyTls: false
+    });
+
+    await expect(client.ensureAuthToken()).resolves.toBe('bearer-1');
+  });
+
+  it('still refuses a self-signed JumpServer over REST when verifyTls is on', async () => {
+    const server = await selfSignedJumpServer();
+    const client = new JumpServerClient({
+      baseUrl: server.url,
+      orgId: '',
+      username: 'alan',
+      password: 'secret',
+      verifyTls: true
+    });
+
+    await expect(client.ensureAuthToken()).rejects.toThrow(/self.signed|self signed/i);
   });
 });
 
