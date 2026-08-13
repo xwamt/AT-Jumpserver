@@ -1,5 +1,6 @@
 import type { CachedJumpServerAsset, CachedJumpServerNode } from '../config/schema';
 import type { JumpServerAccountRef, JumpServerConnectionProtocol, JumpServerEndpoint, JumpServerSettingsWithPassword } from './types';
+import { log } from '../utils/logger';
 import { createJumpServerFetch, type FetchLike } from './restTransport';
 import WebSocket from 'ws';
 export type KokoWebSocket = Pick<WebSocket, 'send' | 'close' | 'on'>;
@@ -41,6 +42,42 @@ export interface JumpServerTimeouts {
   listingMs: number;
   /** KoKo WebSocket handshake. */
   webSocketMs: number;
+}
+
+/** Which of the three budgets a call is spending. Also the label used in logs. */
+export type JumpServerTimeoutBudget = 'request' | 'listing';
+
+/**
+ * "HTTP 502" in a log line tells a user nothing they can act on. The class does:
+ * `auth-rejected` means re-enter the password, `server-error` means the bastion
+ * is unwell, `throttled` means back off.
+ */
+export function classifyRestFailure(status: number): string {
+  if (status === 401 || status === 403) {
+    return 'auth-rejected';
+  }
+  if (status === 404) {
+    return 'not-found';
+  }
+  if (status === 408 || status === 429) {
+    return 'throttled';
+  }
+  if (status >= 500) {
+    return 'server-error';
+  }
+  if (status >= 400) {
+    return 'client-error';
+  }
+  return 'unexpected-status';
+}
+
+/** The path alone. Query strings here carry connection tokens. */
+function logRoute(url: string): string {
+  try {
+    return new URL(url).pathname;
+  } catch {
+    return '(unparsable url)';
+  }
 }
 
 /**
@@ -392,6 +429,7 @@ export async function defaultWebSocketFactory(
     const onOpen = (): void => settle(resolve);
     const onError = (error: Error): void => settle(() => reject(error));
     const timer = setTimeout(() => settle(() => {
+      log.warn(`KoKo WebSocket handshake timed out after ${timeoutMs}ms: ${logRoute(url)}`);
       socket.terminate();
       reject(new Error(`JumpServer WebSocket handshake timed out after ${timeoutMs}ms.`));
     }), timeoutMs);
@@ -406,13 +444,21 @@ export async function defaultWebSocketFactory(
  * abort is what frees the socket; the race is what guarantees the caller gets
  * an answer even from a `fetchImpl` that ignores signals.
  */
-async function withDeadline<T>(run: (signal: AbortSignal) => Promise<T>, timeoutMs: number): Promise<T> {
+async function withDeadline<T>(
+  run: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number,
+  budget: JumpServerTimeoutBudget,
+  route: string
+): Promise<T> {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const expiry = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => {
       // The URL can carry a connection token, so it never reaches the message.
       const error = new Error(`JumpServer request timed out after ${timeoutMs}ms.`);
+      // Which budget ran out is the whole diagnosis: a listing timeout means the
+      // deployment is large, a request timeout means the bastion is wedged.
+      log.warn(`REST ${budget} budget exhausted after ${timeoutMs}ms: ${route}`);
       controller.abort(error);
       reject(error);
     }, timeoutMs);
@@ -488,6 +534,7 @@ export class JumpServerClient {
       input.treePaths ? Promise.resolve(input.treePaths) : this.safeListAssetTreePaths()
     ]);
     const records = [...first.records];
+    let pages = 1;
 
     if (first.total === undefined) {
       // A bare array carries no count to plan against, so walk forward until a
@@ -496,6 +543,7 @@ export class JumpServerClient {
       for (let offset = pageSize; lastPageSize === pageSize && records.length < maxAssets; offset += pageSize) {
         const page = await this.fetchAssetPage(pageSize, offset);
         records.push(...page.records);
+        pages += 1;
         lastPageSize = page.records.length;
       }
     } else {
@@ -505,19 +553,27 @@ export class JumpServerClient {
         offsets.push(offset);
       }
       for (let index = 0; index < offsets.length; index += concurrency) {
-        const pages = await Promise.all(
+        const batch = await Promise.all(
           offsets.slice(index, index + concurrency).map((offset) => this.fetchAssetPage(pageSize, offset))
         );
-        for (const page of pages) {
+        for (const page of batch) {
           records.push(...page.records);
         }
+        pages += batch.length;
       }
     }
 
     // Concurrent pages over a shifting result set can repeat a row.
     const assets = dedupeAssetsById(this.toAssets(records, treePaths)).slice(0, maxAssets);
     const total = Math.max(first.total ?? assets.length, assets.length);
-    return { assets, total, truncated: assets.length < total };
+    const truncated = assets.length < total;
+    // A short asset list is the failure users report, and the page count is what
+    // separates "the bastion only has these" from "the sync stopped early".
+    log.info(
+      `asset sync walked ${pages} page(s): ${assets.length} of ${total} asset(s)` +
+        (truncated ? ' (cache cap reached)' : '')
+    );
+    return { assets, total, truncated };
   }
 
   async listAssetTreePaths(): Promise<AssetPathMap> {
@@ -529,7 +585,7 @@ export class JumpServerClient {
     const response = await this.authenticatedRequest(
       '/api/v1/perms/users/self/nodes/all-with-assets/tree/',
       {},
-      this.timeouts.listingMs
+      'listing'
     );
     return extractAssetTreeNodes(await response.json());
   }
@@ -714,7 +770,7 @@ export class JumpServerClient {
     const response = await this.authenticatedRequest(
       `/api/v1/perms/users/self/assets/?limit=${limit}&offset=${offset}`,
       {},
-      this.timeouts.listingMs
+      'listing'
     );
     const body = await response.json() as ListPage | unknown[];
     return { records: listPageRecords(body), total: listPageTotal(body) };
@@ -750,23 +806,28 @@ export class JumpServerClient {
   private async authenticatedRequest(
     pathOrUrl: string,
     init: RequestInit = {},
-    timeoutMs = this.timeouts.requestMs
+    budget: JumpServerTimeoutBudget = 'request'
   ): Promise<Response> {
     await this.ensureAuthToken();
-    let response = await this.request(pathOrUrl, this.withRestHeaders(init), false, timeoutMs);
+    let response = await this.request(pathOrUrl, this.withRestHeaders(init), false, budget);
     if (!isUnauthorizedResponse(response)) {
-      if (!response.ok) {
-        throw new Error(`JumpServer request failed with HTTP ${response.status}.`);
-      }
-      return response;
+      return this.requireOkResponse(response, pathOrUrl);
     }
     this.resetRestAuth();
     await this.ensureAuthToken();
-    response = await this.request(pathOrUrl, this.withRestHeaders(init), false, timeoutMs);
-    if (!response.ok) {
-      throw new Error(`JumpServer request failed with HTTP ${response.status}.`);
+    response = await this.request(pathOrUrl, this.withRestHeaders(init), false, budget);
+    return this.requireOkResponse(response, pathOrUrl);
+  }
+
+  private requireOkResponse(response: Response, pathOrUrl: string): Response {
+    if (response.ok) {
+      return response;
     }
-    return response;
+    log.warn(
+      `REST ${classifyRestFailure(response.status)} (HTTP ${response.status}): ` +
+        logRoute(resolveJumpServerUrl(this.settings.baseUrl, pathOrUrl))
+    );
+    throw new Error(`JumpServer request failed with HTTP ${response.status}.`);
   }
 
   private withRestHeaders(init: RequestInit): RequestInit {
@@ -787,7 +848,7 @@ export class JumpServerClient {
     pathOrUrl: string,
     init: RequestInit = {},
     requireOk = true,
-    timeoutMs = this.timeouts.requestMs
+    budget: JumpServerTimeoutBudget = 'request'
   ): Promise<Response> {
     const url = resolveJumpServerUrl(this.settings.baseUrl, pathOrUrl);
     const headers = headersToRecord(init.headers);
@@ -797,11 +858,13 @@ export class JumpServerClient {
     }
     const response = await withDeadline(
       (signal) => this.fetchImpl(url, { ...init, headers, signal }),
-      timeoutMs
+      budget === 'listing' ? this.timeouts.listingMs : this.timeouts.requestMs,
+      budget,
+      logRoute(url)
     );
     this.captureCookies(response, url);
     if (requireOk && !response.ok) {
-      throw new Error(`JumpServer request failed with HTTP ${response.status}.`);
+      return this.requireOkResponse(response, pathOrUrl);
     }
     return response;
   }

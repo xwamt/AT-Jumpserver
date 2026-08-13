@@ -67,6 +67,20 @@ export class Uri {
 
 export const window = {
   createTreeView: vi.fn(),
+  createOutputChannel: vi.fn(() => ({
+    name: 'AT JumpServer Terminal',
+    trace: vi.fn(),
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    append: vi.fn(),
+    appendLine: vi.fn(),
+    clear: vi.fn(),
+    show: vi.fn(),
+    hide: vi.fn(),
+    dispose: vi.fn()
+  })),
   createStatusBarItem: vi.fn(() => ({ text: '', tooltip: '', show: vi.fn(), hide: vi.fn(), dispose: vi.fn() })),
   createWebviewPanel: vi.fn(),
   showInputBox: vi.fn(),

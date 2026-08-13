@@ -3,7 +3,6 @@ import { JumpServerAgentToolService } from './agent/JumpServerAgentToolService';
 import { JumpServerConfigManager } from './config/JumpServerConfigManager';
 import type { CachedJumpServerAsset } from './config/schema';
 import { assetPathsFromNodes, JumpServerClient } from './jumpserver/JumpServerClient';
-import { errorMessage } from './jumpserver/redaction';
 import { BridgeServer } from './mcp/BridgeServer';
 import { syncPackagedHub } from './mcp/hubSync';
 import {
@@ -23,13 +22,23 @@ import { JumpServerTreeProvider } from './tree/JumpServerTreeProvider';
 import { SftpDirectoryTreeItem, SftpFileTreeItem } from './tree/SftpTreeItems';
 import { SftpTreeProvider } from './tree/SftpTreeProvider';
 import { AssetTreeItem, getAssetOpenKind } from './tree/TreeItems';
+import { log, setLogSink } from './utils/logger';
 import { showTimedNotification } from './utils/notifications';
+import { errorMessage } from './utils/redaction';
 import { JumpServerConfigPanel } from './webview/JumpServerConfigPanel';
 import { TerminalPanel } from './webview/TerminalPanel';
 
 let extensionCleanup: { dispose(): void } | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
+  // A WebSocket terminal, a chunked SFTP transport, a local HTTP bridge and a
+  // scoped cookie jar have no business failing into a toast that disappears
+  // after five seconds. `log: true` gives the channel levels and timestamps,
+  // and lets the user raise verbosity without a setting of ours.
+  const logChannel = vscode.window.createOutputChannel('AT JumpServer Terminal', { log: true });
+  setLogSink(logChannel);
+  context.subscriptions.push(logChannel, { dispose: () => setLogSink(undefined) });
+
   const configManager = new JumpServerConfigManager(context.globalState, context.secrets);
   const terminalContext = new TerminalContextRegistry();
   const treeProvider = new JumpServerTreeProvider(configManager);
@@ -66,13 +75,11 @@ export function activate(context: vscode.ExtensionContext): void {
   });
   const hubReady = syncPackagedHub(context)
     .then((result) => {
-      console.log(
-        `JumpServer hub sync ok (updated=${result.updated}, active=${result.activeVersion})`
-      );
+      log.info(`hub sync ok (updated=${result.updated}, active=${result.activeVersion})`);
       return result;
     })
     .catch((error) => {
-      console.error('JumpServer hub sync failed:', errorMessage(error));
+      log.error(`hub sync failed: ${errorMessage(error)}`);
       void showTimedNotification(
         `AT Series hub sync failed: ${errorMessage(error)}. MCP may not start until Repair succeeds.`,
         'warning'
@@ -88,6 +95,7 @@ export function activate(context: vscode.ExtensionContext): void {
         : undefined
   });
   void bridgeServer.start().catch((error) => {
+    log.error(`MCP bridge failed to start: ${errorMessage(error)}`);
     void showTimedNotification(`JumpServer MCP bridge failed to start: ${errorMessage(error)}`, 'warning');
   });
   void hubReady
@@ -389,6 +397,7 @@ async function runCommand(command: () => Promise<void>): Promise<void> {
   try {
     await command();
   } catch (error) {
+    log.error(`command failed: ${errorMessage(error)}`);
     await showTimedNotification(errorMessage(error), 'error');
   }
 }
