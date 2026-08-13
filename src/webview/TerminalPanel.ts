@@ -224,8 +224,15 @@ export class TerminalPanel {
 
   private bind(): void {
     this.panel.webview.onDidReceiveMessage((message: TerminalMessage) => {
-      if (handleTerminalMessage(message, this.session)) {
-        this.markActivity();
+      try {
+        if (handleTerminalMessage(message, this.session)) {
+          this.markActivity();
+        }
+      } catch (error) {
+        // A session that has lost its peer rejects writes rather than dropping
+        // them. Typing into one is a status line, not an exception thrown back
+        // into VS Code's message dispatcher.
+        this.postStatus(formatError(error));
       }
     });
 

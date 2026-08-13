@@ -5,12 +5,22 @@ import { JumpServerSession } from '../../src/jumpserver/JumpServerSession';
 class FakeSocket extends EventEmitter {
   sent: string[] = [];
   closed = false;
+  /** A socket that always claims an empty queue, so send backpressure never engages here. */
+  readonly bufferedAmount = 0;
 
   send(data: string): void {
     this.sent.push(data);
   }
 
+  ping(): void {
+    this.emit('pong');
+  }
+
   close(): void {
+    this.closed = true;
+  }
+
+  terminate(): void {
     this.closed = true;
   }
 }

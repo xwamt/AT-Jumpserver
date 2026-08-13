@@ -3,7 +3,14 @@ import type { JumpServerAccountRef, JumpServerConnectionProtocol, JumpServerEndp
 import { log } from '../utils/logger';
 import { createJumpServerFetch, type FetchLike } from './restTransport';
 import WebSocket from 'ws';
-export type KokoWebSocket = Pick<WebSocket, 'send' | 'close' | 'on'>;
+/**
+ * `ping`/`terminate`/`bufferedAmount` are here for the session heartbeat and
+ * its send backpressure. They are deliberately the RFC 6455 control frame and
+ * the transport's own queue depth rather than anything KoKo-specific: a peer
+ * that has stopped running its read loop cannot answer a protocol ping, and
+ * `close()` on such a peer waits for a close frame that will never arrive.
+ */
+export type KokoWebSocket = Pick<WebSocket, 'send' | 'close' | 'on' | 'ping' | 'terminate' | 'bufferedAmount'>;
 export type WebSocketFactory = (url: string, options: WebSocket.ClientOptions) => Promise<KokoWebSocket>;
 
 interface ListPage {

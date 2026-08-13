@@ -100,6 +100,11 @@ function createPanel() {
 
   return {
     panel,
+    sendMessage(message: unknown) {
+      for (const listener of messageListeners) {
+        listener(message);
+      }
+    },
     fireViewState(active: boolean) {
       for (const listener of viewStateListeners) {
         listener({ webviewPanel: { active } });
@@ -350,6 +355,29 @@ describe('TerminalPanel rendering helpers', () => {
     expect(panelHost.panel.webview.postMessage).toHaveBeenCalledWith({
       type: 'output',
       payload: formatTerminalNotice('Connection disconnected (code 1000)')
+    });
+  });
+
+  /**
+   * A session that has lost its peer throws on write rather than swallowing the
+   * bytes. That has to arrive as a status line, not as an exception thrown back
+   * into VS Code's webview message dispatcher.
+   */
+  it('reports a rejected write as a status instead of throwing out of the message listener', async () => {
+    const panelHost = createPanel();
+    vi.mocked(vscode.window.createWebviewPanel).mockReturnValueOnce(panelHost.panel);
+    TerminalPanel.open(extensionContext(), asset(), jumpServerClient());
+    await flushPromises();
+    vi.mocked(panelHost.panel.webview.postMessage).mockClear();
+    write.mockImplementationOnce(() => {
+      throw new Error('JumpServer terminal session for terminal-asset is unavailable: it stopped answering heartbeats.');
+    });
+
+    expect(() => panelHost.sendMessage({ type: 'input', payload: 'ls\r' })).not.toThrow();
+
+    expect(panelHost.panel.webview.postMessage).toHaveBeenCalledWith({
+      type: 'status',
+      payload: expect.stringContaining('unavailable')
     });
   });
 

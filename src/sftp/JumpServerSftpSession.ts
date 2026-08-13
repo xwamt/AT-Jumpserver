@@ -11,6 +11,25 @@ import {
 } from './SftpProtocol';
 import type { JumpServerSftpEntry } from './SftpTypes';
 
+/**
+ * `ws` queues whatever it is handed. A whole file goes out as one frame, so a
+ * second transfer started while the first is still on the wire adds to the same
+ * heap rather than waiting for it - and nothing in this class ever asked how
+ * much was already outstanding. This caps what one session can pin at the mark
+ * plus the frame in flight.
+ */
+export const SFTP_SEND_HIGH_WATER_BYTES = 8 * 1024 * 1024;
+
+/** `ws` has no drain event, so the queue is sampled instead. */
+export const SFTP_DRAIN_POLL_MS = 50;
+
+/**
+ * How long a frame may wait for room. Long enough to outlast a genuinely slow
+ * transfer over a thin link, short enough that a wedged socket surfaces as a
+ * failed transfer rather than a command that never returns.
+ */
+export const SFTP_DRAIN_TIMEOUT_MS = 120_000;
+
 export interface JumpServerSftpSessionAsset {
   id: string;
   name: string;
@@ -169,8 +188,37 @@ export class JumpServerSftpSession {
         reject
       };
       this.pending.set(id, pendingCommand);
-      this.socket?.send(JSON.stringify(payload));
+      this.sendWhenDrained(id, JSON.stringify(payload), 0);
     });
+  }
+
+  /**
+   * Sends synchronously whenever the socket is keeping up, which is every call
+   * on a healthy session; the polling path only exists for the case where it
+   * is not.
+   */
+  private sendWhenDrained(id: string, frame: string, waitedMs: number): void {
+    const pending = this.pending.get(id);
+    if (!pending || !this.socket) {
+      // A close or a dispose already rejected this command while it waited.
+      return;
+    }
+    if (this.socket.bufferedAmount <= SFTP_SEND_HIGH_WATER_BYTES) {
+      this.socket.send(frame);
+      return;
+    }
+    if (waitedMs >= SFTP_DRAIN_TIMEOUT_MS) {
+      this.pending.delete(id);
+      pending.reject(new Error(
+        `SFTP transfer stalled: ${this.socket.bufferedAmount} bytes have been queued for ${waitedMs}ms without draining.`
+      ));
+      return;
+    }
+    const timer = setTimeout(
+      () => this.sendWhenDrained(id, frame, waitedMs + SFTP_DRAIN_POLL_MS),
+      SFTP_DRAIN_POLL_MS
+    );
+    (timer as unknown as { unref?: () => void }).unref?.();
   }
 
   private bindSocket(socket: KokoWebSocket): void {

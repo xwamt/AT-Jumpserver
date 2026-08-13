@@ -1,7 +1,32 @@
 import { randomUUID } from 'node:crypto';
+import { UserVisibleError } from '../utils/errors';
+import { log } from '../utils/logger';
 import { extractProtocolNames, resolveFirstUsableAccount, type KokoWebSocket } from './JumpServerClient';
 import { connectionKindLabel, connectionKindProtocol, type JumpServerConnectionKind } from './connectionTypes';
 import type { JumpServerConnectionProtocol, TerminalEvents } from './types';
+
+/**
+ * How often the client pings KoKo once the socket is bound. A bastion sits
+ * behind at least one proxy, and 60s is the usual idle cut-off in those; 20s
+ * fits three attempts inside that window, so a single dropped frame is not
+ * enough to condemn a healthy session.
+ */
+export const HEARTBEAT_INTERVAL_MS = 20_000;
+
+/**
+ * How long one ping may go unanswered. Matched to the WebSocket handshake
+ * budget in `DEFAULT_JUMPSERVER_TIMEOUTS`: a bastion that cannot echo a control
+ * frame in the time it is allowed to complete a whole handshake is not going to.
+ */
+export const HEARTBEAT_TIMEOUT_MS = 15_000;
+
+/**
+ * Refuse to hand `ws` more terminal input once this much is already queued.
+ * Interactive input is keystrokes and agent commands - kilobytes - so a megabyte
+ * of undrained queue does not mean "busy", it means the socket has stopped
+ * moving and every further write is just heap the user will never get back.
+ */
+export const TERMINAL_SEND_HIGH_WATER_BYTES = 1024 * 1024;
 
 export interface JumpServerSessionAsset {
   id: string;
@@ -29,6 +54,20 @@ export class JumpServerSession {
   private rows = 24;
   private cols = 80;
   private connected = false;
+  /**
+   * Why this session can no longer carry traffic, or undefined while it can.
+   * Writes read it so a caller - an MCP agent above all - gets told, instead of
+   * having its bytes accepted by a socket nobody is listening on.
+   */
+  private unavailableReason: string | undefined;
+  /**
+   * Whether a `Disconnected ...` status already went out. A heartbeat timeout
+   * terminates the socket itself, and that raises the very `close` event whose
+   * handler would otherwise report the same loss a second time.
+   */
+  private disconnectReported = false;
+  private heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+  private pongTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(private readonly input: {
     asset: JumpServerSessionAsset;
@@ -65,17 +104,34 @@ export class JumpServerSession {
     this.bindSocket(this.socket);
   }
 
+  /**
+   * Throws rather than dropping the bytes. Silence here is the worst outcome
+   * available: an agent that gets no error assumes its command is running and
+   * goes on to wait for output that can never arrive.
+   */
   write(data: string): void {
-    this.socket?.send(JSON.stringify({ id: '', type: 'TERMINAL_DATA', data }));
+    const socket = this.requireUsableSocket();
+    const queued = socket.bufferedAmount;
+    if (queued > TERMINAL_SEND_HIGH_WATER_BYTES) {
+      throw new UserVisibleError(
+        `JumpServer terminal is not draining: ${queued} bytes are still queued for ${this.input.asset.name}.`
+      );
+    }
+    socket.send(JSON.stringify({ id: '', type: 'TERMINAL_DATA', data }));
   }
 
+  /**
+   * Unlike `write`, a no-op. Resizing is a hint the webview repeats on every
+   * layout change; failing it would turn a cosmetic mismatch into an error the
+   * user has to dismiss, and there is no message to lose.
+   */
   resize(rows: number, cols: number): void {
-    if (rows <= 0 || cols <= 0) {
+    if (rows <= 0 || cols <= 0 || !this.socket || this.unavailableReason) {
       return;
     }
     this.rows = rows;
     this.cols = cols;
-    this.socket?.send(JSON.stringify({
+    this.socket.send(JSON.stringify({
       id: '',
       type: 'TERMINAL_RESIZE',
       data: JSON.stringify({ cols, rows })
@@ -87,6 +143,8 @@ export class JumpServerSession {
   }
 
   dispose(): void {
+    this.stopHeartbeat();
+    this.markUnavailable('the session was closed locally');
     this.socket?.close();
     this.socket = undefined;
     this.connected = false;
@@ -97,10 +155,93 @@ export class JumpServerSession {
       this.handleSocketMessage(message, Boolean(isBinary));
     });
     socket.on('close', (code?: number, reason?: Buffer | string) => {
+      this.stopHeartbeat();
       this.connected = false;
-      this.input.events.status(formatSocketCloseStatus(code, reason));
+      const status = formatSocketCloseStatus(code, reason);
+      this.markUnavailable(status.toLowerCase());
+      if (!this.disconnectReported) {
+        this.disconnectReported = true;
+        log.info(`KoKo terminal for ${this.input.asset.name}: ${status}`);
+        this.input.events.status(status);
+      }
     });
     socket.on('error', (error) => this.input.events.error(error));
+    socket.on('pong', () => this.clearPongDeadline());
+    // The panel calls itself connected as soon as `connect()` resolves, which is
+    // here - so this is exactly the window in which a half-open socket can show
+    // "Connected" while the peer is gone.
+    this.startHeartbeat();
+  }
+
+  private requireUsableSocket(): KokoWebSocket {
+    if (!this.socket || this.unavailableReason) {
+      throw new UserVisibleError(
+        `JumpServer terminal session for ${this.input.asset.name} is unavailable: ${this.unavailableReason ?? 'it was never opened'}.`
+      );
+    }
+    return this.socket;
+  }
+
+  /** First cause wins: the reason a session died is more useful than its last symptom. */
+  private markUnavailable(reason: string): void {
+    this.unavailableReason ??= reason;
+  }
+
+  private startHeartbeat(): void {
+    this.stopHeartbeat();
+    this.heartbeatTimer = unrefTimer(setInterval(() => this.sendHeartbeat(), HEARTBEAT_INTERVAL_MS));
+  }
+
+  private sendHeartbeat(): void {
+    if (!this.socket || this.unavailableReason || this.pongTimer) {
+      return;
+    }
+    this.pongTimer = unrefTimer(setTimeout(() => this.failHeartbeat(), HEARTBEAT_TIMEOUT_MS));
+    try {
+      this.socket.ping();
+    } catch (error) {
+      this.failHeartbeat(error);
+    }
+  }
+
+  private clearPongDeadline(): void {
+    if (!this.pongTimer) {
+      return;
+    }
+    clearTimeout(this.pongTimer);
+    this.pongTimer = undefined;
+  }
+
+  private stopHeartbeat(): void {
+    this.clearPongDeadline();
+    if (!this.heartbeatTimer) {
+      return;
+    }
+    clearInterval(this.heartbeatTimer);
+    this.heartbeatTimer = undefined;
+  }
+
+  private failHeartbeat(cause?: unknown): void {
+    if (this.unavailableReason) {
+      return;
+    }
+    const status = `Disconnected (no heartbeat response within ${HEARTBEAT_TIMEOUT_MS}ms)`;
+    // The asset name is safe to print; the KoKo URL carries the connection token
+    // and never reaches this class, which is why nothing here has to redact one.
+    log.warn(
+      `KoKo terminal for ${this.input.asset.name} stopped answering heartbeats within ${HEARTBEAT_TIMEOUT_MS}ms` +
+        `${cause ? `: ${String(cause)}` : ''}; dropping the session.`
+    );
+    this.stopHeartbeat();
+    this.markUnavailable(`it stopped answering heartbeats after ${HEARTBEAT_TIMEOUT_MS}ms`);
+    this.connected = false;
+    this.disconnectReported = true;
+    const socket = this.socket;
+    this.socket = undefined;
+    // `close()` politely waits for a close frame from a peer that has already
+    // stopped reading. Only `terminate()` frees the socket now.
+    socket?.terminate();
+    this.input.events.status(status);
   }
 
   private handleSocketMessage(message: Buffer | string, isBinary: boolean): void {
@@ -137,6 +278,16 @@ export class JumpServerSession {
     }
     return payload.type?.startsWith('TERMINAL_') || payload.type === 'TERMINAL_SESSION';
   }
+}
+
+/**
+ * A heartbeat must never be the thing that keeps a host process alive. Node
+ * timers carry `unref`; the substitutes a test clock installs may not, so the
+ * call is guarded rather than assumed.
+ */
+function unrefTimer<T>(timer: T): T {
+  (timer as unknown as { unref?: () => void }).unref?.();
+  return timer;
 }
 
 function formatSocketCloseStatus(code?: number, reason?: Buffer | string): string {

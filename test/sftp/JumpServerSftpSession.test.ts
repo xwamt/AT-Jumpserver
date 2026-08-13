@@ -5,6 +5,8 @@ import { JumpServerSftpSession, type JumpServerSftpSessionClient } from '../../s
 class FakeSocket extends EventEmitter {
   readonly send = vi.fn();
   readonly close = vi.fn();
+  /** A socket that always claims an empty queue, so send backpressure never engages here. */
+  readonly bufferedAmount = 0;
 
   emitMessage(message: unknown): void {
     this.emit('message', JSON.stringify(message));

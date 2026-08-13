@@ -835,7 +835,7 @@ describe('JumpServerClient REST flow', () => {
       .mockResolvedValueOnce(textResponse('ok'))
       .mockResolvedValueOnce(jsonResponse({ id: 'user-1' }))
       .mockResolvedValueOnce(textResponse('<html>koko</html>'));
-    const socket = { send: vi.fn(), close: vi.fn(), on: vi.fn() };
+    const socket = { send: vi.fn(), close: vi.fn(), on: vi.fn(), ping: vi.fn(), terminate: vi.fn(), bufferedAmount: 0 };
     const webSocketFactory = vi.fn(async () => socket);
     const client = new JumpServerClient({
       baseUrl: 'https://jumpserver.example.com',
