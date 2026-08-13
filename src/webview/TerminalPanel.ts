@@ -6,6 +6,7 @@ import { connectionKindLabel, getAssetConnectionKind, type JumpServerConnectionK
 import { JumpServerSession } from '../jumpserver/JumpServerSession';
 import type { TerminalContextRegistry } from '../terminal/TerminalContext';
 import { formatError } from '../utils/errors';
+import { showTimedNotification } from '../utils/notifications';
 import { renderWebviewHtml, type WebviewAsset } from './html';
 
 type TerminalMessage =
@@ -99,6 +100,8 @@ export class TerminalPanel {
   private pendingOutput: Buffer[] = [];
   private pendingOutputBytes = 0;
   private outputFlushTimer: ReturnType<typeof setTimeout> | undefined;
+  private idleDisconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  private lastActivityAt = Date.now();
 
   private constructor(
     private readonly panel: vscode.WebviewPanel,
@@ -169,12 +172,15 @@ export class TerminalPanel {
       }
       this.connected = true;
       this.terminalContext?.markConnected(this.terminalId);
+      this.markActivity();
+      this.armIdleDisconnect();
     } catch (error) {
       if (generation !== this.connectionGeneration) {
         return;
       }
       this.connected = false;
       this.terminalContext?.markDisconnected(this.terminalId);
+      this.clearIdleDisconnect();
       this.postStatus(formatError(error));
     }
   }
@@ -191,30 +197,36 @@ export class TerminalPanel {
       }
       this.connected = true;
       this.terminalContext?.markConnected(this.terminalId);
+      this.markActivity();
+      this.armIdleDisconnect();
     } catch (error) {
       if (generation !== this.connectionGeneration) {
         return;
       }
       this.connected = false;
       this.terminalContext?.markDisconnected(this.terminalId);
+      this.clearIdleDisconnect();
       this.postStatus(formatError(error));
     }
   }
 
-  disconnect(): void {
+  disconnect(reason?: string): void {
     this.connectionGeneration++;
+    this.clearIdleDisconnect();
     this.session.dispose();
     this.connected = false;
     this.terminalContext?.markDisconnected(this.terminalId);
-    this.postStatus('Disconnected');
-    const notice = formatTerminalNotice('Connection disconnected');
+    this.postStatus(reason ?? 'Disconnected');
+    const notice = formatTerminalNotice(reason ?? 'Connection disconnected');
     this.terminalContext?.appendOutput(this.terminalId, notice);
     this.postWebviewMessage({ type: 'output', payload: notice });
   }
 
   private bind(): void {
     this.panel.webview.onDidReceiveMessage((message: TerminalMessage) => {
-      handleTerminalMessage(message, this.session);
+      if (handleTerminalMessage(message, this.session)) {
+        this.markActivity();
+      }
     });
 
     this.panel.onDidChangeViewState((event) => {
@@ -232,6 +244,7 @@ export class TerminalPanel {
       }
       this.pendingOutput = [];
       this.pendingOutputBytes = 0;
+      this.clearIdleDisconnect();
       this.connectionGeneration++;
       this.session.dispose();
       this.connected = false;
@@ -253,6 +266,7 @@ export class TerminalPanel {
           // The context buffer feeds MCP marker detection, so it must never be
           // delayed by the webview's coalescing window.
           this.terminalContext?.appendOutput(this.terminalId, data);
+          this.markActivity();
           this.queueOutput(data);
         },
         status: (message) => this.handleSessionStatus(message, generation),
@@ -265,10 +279,54 @@ export class TerminalPanel {
     this.postWebviewMessage({ type: 'status', payload: message });
   }
 
+  /**
+   * A bastion session left open keeps a live credentialled path to a production
+   * asset, so it is dropped once nothing has used it for a while. "Used" covers
+   * keystrokes, remote output, and MCP agent writes alike: watching keystrokes
+   * only would cut the connection out from under an agent mid tool call.
+   *
+   * Activity just stamps a timestamp. Output arrives thousands of times a
+   * second during a large `cat`, and re-arming a timer per frame would undo the
+   * batching the rest of this panel exists to do.
+   */
+  private markActivity(): void {
+    this.lastActivityAt = Date.now();
+  }
+
+  private armIdleDisconnect(): void {
+    this.clearIdleDisconnect();
+    const idleMs = this.settings.idleDisconnectMinutes * 60_000;
+    if (!this.connected || idleMs <= 0) {
+      return;
+    }
+    const remaining = Math.max(0, idleMs - (Date.now() - this.lastActivityAt));
+    this.idleDisconnectTimer = setTimeout(() => {
+      this.idleDisconnectTimer = undefined;
+      // The deadline that just fired predates whatever happened since it was
+      // armed, so re-arm for the remainder instead of cutting a live session.
+      if (Date.now() - this.lastActivityAt < idleMs) {
+        this.armIdleDisconnect();
+        return;
+      }
+      const message = `Disconnected after ${this.settings.idleDisconnectMinutes} minute(s) of inactivity.`;
+      this.disconnect(message);
+      void showTimedNotification(message, 'warning');
+    }, remaining);
+  }
+
+  private clearIdleDisconnect(): void {
+    if (!this.idleDisconnectTimer) {
+      return;
+    }
+    clearTimeout(this.idleDisconnectTimer);
+    this.idleDisconnectTimer = undefined;
+  }
+
   private handleSessionStatus(message: string, generation: number): void {
     if (message.startsWith('Disconnected') && generation === this.connectionGeneration) {
       this.connected = false;
       this.terminalContext?.markDisconnected(this.terminalId);
+      this.clearIdleDisconnect();
       const detail = message.slice('Disconnected'.length).trim();
       const notice = formatTerminalNotice(`Connection disconnected${detail ? ` ${detail}` : ''}`);
       this.terminalContext?.appendOutput(this.terminalId, notice);
@@ -282,7 +340,12 @@ export class TerminalPanel {
       terminalId: this.terminalId,
       asset: this.asset,
       connected: this.connected,
-      write: (data) => this.session.write(data)
+      // Every MCP agent write reaches the session through this closure, which
+      // is what keeps a long-running tool call from idling itself out.
+      write: (data) => {
+        this.markActivity();
+        this.session.write(data);
+      }
     });
   }
 
