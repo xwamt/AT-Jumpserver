@@ -319,7 +319,7 @@ export function createVscodeSftpEditUi(statusBarItem: vscode.StatusBarItem): Sft
       }
     },
     async showError(remotePath, message) {
-      await showTimedNotification(`Remote sync failed for ${remotePath}: ${message}`, 'error');
+      showTimedNotification(`Remote sync failed for ${remotePath}: ${message}`, 'error');
     },
     async promptUnsyncedClose() {
       return 'discard';

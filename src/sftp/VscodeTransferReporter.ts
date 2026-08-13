@@ -19,6 +19,6 @@ export class VscodeTransferReporter implements TransferReporter {
   }
 
   async notifySuccess(message: string): Promise<void> {
-    await showTimedNotification(message);
+    showTimedNotification(message);
   }
 }

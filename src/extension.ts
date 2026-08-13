@@ -163,7 +163,7 @@ export function activate(context: vscode.ExtensionContext): void {
         await client.ensureAuthToken();
         // Verifying an account should not drag the whole node tree along.
         await client.getUserProfile();
-        await showTimedNotification('JumpServer account verified.');
+        showTimedNotification('JumpServer account verified.');
       });
     }),
     vscode.commands.registerCommand('jumpserverManager.refresh', async () => {
@@ -191,7 +191,7 @@ export function activate(context: vscode.ExtensionContext): void {
       await runCommand(async () => {
         const kind = getAssetOpenKind(item.asset);
         if (kind === 'unsupported') {
-          await showTimedNotification(`Asset type is not supported yet: ${item.asset.name}`, 'error');
+          showTimedNotification(`Asset type is not supported yet: ${item.asset.name}`, 'error');
           return;
         }
         const client = await createClient(configManager);
@@ -326,7 +326,7 @@ export function activate(context: vscode.ExtensionContext): void {
       }
       await runCommand(async () => {
         await vscode.env.clipboard.writeText(item.entry.path);
-        await showTimedNotification('Remote path copied.');
+        showTimedNotification('Remote path copied.');
       });
     }),
     vscode.commands.registerCommand('jumpserverManager.installMcpConfig', async () => {
@@ -334,7 +334,7 @@ export function activate(context: vscode.ExtensionContext): void {
         try {
           await syncPackagedHub(context);
         } catch (error) {
-          await showTimedNotification(`AT Series hub sync failed: ${errorMessage(error)}`, 'error');
+          showTimedNotification(`AT Series hub sync failed: ${errorMessage(error)}`, 'error');
           return;
         }
         const result = await ensureAtSeriesConfigForCurrentIde({
@@ -342,12 +342,12 @@ export function activate(context: vscode.ExtensionContext): void {
           workspaceFolder: currentWorkspaceFolder()
         });
         if (result) {
-          await showTimedNotification(
+          showTimedNotification(
             result.updated ? 'AT Series MCP config installed/repaired.' : 'AT Series MCP config is already up to date.'
           );
           return;
         }
-        await showTimedNotification(
+        showTimedNotification(
           'No supported IDE MCP config target was detected. Open a workspace to install Continue config.',
           'warning'
         );
@@ -360,14 +360,14 @@ export function activate(context: vscode.ExtensionContext): void {
           workspaceFolder: currentWorkspaceFolder()
         });
         if (result?.removed) {
-          await showTimedNotification('AT Series MCP config uninstalled.');
+          showTimedNotification('AT Series MCP config uninstalled.');
           return;
         }
         if (result) {
-          await showTimedNotification('AT Series MCP config was not present.');
+          showTimedNotification('AT Series MCP config was not present.');
           return;
         }
-        await showTimedNotification(
+        showTimedNotification(
           'No supported IDE MCP config target was detected. Open a workspace to uninstall Continue config.',
           'warning'
         );
@@ -398,7 +398,7 @@ async function runCommand(command: () => Promise<void>): Promise<void> {
     await command();
   } catch (error) {
     log.error(`command failed: ${errorMessage(error)}`);
-    await showTimedNotification(errorMessage(error), 'error');
+    showTimedNotification(errorMessage(error), 'error');
   }
 }
 
@@ -430,7 +430,7 @@ async function tryOpenSftpFiles(
     if (notifyErrors) {
       throw error;
     }
-    await showTimedNotification(`Files are not available for ${asset.name}: ${errorMessage(error)}`, 'warning');
+    showTimedNotification(`Files are not available for ${asset.name}: ${errorMessage(error)}`, 'warning');
   }
 }
 
@@ -438,7 +438,7 @@ async function ensureSftpAssetOpen(manager: JumpServerSftpManager): Promise<bool
   if (manager.getState().kind !== 'none') {
     return true;
   }
-  await showTimedNotification('Open files from a JumpServer asset first.', 'warning');
+  showTimedNotification('Open files from a JumpServer asset first.', 'warning');
   return false;
 }
 
