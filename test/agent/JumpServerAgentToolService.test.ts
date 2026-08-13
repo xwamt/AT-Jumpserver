@@ -262,6 +262,45 @@ describe('JumpServerAgentToolService', () => {
     expect(sftp.getConnectionAsset).toHaveBeenCalledWith('terminal-prod');
   });
 
+  it('truncates a long SSH command in the confirmation and reports its real length', async () => {
+    const command = 'echo padding; '.repeat(100).trim();
+    const confirm = vi.fn(async (_message: string) => false);
+    const terminalContext = new TerminalContextRegistry();
+    terminalContext.setActive({
+      terminalId: 'terminal-1',
+      asset: asset({ id: 'ssh-1', name: 'prod-db', address: '10.0.0.9', protocolNames: ['ssh'] }),
+      connected: true,
+      write: vi.fn()
+    });
+    const service = serviceWith({ confirm, terminalContext });
+
+    await expect(service.runTerminalCommand({ command })).rejects.toThrow(/cancelled/i);
+
+    const message = confirm.mock.calls[0][0];
+    expect(message).toContain('prod-db (10.0.0.9)');
+    expect(message).toContain(`… (truncated, ${command.length} chars, 1 lines)`);
+    expect(message.length).toBeLessThan(command.length);
+  });
+
+  it('warns when a destructive command hides past the confirmation preview', async () => {
+    const command = `${'echo padding; '.repeat(100)}rm -rf /data`;
+    const confirm = vi.fn(async (_message: string) => false);
+    const terminalContext = new TerminalContextRegistry();
+    terminalContext.setActive({
+      terminalId: 'terminal-1',
+      asset: asset({ id: 'ssh-1', name: 'prod-db', address: '10.0.0.9', protocolNames: ['ssh'] }),
+      connected: true,
+      write: vi.fn()
+    });
+    const service = serviceWith({ confirm, terminalContext });
+
+    await expect(service.runTerminalCommand({ command })).rejects.toThrow(/cancelled/i);
+
+    const message = confirm.mock.calls[0][0];
+    expect(message).not.toContain('rm -rf /data');
+    expect(message.endsWith('Warning: this command appears destructive.')).toBe(true);
+  });
+
   it('runs one shell wrapper write per confirmed command and serializes parallel calls', async () => {
     let writeCount = 0;
     const terminalContext = new TerminalContextRegistry();

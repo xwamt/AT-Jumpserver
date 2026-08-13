@@ -4,6 +4,7 @@ import { getAssetConnectionKind } from '../jumpserver/connectionTypes';
 import type { JumpServerSftpManager } from '../sftp/JumpServerSftpManager';
 import type { JumpServerSftpEntry } from '../sftp/SftpTypes';
 import type { ActiveTerminalContext, TerminalContextRegistry } from '../terminal/TerminalContext';
+import { formatCommandConfirmMessage } from '../utils/commandPreview';
 import { isReadOnlySql } from './SqlSafety';
 import { MysqlCliExecutor, ShellTerminalExecutor } from './TerminalExecutors';
 
@@ -70,9 +71,11 @@ export class JumpServerAgentToolService {
   async sendTerminalInput(input: { terminalId?: string; input?: string }) {
     const target = this.resolveTerminal(input.terminalId);
     const data = input.input ?? '';
-    await this.requireConfirm(
-      `Send input to JumpServer terminal on ${target.asset.name}?\n\n${previewInput(data)}`
-    );
+    await this.requireConfirm(formatCommandConfirmMessage({
+      action: 'Send input to JumpServer terminal',
+      target: formatAssetTarget(target.asset),
+      command: data
+    }));
     target.write(data);
     return { terminalId: target.terminalId, bytesWritten: Buffer.byteLength(data, 'utf8') };
   }
@@ -92,7 +95,12 @@ export class JumpServerAgentToolService {
     if (getAssetConnectionKind(target.asset) !== 'ssh') {
       throw new Error('A connected JumpServer SSH terminal is required.');
     }
-    if (!await this.dependencies.confirm(`Run JumpServer SSH command on ${target.asset.name}?\n\n${command}`)) {
+    const confirmed = await this.dependencies.confirm(formatCommandConfirmMessage({
+      action: 'Run JumpServer SSH command',
+      target: formatAssetTarget(target.asset),
+      command
+    }));
+    if (!confirmed) {
       throw new Error('Terminal command was cancelled.');
     }
     // Serialize per terminal so parallel MCP tool calls cannot interleave wrappers
@@ -209,9 +217,11 @@ export class JumpServerAgentToolService {
       throw new Error('A connected JumpServer MySQL terminal is required.');
     }
     const data = input.input ?? '';
-    await this.requireConfirm(
-      `Send input to JumpServer MySQL terminal on ${target.asset.name}?\n\n${previewInput(data)}`
-    );
+    await this.requireConfirm(formatCommandConfirmMessage({
+      action: 'Send input to JumpServer MySQL terminal',
+      target: formatAssetTarget(target.asset),
+      command: data
+    }));
     target.write(data);
     return { terminalId: target.terminalId, bytesWritten: Buffer.byteLength(data, 'utf8') };
   }
@@ -226,7 +236,11 @@ export class JumpServerAgentToolService {
       throw new Error('A connected JumpServer MySQL terminal is required.');
     }
     if (!isReadOnlySql(sql)) {
-      const ok = await this.dependencies.confirm(`Run state-changing MySQL SQL on ${target.asset.name}?\n\n${sql}`);
+      const ok = await this.dependencies.confirm(formatCommandConfirmMessage({
+        action: 'Run state-changing MySQL SQL',
+        target: formatAssetTarget(target.asset),
+        command: sql
+      }));
       if (!ok) {
         throw new Error('MySQL SQL execution was cancelled.');
       }
@@ -319,11 +333,4 @@ function clampPositiveInteger(value: number | undefined, fallback: number, max: 
     return fallback;
   }
   return Math.min(value, max);
-}
-
-function previewInput(value: string, maxChars = 400): string {
-  if (value.length <= maxChars) {
-    return value;
-  }
-  return `${value.slice(0, maxChars)}\n…(truncated)`;
 }
