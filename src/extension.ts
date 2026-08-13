@@ -5,12 +5,12 @@ import type { CachedJumpServerAsset } from './config/schema';
 import { JumpServerClient } from './jumpserver/JumpServerClient';
 import { errorMessage } from './jumpserver/redaction';
 import { BridgeServer } from './mcp/BridgeServer';
-import { detectHostApp } from './mcp/hostApp';
 import { syncPackagedHub } from './mcp/hubSync';
 import {
   ensureAtSeriesConfigForCurrentIde,
   uninstallAtSeriesConfigForCurrentIde
 } from './mcp/McpConfigInstaller';
+import { detectHostApp } from '@at-series/mcp-hub';
 import { assertTextFileEditable, DEFAULT_SFTP_EDIT_MAX_BYTES } from './sftp/SftpFileGuards';
 import { createVscodeSftpEditUi, SftpEditSessionManager } from './sftp/SftpEditSessionManager';
 import { JumpServerSftpManager } from './sftp/JumpServerSftpManager';
