@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import { homedir } from 'node:os';
 import type { z } from 'zod';
@@ -7,7 +7,9 @@ import {
   AT_SERIES_TOKEN_HEADER,
   BRIDGE_HOST,
   BRIDGE_MAX_BODY_BYTES,
+  createBridgeToken,
   FsBridgePublisher,
+  timingSafeEqualToken,
   type HostApp
 } from '@at-series/mcp-hub';
 import type { JumpServerAgentToolService } from '../agent/JumpServerAgentToolService';
@@ -118,7 +120,7 @@ export class BridgeServer {
     if (this.server) {
       return;
     }
-    this.token = randomBytes(32).toString('hex');
+    this.token = createBridgeToken();
     this.server = createServer(createBridgeNodeListener({
       service: this.service,
       token: this.token,
@@ -490,12 +492,19 @@ function isAuthorized(
   headers: Record<string, string | string[] | undefined>,
   token: string
 ): boolean {
-  const series = headerValue(headers, AT_SERIES_TOKEN_HEADER);
-  if (series === token) {
-    return true;
-  }
-  const legacy = headerValue(headers, BRIDGE_TOKEN_HEADER);
-  return legacy === token;
+  return (
+    matchesToken(headerValue(headers, AT_SERIES_TOKEN_HEADER), token) ||
+    matchesToken(headerValue(headers, BRIDGE_TOKEN_HEADER), token)
+  );
+}
+
+/**
+ * Protocol v1 §7.2 requires constant-time comparison. `timingSafeEqualToken`
+ * takes two strings, so an absent header is resolved to a plain miss here
+ * rather than handed to the comparison as `undefined`.
+ */
+function matchesToken(presented: string | undefined, token: string): boolean {
+  return typeof presented === 'string' && timingSafeEqualToken(presented, token);
 }
 
 function headerValue(

@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AT_SERIES_TOKEN_HEADER, BRIDGE_MAX_BODY_BYTES } from '@at-series/mcp-hub';
 import {
   createBridgeNodeListener,
+  createBridgeRequestHandler,
   type BridgeNodeRequest,
   type BridgeNodeResponse
 } from '../../src/mcp/BridgeServer';
@@ -31,13 +32,25 @@ function stubService() {
   } as never;
 }
 
-function listener(token = TOKEN) {
-  return createBridgeNodeListener({
+function dependencies(token = TOKEN) {
+  return {
     service: stubService(),
     token,
     bridgeId: 'bridge-1',
-    hostApp: 'cursor',
+    hostApp: 'cursor' as const,
     pluginVersion: '0.3.0'
+  };
+}
+
+function listener(token = TOKEN) {
+  return createBridgeNodeListener(dependencies(token));
+}
+
+function health(token: string, headers: Record<string, string>) {
+  return createBridgeRequestHandler(dependencies(token))({
+    method: 'GET',
+    path: '/health',
+    headers
   });
 }
 
@@ -229,5 +242,46 @@ describe('bridge auth gate', () => {
     await vi.waitFor(() => expect(response.statusCode).toBe(413));
 
     expect(response.body).toContain('PAYLOAD_TOO_LARGE');
+  });
+});
+
+describe('bridge token comparison', () => {
+  // A bridge that failed to mint a token must be closed, not open to everyone
+  // who can send an empty header. `===` calls '' a match; the shared helper
+  // does not.
+  it('refuses an empty series token even when the bridge minted none', async () => {
+    await expect(health('', { [AT_SERIES_TOKEN_HEADER]: '' })).resolves.toMatchObject({
+      status: 401,
+      body: { error: { code: 'UNAUTHORIZED' } }
+    });
+  });
+
+  it('refuses an empty legacy token even when the bridge minted none', async () => {
+    await expect(health('', { [BRIDGE_TOKEN_HEADER]: '' })).resolves.toMatchObject({
+      status: 401,
+      body: { error: { code: 'UNAUTHORIZED' } }
+    });
+  });
+
+  it('refuses an absent header without throwing when no token was minted', async () => {
+    await expect(health('', {})).resolves.toMatchObject({ status: 401 });
+  });
+
+  it('refuses a token that is only a prefix of the real one', async () => {
+    await expect(
+      health(TOKEN, { [AT_SERIES_TOKEN_HEADER]: TOKEN.slice(0, -1) })
+    ).resolves.toMatchObject({ status: 401 });
+    await expect(
+      health(TOKEN, { [BRIDGE_TOKEN_HEADER]: TOKEN.slice(0, -1) })
+    ).resolves.toMatchObject({ status: 401 });
+  });
+
+  it('still accepts an exact match on either header', async () => {
+    await expect(health(TOKEN, { [AT_SERIES_TOKEN_HEADER]: TOKEN })).resolves.toMatchObject({
+      status: 200
+    });
+    await expect(health(TOKEN, { [BRIDGE_TOKEN_HEADER]: TOKEN })).resolves.toMatchObject({
+      status: 200
+    });
   });
 });
