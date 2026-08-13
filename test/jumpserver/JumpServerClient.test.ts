@@ -1,5 +1,9 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { listenHttp, type TestServer } from './testHttpServer';
 import {
+  cookiesForUrl,
+  parseSetCookieHeader,
+  resolveJumpServerUrl,
   buildConnectionTokenPayload,
   buildSftpConnectionTokenPayload,
   buildMysqlConnectionTokenPayload,
@@ -547,6 +551,111 @@ describe('JumpServerClient REST flow', () => {
       rejectUnauthorized: true,
       headers: expect.objectContaining({ Cookie: 'csrftoken=abc; sessionid=session-1' })
     }));
+  });
+});
+
+describe('resolveJumpServerUrl', () => {
+  it('resolves a relative path against the configured JumpServer origin', () => {
+    expect(resolveJumpServerUrl('https://jumpserver.example.com/root', '/core/auth/login/?next=%2Fkoko%2F')).toBe(
+      'https://jumpserver.example.com/core/auth/login/?next=%2Fkoko%2F'
+    );
+  });
+
+  it('accepts an absolute URL that stays on the JumpServer origin', () => {
+    expect(resolveJumpServerUrl('https://jumpserver.example.com', 'https://jumpserver.example.com:443/ui/')).toBe(
+      'https://jumpserver.example.com:443/ui/'
+    );
+  });
+
+  it('rejects an absolute URL that points at another host', () => {
+    expect(() => resolveJumpServerUrl('https://jumpserver.example.com', 'https://evil.example.com/login/')).toThrow(
+      /cross-origin/i
+    );
+  });
+
+  it('rejects a downgrade to http on the same host', () => {
+    expect(() => resolveJumpServerUrl('https://jumpserver.example.com', 'http://jumpserver.example.com/login/')).toThrow(
+      /cross-origin/i
+    );
+  });
+});
+
+describe('JumpServer cookie jar scoping', () => {
+  it('records the request host as a host-only domain when Set-Cookie omits Domain', () => {
+    expect(parseSetCookieHeader('sessionid=session-1; Path=/', 'https://jumpserver.example.com/core/auth/login/')).toEqual([
+      { name: 'sessionid', value: 'session-1', domain: 'jumpserver.example.com', hostOnly: true, path: '/', secure: false }
+    ]);
+  });
+
+  it('does not send JumpServer cookies to another host', () => {
+    const jar = parseSetCookieHeader('sessionid=session-1; Path=/', 'https://jumpserver.example.com/');
+    expect(cookiesForUrl(jar, 'https://evil.example.com/login/')).toBe('');
+  });
+
+  it('sends JumpServer cookies back to the host that set them', () => {
+    const jar = [
+      ...parseSetCookieHeader('csrftoken=abc; Path=/', 'https://jumpserver.example.com/'),
+      ...parseSetCookieHeader('sessionid=session-1; Path=/', 'https://jumpserver.example.com/')
+    ];
+    expect(cookiesForUrl(jar, 'https://jumpserver.example.com/koko/connect/')).toBe('csrftoken=abc; sessionid=session-1');
+  });
+
+  it('keeps a path-scoped cookie out of requests to unrelated paths', () => {
+    const jar = parseSetCookieHeader('kokoid=k1; Path=/koko', 'https://jumpserver.example.com/koko/connect/');
+    expect(cookiesForUrl(jar, 'https://jumpserver.example.com/koko/ws/')).toBe('kokoid=k1');
+    expect(cookiesForUrl(jar, 'https://jumpserver.example.com/api/v1/users/profile/')).toBe('');
+  });
+
+  it('never sends a Secure cookie over plain http', () => {
+    const jar = parseSetCookieHeader('sessionid=s1; Path=/; Secure', 'https://jumpserver.example.com/');
+    expect(cookiesForUrl(jar, 'http://jumpserver.example.com/')).toBe('');
+  });
+});
+
+describe('JumpServerClient cross-origin redirect defense', () => {
+  const servers: TestServer[] = [];
+
+  afterEach(async () => {
+    await Promise.all(servers.splice(0).map((server) => server.close()));
+  });
+
+  async function hostileRedirectSetup() {
+    const attacker = await listenHttp((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/html', 'set-cookie': 'sessionid=attacker; Path=/' });
+      res.end('<input name="csrfmiddlewaretoken" value="csrf-evil">');
+    });
+    const jumpserver = await listenHttp((req, res) => {
+      if (req.url?.startsWith('/koko/connect/')) {
+        res.writeHead(302, { location: `${attacker.url}/core/auth/login/?next=/koko/connect/` });
+        res.end();
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'text/html' });
+      res.end('ok');
+    });
+    servers.push(attacker, jumpserver);
+    const client = new JumpServerClient({
+      baseUrl: jumpserver.url,
+      orgId: '',
+      username: 'alan',
+      password: 'super-secret-bastion-password',
+      verifyTls: true
+    });
+    return { attacker, jumpserver, client };
+  }
+
+  it('refuses a login redirect that leaves the JumpServer origin', async () => {
+    const { client } = await hostileRedirectSetup();
+
+    await expect(client.warmupKokoConnectPage('token-1', 1000)).rejects.toThrow(/cross-origin/i);
+  });
+
+  it('sends nothing at all to the host named by a cross-origin Location header', async () => {
+    const { attacker, client } = await hostileRedirectSetup();
+
+    await client.warmupKokoConnectPage('token-1', 1000).catch(() => undefined);
+
+    expect(attacker.requests).toEqual([]);
   });
 });
 

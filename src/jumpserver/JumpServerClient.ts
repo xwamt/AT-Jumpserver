@@ -43,6 +43,91 @@ export function buildOrigin(baseUrl: string): string {
   return `${parsed.protocol}//${parsed.host}`;
 }
 
+export interface JumpServerCookie {
+  name: string;
+  value: string;
+  domain: string;
+  hostOnly: boolean;
+  path: string;
+  secure: boolean;
+}
+
+export function resolveJumpServerUrl(baseUrl: string, pathOrUrl: string): string {
+  const origin = buildOrigin(baseUrl);
+  const url = pathOrUrl.startsWith('http') ? pathOrUrl : `${origin}${pathOrUrl}`;
+  const target = new URL(url);
+  if (target.origin !== origin) {
+    throw new Error(`Refusing cross-origin JumpServer request to ${target.origin} (expected ${origin}).`);
+  }
+  return url;
+}
+
+export function parseSetCookieHeader(header: string, requestUrl: string): JumpServerCookie[] {
+  const request = new URL(requestUrl);
+  const cookies: JumpServerCookie[] = [];
+  for (const rawCookie of splitSetCookieHeader(header)) {
+    const [nameValue, ...attributes] = rawCookie.split(';');
+    const separator = nameValue.indexOf('=');
+    if (separator <= 0) {
+      continue;
+    }
+    const domainAttribute = cookieAttribute(attributes, 'domain');
+    const pathAttribute = cookieAttribute(attributes, 'path');
+    cookies.push({
+      name: nameValue.slice(0, separator).trim(),
+      value: nameValue.slice(separator + 1).trim(),
+      domain: (domainAttribute ? domainAttribute.replace(/^\./, '') : request.hostname).toLowerCase(),
+      hostOnly: !domainAttribute,
+      // JumpServer (Django) always sends Path=/. RFC 6265 §5.1.4 would instead derive the
+      // default from the request path, which would strand a /koko-issued cookie away from
+      // the /api calls that share the same session.
+      path: pathAttribute && pathAttribute.startsWith('/') ? pathAttribute : '/',
+      secure: hasCookieFlag(attributes, 'secure')
+    });
+  }
+  return cookies;
+}
+
+export function cookiesForUrl(cookies: JumpServerCookie[], url: string): string {
+  const target = new URL(url);
+  const host = target.hostname.toLowerCase();
+  const isSecureTransport = target.protocol === 'https:';
+  return cookies
+    .filter((cookie) => (cookie.secure ? isSecureTransport : true))
+    .filter((cookie) => domainMatches(host, cookie))
+    .filter((cookie) => pathMatches(target.pathname, cookie.path))
+    .map((cookie) => `${cookie.name}=${cookie.value}`)
+    .join('; ');
+}
+
+function domainMatches(host: string, cookie: JumpServerCookie): boolean {
+  return cookie.hostOnly ? host === cookie.domain : host === cookie.domain || host.endsWith(`.${cookie.domain}`);
+}
+
+function pathMatches(requestPath: string, cookiePath: string): boolean {
+  if (requestPath === cookiePath) {
+    return true;
+  }
+  if (!requestPath.startsWith(cookiePath)) {
+    return false;
+  }
+  return cookiePath.endsWith('/') || requestPath.charAt(cookiePath.length) === '/';
+}
+
+function cookieAttribute(attributes: string[], name: string): string | undefined {
+  for (const attribute of attributes) {
+    const separator = attribute.indexOf('=');
+    if (separator > 0 && attribute.slice(0, separator).trim().toLowerCase() === name) {
+      return attribute.slice(separator + 1).trim();
+    }
+  }
+  return undefined;
+}
+
+function hasCookieFlag(attributes: string[], name: string): boolean {
+  return attributes.some((attribute) => attribute.trim().toLowerCase() === name);
+}
+
 export function buildKokoConnectUrl(baseUrl: string, tokenId: string, timestamp = Date.now()): string {
   const origin = buildOrigin(baseUrl);
   return `${origin}/koko/connect/?disableautohash=false&token=${encodeURIComponent(tokenId)}&_=${timestamp}`;
@@ -258,7 +343,7 @@ export async function defaultWebSocketFactory(url: string, options: WebSocket.Cl
 
 export class JumpServerClient {
   private authToken = '';
-  private readonly cookies = new Map<string, string>();
+  private cookies: JumpServerCookie[] = [];
   private readonly fetchImpl: FetchLike;
 
   constructor(
@@ -348,7 +433,7 @@ export class JumpServerClient {
     if (authenticated) {
       return;
     }
-    this.cookies.clear();
+    this.cookies = [];
     const retried = await this.tryWarmupKokoConnectPage(tokenId, timestamp);
     if (!retried) {
       throw new Error('KoKo web session is not authenticated.');
@@ -359,8 +444,7 @@ export class JumpServerClient {
     const connectUrl = buildKokoConnectUrl(this.settings.baseUrl, tokenId, timestamp);
     const initialConnectResponse = await this.request(connectUrl, {
       headers: {
-        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        Cookie: this.cookieHeader()
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
       },
       redirect: 'manual'
     }, false);
@@ -388,9 +472,8 @@ export class JumpServerClient {
       method: 'POST',
       headers: {
         'content-type': 'application/x-www-form-urlencoded',
-        Referer: absoluteJumpServerUrl(this.settings.baseUrl, loginPath),
-        Origin: buildOrigin(this.settings.baseUrl),
-        Cookie: this.cookieHeader()
+        Referer: resolveJumpServerUrl(this.settings.baseUrl, loginPath),
+        Origin: buildOrigin(this.settings.baseUrl)
       },
       body: body.toString(),
       redirect: 'manual'
@@ -408,8 +491,7 @@ export class JumpServerClient {
     await this.request('/api/v1/users/profile/', { headers: { Accept: 'application/json' } }, false);
     const connectResponse = await this.request(connectUrl, {
       headers: {
-        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        Cookie: this.cookieHeader()
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
       },
       redirect: 'manual'
     }, false);
@@ -468,7 +550,7 @@ export class JumpServerClient {
   }
 
   cookieHeader(): string {
-    return Array.from(this.cookies.entries()).map(([key, value]) => `${key}=${value}`).join('; ');
+    return cookiesForUrl(this.cookies, `${buildOrigin(this.settings.baseUrl)}/`);
   }
 
   restHeaders(): Record<string, string> {
@@ -535,30 +617,33 @@ export class JumpServerClient {
   }
 
   private async request(pathOrUrl: string, init: RequestInit = {}, requireOk = true): Promise<Response> {
-    const url = pathOrUrl.startsWith('http') ? pathOrUrl : `${buildOrigin(this.settings.baseUrl)}${pathOrUrl}`;
+    const url = resolveJumpServerUrl(this.settings.baseUrl, pathOrUrl);
     const headers = headersToRecord(init.headers);
-    const cookieHeader = this.cookieHeader();
+    const cookieHeader = cookiesForUrl(this.cookies, url);
     if (cookieHeader && !hasHeader(headers, 'Cookie')) {
       headers.Cookie = cookieHeader;
     }
     const response = await this.fetchImpl(url, { ...init, headers });
-    this.captureCookies(response);
+    this.captureCookies(response, url);
     if (requireOk && !response.ok) {
       throw new Error(`JumpServer request failed with HTTP ${response.status}.`);
     }
     return response;
   }
 
-  private captureCookies(response: Response): void {
+  private captureCookies(response: Response, requestUrl: string): void {
     const setCookie = response.headers.get('set-cookie');
     if (!setCookie) {
       return;
     }
-    for (const rawCookie of splitSetCookieHeader(setCookie)) {
-      const [nameValue] = rawCookie.split(';');
-      const separator = nameValue.indexOf('=');
-      if (separator > 0) {
-        this.cookies.set(nameValue.slice(0, separator).trim(), nameValue.slice(separator + 1).trim());
+    for (const cookie of parseSetCookieHeader(setCookie, requestUrl)) {
+      const existing = this.cookies.findIndex(
+        (candidate) => candidate.name === cookie.name && candidate.domain === cookie.domain && candidate.path === cookie.path
+      );
+      if (existing >= 0) {
+        this.cookies[existing] = cookie;
+      } else {
+        this.cookies.push(cookie);
       }
     }
   }
@@ -566,10 +651,6 @@ export class JumpServerClient {
 
 function isUnauthorizedResponse(response: Response): boolean {
   return response.status === 401 || response.status === 403;
-}
-
-function absoluteJumpServerUrl(baseUrl: string, pathOrUrl: string): string {
-  return pathOrUrl.startsWith('http') ? pathOrUrl : `${buildOrigin(baseUrl)}${pathOrUrl}`;
 }
 
 export function extractAssetTreePaths(payload: unknown): AssetPathMap {
