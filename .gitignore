@@ -18,6 +18,9 @@ coverage/
 .kiro/
 .superpowers/
 .worktrees/
+.tmp-*/
+.agents/
+.ssh-terminal-manager/
 # Local docs (track decisions + superpowers only)
 docs/*
 !docs/decisions/
