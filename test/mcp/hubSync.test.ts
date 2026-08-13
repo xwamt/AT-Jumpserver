@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -74,7 +75,9 @@ describe('syncPackagedHubAt', () => {
         writtenByPluginId: AT_JUMPSERVER_PLUGIN_ID,
         writtenByPluginVersion: '0.1.5',
         writtenAt: 1,
-        bundleSha256: 'abc'
+        // syncHubBundle verifies this against the bytes actually on disk before
+        // it will skip, so a placeholder here reads as a tampered install.
+        bundleSha256: createHash('sha256').update(activeContent, 'utf8').digest('hex')
       }),
       'utf8'
     );
