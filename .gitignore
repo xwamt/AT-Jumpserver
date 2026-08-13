@@ -27,6 +27,10 @@ docs/*
 !docs/decisions/**
 !docs/superpowers/
 !docs/superpowers/**
+# The Continue sample config is user-facing and is asserted by
+# test/docs/JumpServerMcpDocs.test.ts, so it has to exist in a fresh clone.
+!docs/mcp/
+!docs/mcp/**
 tools/
 *.docx
 
