@@ -26,17 +26,45 @@ function sendRequest(url: string, init: RequestInit, verifyTls: boolean): Promis
     headers: toOutgoingHeaders(init.headers, body),
     rejectUnauthorized: verifyTls
   };
+  const signal = init.signal ?? undefined;
   return new Promise<Response>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(abortError(signal));
+      return;
+    }
     const send = secure ? httpsRequest : httpRequest;
     const request = send(target, options, (message) => {
-      readBody(message).then((buffer) => resolve(toResponse(message, buffer)), reject);
+      readBody(message).then(
+        (buffer) => settle(() => resolve(toResponse(message, buffer))),
+        (error: unknown) => settle(() => reject(error))
+      );
     });
-    request.on('error', reject);
+    // A wedged JumpServer can hold an accepted socket open forever, so the
+    // caller's deadline has to be able to tear the socket down.
+    const onAbort = (): void => {
+      request.destroy(abortError(signal));
+    };
+    const settle = (finish: () => void): void => {
+      signal?.removeEventListener('abort', onAbort);
+      finish();
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    request.on('error', (error) => settle(() => reject(error)));
     if (body) {
       request.write(body);
     }
     request.end();
   });
+}
+
+function abortError(signal: AbortSignal | undefined): Error {
+  const reason: unknown = signal?.reason;
+  if (reason instanceof Error) {
+    return reason;
+  }
+  const error = new Error('JumpServer request was aborted.');
+  error.name = 'AbortError';
+  return error;
 }
 
 function readBody(message: IncomingMessage): Promise<Uint8Array<ArrayBuffer>> {

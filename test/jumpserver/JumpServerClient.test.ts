@@ -1,8 +1,12 @@
+import * as net from 'node:net';
+import type { AddressInfo } from 'node:net';
+import { WebSocketServer } from 'ws';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SELF_SIGNED_CERT, SELF_SIGNED_KEY } from '../../test-fixtures/selfSignedTls';
 import { listenHttp, listenHttps, type TestServer } from './testHttpServer';
 import {
   cookiesForUrl,
+  defaultWebSocketFactory,
   parseSetCookieHeader,
   resolveJumpServerUrl,
   buildConnectionTokenPayload,
@@ -213,6 +217,108 @@ function textResponse(body: string, init: ResponseInit = {}): Response {
     ...init
   });
 }
+
+describe('JumpServerClient timeouts', () => {
+  const settings = {
+    baseUrl: 'https://jumpserver.example.com',
+    orgId: '',
+    username: 'alan',
+    password: 'secret',
+    verifyTls: true
+  };
+
+  function hang(): Promise<Response> {
+    return new Promise<Response>(() => undefined);
+  }
+
+  it('gives up on a JumpServer that accepts the request and never answers', async () => {
+    const client = new JumpServerClient(settings, () => hang(), { requestMs: 20 });
+
+    await expect(client.ensureAuthToken()).rejects.toThrow(/timed out after 20ms/i);
+  });
+
+  it('aborts the underlying request when the deadline passes', async () => {
+    let seen: AbortSignal | undefined;
+    const client = new JumpServerClient(settings, (_url, init) => {
+      seen = init?.signal ?? undefined;
+      return hang();
+    }, { requestMs: 20 });
+
+    await expect(client.ensureAuthToken()).rejects.toThrow(/timed out/i);
+    expect(seen?.aborted).toBe(true);
+  });
+
+  it('keeps the JumpServer URL out of the timeout message so tokens cannot leak', async () => {
+    const client = new JumpServerClient(settings, () => hang(), { requestMs: 20 });
+
+    await expect(
+      client.getSmartEndpoint('super-secret-token')
+    ).rejects.toThrow(/^JumpServer request timed out after 20ms\.$/);
+  });
+
+  it('gives bulk listings a longer budget than ordinary REST calls', async () => {
+    const client = new JumpServerClient(settings, (url) =>
+      url.includes('/authentication/auth/') ? Promise.resolve(jsonResponse({ token: 'bearer-1' })) : hang(),
+    { requestMs: 10, listingMs: 300 });
+
+    const startedAt = Date.now();
+    await expect(client.listAssetNodes()).rejects.toThrow(/timed out after 300ms/i);
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(150);
+  });
+
+  it('does not arm a timer that outlives a request that answered in time', async () => {
+    const client = new JumpServerClient(settings, () => Promise.resolve(jsonResponse({ token: 'bearer-1' })), {
+      requestMs: 20
+    });
+
+    await expect(client.ensureAuthToken()).resolves.toBe('bearer-1');
+    // A leaked 20ms timer would keep the event loop busy past its own deadline.
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(client.cookieHeader()).toBe('');
+  });
+});
+
+describe('defaultWebSocketFactory', () => {
+  const listeners: net.Server[] = [];
+  const accepted: net.Socket[] = [];
+
+  afterEach(async () => {
+    // net.Server.close() waits for accepted sockets, and a silent server never
+    // releases them on its own.
+    accepted.splice(0).forEach((socket) => socket.destroy());
+    await Promise.all(listeners.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
+  });
+
+  async function acceptAndStaySilent(): Promise<number> {
+    const server = net.createServer((socket) => accepted.push(socket));
+    listeners.push(server);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    return (server.address() as AddressInfo).port;
+  }
+
+  it('gives up on a KoKo handshake that never completes', async () => {
+    const port = await acceptAndStaySilent();
+
+    await expect(
+      defaultWebSocketFactory(`ws://127.0.0.1:${port}/koko/ws/terminal/`, {}, 40)
+    ).rejects.toThrow(/timed out after 40ms/i);
+  });
+
+  it('detaches its handshake listeners once the socket is open', async () => {
+    const server = new WebSocketServer({ port: 0, host: '127.0.0.1', handleProtocols: () => 'JMS-KOKO' });
+    await new Promise<void>((resolve) => server.once('listening', resolve));
+    const port = (server.address() as AddressInfo).port;
+
+    const socket = await defaultWebSocketFactory(`ws://127.0.0.1:${port}/koko/ws/terminal/`, {}, 2000);
+
+    expect(socket.listenerCount('open')).toBe(0);
+    // A late failure must not reach the settled handshake promise, and must not
+    // crash the extension host for want of an 'error' listener.
+    expect(() => socket.emit('error', new Error('late failure'))).not.toThrow();
+    socket.close();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+});
 
 describe('JumpServerClient REST flow', () => {
   it('authenticates and sends Bearer plus org headers when listing assets', async () => {

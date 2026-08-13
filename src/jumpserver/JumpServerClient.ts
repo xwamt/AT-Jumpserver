@@ -15,6 +15,26 @@ interface ListPage {
 
 type AssetPathMap = Map<string, string[]>;
 
+export interface JumpServerTimeouts {
+  /** Auth, connection tokens, endpoints, KoKo warmup: single lookups. */
+  requestMs: number;
+  /** Bulk permission listings, which a large deployment answers slowly. */
+  listingMs: number;
+  /** KoKo WebSocket handshake. */
+  webSocketMs: number;
+}
+
+/**
+ * Without these, a JumpServer that accepts the TCP connection and then stops
+ * talking leaves the tree view, the terminal and every MCP tool call pending
+ * forever, with no cancel affordance anywhere in the UI.
+ */
+export const DEFAULT_JUMPSERVER_TIMEOUTS: JumpServerTimeouts = {
+  requestMs: 15_000,
+  listingMs: 60_000,
+  webSocketMs: 15_000
+};
+
 export const DEFAULT_CONNECT_OPTIONS = {
   charset: 'default',
   disableautohash: false,
@@ -331,25 +351,73 @@ export function buildMysqlConnectionTokenPayload(input: {
 }
 
 
-export async function defaultWebSocketFactory(url: string, options: WebSocket.ClientOptions): Promise<KokoWebSocket> {
+export async function defaultWebSocketFactory(
+  url: string,
+  options: WebSocket.ClientOptions,
+  timeoutMs = DEFAULT_JUMPSERVER_TIMEOUTS.webSocketMs
+): Promise<WebSocket> {
   const socket = new WebSocket(url, ['JMS-KOKO'], options);
   await new Promise<void>((resolve, reject) => {
-    socket.once('open', resolve);
-    socket.once('error', reject);
+    // Both handshake listeners have to come off on settle: the session attaches
+    // its own 'error' handler afterwards, and a stale one here would keep
+    // rejecting a promise nobody is waiting on any more. A no-op sink takes
+    // their place because ws throws when an 'error' event has no listener at
+    // all - including the one terminate() raises below.
+    const settle = (finish: () => void): void => {
+      clearTimeout(timer);
+      socket.off('open', onOpen);
+      socket.off('error', onError);
+      socket.on('error', () => undefined);
+      finish();
+    };
+    const onOpen = (): void => settle(resolve);
+    const onError = (error: Error): void => settle(() => reject(error));
+    const timer = setTimeout(() => settle(() => {
+      socket.terminate();
+      reject(new Error(`JumpServer WebSocket handshake timed out after ${timeoutMs}ms.`));
+    }), timeoutMs);
+    socket.once('open', onOpen);
+    socket.once('error', onError);
   });
   return socket;
+}
+
+/**
+ * Races `run` against a deadline and aborts it when the deadline wins. The
+ * abort is what frees the socket; the race is what guarantees the caller gets
+ * an answer even from a `fetchImpl` that ignores signals.
+ */
+async function withDeadline<T>(run: (signal: AbortSignal) => Promise<T>, timeoutMs: number): Promise<T> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expiry = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      // The URL can carry a connection token, so it never reaches the message.
+      const error = new Error(`JumpServer request timed out after ${timeoutMs}ms.`);
+      controller.abort(error);
+      reject(error);
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([run(controller.signal), expiry]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export class JumpServerClient {
   private authToken = '';
   private cookies: JumpServerCookie[] = [];
   private readonly fetchImpl: FetchLike;
+  private readonly timeouts: JumpServerTimeouts;
 
   constructor(
     private readonly settings: JumpServerSettingsWithPassword,
-    fetchImpl?: FetchLike
+    fetchImpl?: FetchLike,
+    timeouts: Partial<JumpServerTimeouts> = {}
   ) {
     this.fetchImpl = fetchImpl ?? createJumpServerFetch({ verifyTls: settings.verifyTls });
+    this.timeouts = { ...DEFAULT_JUMPSERVER_TIMEOUTS, ...timeouts };
   }
 
   async ensureAuthToken(): Promise<string> {
@@ -371,7 +439,11 @@ export class JumpServerClient {
 
   async listAssets(input: { limit: number; offset: number }): Promise<CachedJumpServerAsset[]> {
     await this.ensureAuthToken();
-    const response = await this.authenticatedRequest(`/api/v1/perms/users/self/assets/?limit=${input.limit}&offset=${input.offset}`);
+    const response = await this.authenticatedRequest(
+      `/api/v1/perms/users/self/assets/?limit=${input.limit}&offset=${input.offset}`,
+      {},
+      this.timeouts.listingMs
+    );
     const body = await response.json() as ListPage | unknown[];
     const treePaths = await this.safeListAssetTreePaths();
     const items = Array.isArray(body)
@@ -395,7 +467,11 @@ export class JumpServerClient {
 
   async listAssetNodes(): Promise<CachedJumpServerNode[]> {
     await this.ensureAuthToken();
-    const response = await this.authenticatedRequest('/api/v1/perms/users/self/nodes/all-with-assets/tree/');
+    const response = await this.authenticatedRequest(
+      '/api/v1/perms/users/self/nodes/all-with-assets/tree/',
+      {},
+      this.timeouts.listingMs
+    );
     return extractAssetTreeNodes(await response.json());
   }
 
@@ -512,7 +588,7 @@ export class JumpServerClient {
   }): Promise<KokoWebSocket> {
     await this.warmupKokoConnectPage(input.tokenId);
     const url = buildKokoWsUrl(this.settings.baseUrl, input.endpoint, input.tokenId);
-    const factory = input.webSocketFactory ?? defaultWebSocketFactory;
+    const factory = input.webSocketFactory ?? this.timedWebSocketFactory();
     return factory(url, {
       origin: buildOrigin(this.settings.baseUrl),
       headers: {
@@ -534,7 +610,7 @@ export class JumpServerClient {
   }): Promise<KokoWebSocket> {
     await this.warmupKokoConnectPage(input.tokenId);
     const url = buildKokoSftpWsUrl(this.settings.baseUrl, input.endpoint, input.tokenId, input.timestamp);
-    const factory = input.webSocketFactory ?? defaultWebSocketFactory;
+    const factory = input.webSocketFactory ?? this.timedWebSocketFactory();
     return factory(url, {
       origin: buildOrigin(this.settings.baseUrl),
       headers: {
@@ -550,6 +626,10 @@ export class JumpServerClient {
 
   cookieHeader(): string {
     return cookiesForUrl(this.cookies, `${buildOrigin(this.settings.baseUrl)}/`);
+  }
+
+  private timedWebSocketFactory(): WebSocketFactory {
+    return (url, options) => defaultWebSocketFactory(url, options, this.timeouts.webSocketMs);
   }
 
   restHeaders(): Record<string, string> {
@@ -583,9 +663,13 @@ export class JumpServerClient {
     };
   }
 
-  private async authenticatedRequest(pathOrUrl: string, init: RequestInit = {}): Promise<Response> {
+  private async authenticatedRequest(
+    pathOrUrl: string,
+    init: RequestInit = {},
+    timeoutMs = this.timeouts.requestMs
+  ): Promise<Response> {
     await this.ensureAuthToken();
-    let response = await this.request(pathOrUrl, this.withRestHeaders(init), false);
+    let response = await this.request(pathOrUrl, this.withRestHeaders(init), false, timeoutMs);
     if (!isUnauthorizedResponse(response)) {
       if (!response.ok) {
         throw new Error(`JumpServer request failed with HTTP ${response.status}.`);
@@ -594,7 +678,7 @@ export class JumpServerClient {
     }
     this.resetRestAuth();
     await this.ensureAuthToken();
-    response = await this.request(pathOrUrl, this.withRestHeaders(init), false);
+    response = await this.request(pathOrUrl, this.withRestHeaders(init), false, timeoutMs);
     if (!response.ok) {
       throw new Error(`JumpServer request failed with HTTP ${response.status}.`);
     }
@@ -615,14 +699,22 @@ export class JumpServerClient {
     this.authToken = '';
   }
 
-  private async request(pathOrUrl: string, init: RequestInit = {}, requireOk = true): Promise<Response> {
+  private async request(
+    pathOrUrl: string,
+    init: RequestInit = {},
+    requireOk = true,
+    timeoutMs = this.timeouts.requestMs
+  ): Promise<Response> {
     const url = resolveJumpServerUrl(this.settings.baseUrl, pathOrUrl);
     const headers = headersToRecord(init.headers);
     const cookieHeader = cookiesForUrl(this.cookies, url);
     if (cookieHeader && !hasHeader(headers, 'Cookie')) {
       headers.Cookie = cookieHeader;
     }
-    const response = await this.fetchImpl(url, { ...init, headers });
+    const response = await withDeadline(
+      (signal) => this.fetchImpl(url, { ...init, headers, signal }),
+      timeoutMs
+    );
     this.captureCookies(response, url);
     if (requireOk && !response.ok) {
       throw new Error(`JumpServer request failed with HTTP ${response.status}.`);

@@ -91,6 +91,44 @@ describe('createJumpServerFetch', () => {
     expect(response.headers.get('set-cookie')).toBe('csrftoken=abc; Path=/, sessionid=session-1; Path=/');
   });
 
+  it('aborts an in-flight request when the caller signal fires', async () => {
+    let requestArrived: () => void = () => undefined;
+    let socketClosed: () => void = () => undefined;
+    const arrived = new Promise<void>((resolve) => {
+      requestArrived = resolve;
+    });
+    const closed = new Promise<void>((resolve) => {
+      socketClosed = resolve;
+    });
+    const server = await serveHttp((req) => {
+      // Accept the connection and never answer, the way a wedged JumpServer does.
+      req.socket.on('close', socketClosed);
+      requestArrived();
+    });
+    const controller = new AbortController();
+    const pending = createJumpServerFetch({ verifyTls: true })(`${server.url}/api/v1/perms/users/self/assets/`, {
+      signal: controller.signal
+    });
+
+    await arrived;
+    controller.abort();
+
+    await expect(pending).rejects.toThrow(/abort/i);
+    await closed;
+  });
+
+  it('rejects immediately when the caller signal is already aborted', async () => {
+    const server = await serveHttp((_req, res) => {
+      res.writeHead(200);
+      res.end('{}');
+    });
+
+    await expect(
+      createJumpServerFetch({ verifyTls: true })(`${server.url}/api/v1/ping/`, { signal: AbortSignal.abort() })
+    ).rejects.toThrow(/abort/i);
+    expect(server.requests).toEqual([]);
+  });
+
   it('returns a bodyless response for statuses that cannot carry one', async () => {
     const server = await serveHttp((_req, res) => {
       res.writeHead(204);
