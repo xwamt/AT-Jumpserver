@@ -219,6 +219,152 @@ function textResponse(body: string, init: ResponseInit = {}): Response {
   });
 }
 
+describe('JumpServerClient full asset pagination', () => {
+  const settings = {
+    baseUrl: 'https://jumpserver.example.com',
+    orgId: '',
+    username: 'alan',
+    password: 'secret',
+    verifyTls: true
+  };
+
+  function assetRecords(offset: number, size: number): Array<Record<string, string>> {
+    return Array.from({ length: size }, (_unused, index) => ({
+      id: `asset-${offset + index}`,
+      name: `host-${offset + index}`
+    }));
+  }
+
+  function readOffset(url: string): number {
+    return Number(new URL(url).searchParams.get('offset') ?? '0');
+  }
+
+  function readLimit(url: string): number {
+    return Number(new URL(url).searchParams.get('limit') ?? '0');
+  }
+
+  /** Serves `total` assets, page by page, the way JumpServer's DRF paginator does. */
+  function pagedJumpServer(total: number, options: { reportCount?: boolean; delayMs?: number } = {}) {
+    const state = { inFlight: 0, peakInFlight: 0, pageRequests: [] as number[], treeRequests: 0 };
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes('/authentication/auth/')) {
+        return jsonResponse({ token: 'bearer-1' });
+      }
+      if (url.includes('all-with-assets')) {
+        state.treeRequests += 1;
+        return jsonResponse([]);
+      }
+      state.inFlight += 1;
+      state.peakInFlight = Math.max(state.peakInFlight, state.inFlight);
+      const offset = readOffset(url);
+      const limit = readLimit(url);
+      state.pageRequests.push(offset);
+      if (options.delayMs) {
+        await new Promise((resolve) => setTimeout(resolve, options.delayMs));
+      }
+      state.inFlight -= 1;
+      const results = assetRecords(offset, Math.max(0, Math.min(limit, total - offset)));
+      return jsonResponse(options.reportCount === false ? results : { count: total, results });
+    });
+    return { fetchMock, state };
+  }
+
+  it('keeps paging until every asset JumpServer reports has been fetched', async () => {
+    const { fetchMock, state } = pagedJumpServer(450);
+    const client = new JumpServerClient(settings, fetchMock);
+
+    const inventory = await client.listAllAssets({ pageSize: 200, treePaths: new Map() });
+
+    expect(inventory.assets).toHaveLength(450);
+    expect(inventory.total).toBe(450);
+    expect(inventory.truncated).toBe(false);
+    expect(inventory.assets.at(-1)?.id).toBe('asset-449');
+    expect([...state.pageRequests].sort((a, b) => a - b)).toEqual([0, 200, 400]);
+  });
+
+  it('fetches the remaining pages concurrently but within the configured cap', async () => {
+    const { fetchMock, state } = pagedJumpServer(2000, { delayMs: 5 });
+    const client = new JumpServerClient(settings, fetchMock);
+
+    await client.listAllAssets({ pageSize: 200, concurrency: 4, treePaths: new Map() });
+
+    expect(state.peakInFlight).toBeGreaterThan(1);
+    expect(state.peakInFlight).toBeLessThanOrEqual(4);
+  });
+
+  it('stops at the safety cap when JumpServer reports an impossible total', async () => {
+    const { fetchMock, state } = pagedJumpServer(1000);
+    const client = new JumpServerClient(settings, fetchMock);
+
+    const inventory = await client.listAllAssets({ pageSize: 200, maxAssets: 500, treePaths: new Map() });
+
+    expect(inventory.assets).toHaveLength(500);
+    expect(inventory.total).toBe(1000);
+    expect(inventory.truncated).toBe(true);
+    expect(state.pageRequests).toHaveLength(3);
+  });
+
+  it('walks pages one at a time when JumpServer omits the count', async () => {
+    const { fetchMock, state } = pagedJumpServer(450, { reportCount: false });
+    const client = new JumpServerClient(settings, fetchMock);
+
+    const inventory = await client.listAllAssets({ pageSize: 200, treePaths: new Map() });
+
+    expect(inventory.assets).toHaveLength(450);
+    expect(inventory.total).toBe(450);
+    expect(inventory.truncated).toBe(false);
+    expect(state.pageRequests).toEqual([0, 200, 400]);
+  });
+
+  it('fetches the node tree once no matter how many pages it walks', async () => {
+    const { fetchMock, state } = pagedJumpServer(1000);
+    const client = new JumpServerClient(settings, fetchMock);
+
+    await client.listAllAssets({ pageSize: 200 });
+
+    expect(state.treeRequests).toBe(1);
+  });
+
+  it('drops assets a shifting paginator handed back twice', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes('/authentication/auth/')) {
+        return jsonResponse({ token: 'bearer-1' });
+      }
+      // Both pages contain asset-1; a real paginator does this when a row is
+      // inserted between page requests.
+      return jsonResponse({
+        count: 4,
+        results: readOffset(url) === 0
+          ? [{ id: 'asset-1', name: 'a' }, { id: 'asset-2', name: 'b' }]
+          : [{ id: 'asset-1', name: 'a' }, { id: 'asset-3', name: 'c' }]
+      });
+    });
+    const client = new JumpServerClient(settings, fetchMock);
+
+    const inventory = await client.listAllAssets({ pageSize: 2, treePaths: new Map() });
+
+    expect(inventory.assets.map((asset) => asset.id)).toEqual(['asset-1', 'asset-2', 'asset-3']);
+  });
+
+  it('does not loop forever when a reported page comes back empty', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes('/authentication/auth/')) {
+        return jsonResponse({ token: 'bearer-1' });
+      }
+      return jsonResponse(readOffset(url) === 0
+        ? { count: 100_000, results: [{ id: 'asset-1', name: 'a' }] }
+        : { count: 100_000, results: [] });
+    });
+    const client = new JumpServerClient(settings, fetchMock);
+
+    const inventory = await client.listAllAssets({ pageSize: 1, maxAssets: 5, treePaths: new Map() });
+
+    expect(inventory.assets.map((asset) => asset.id)).toEqual(['asset-1']);
+    expect(inventory.total).toBe(100_000);
+    expect(inventory.truncated).toBe(true);
+  });
+});
+
 describe('JumpServerClient node tree reuse', () => {
   const settings = {
     baseUrl: 'https://jumpserver.example.com',

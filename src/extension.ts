@@ -164,10 +164,16 @@ export function activate(context: vscode.ExtensionContext): void {
         const nodes = await client.listAssetNodes();
         await configManager.saveCachedAssetNodes(nodes);
         treeProvider.refresh();
-        const assets = await client.listAssets({ limit: 200, offset: 0, treePaths: assetPathsFromNodes(nodes) });
-        await configManager.saveCachedAssets(assets);
+        const inventory = await client.listAllAssets({ treePaths: assetPathsFromNodes(nodes) });
+        await configManager.saveCachedAssets(inventory.assets);
         treeProvider.refresh();
-        await showTimedNotification(`JumpServer assets refreshed: ${assets.length}`);
+        // A silently short list is the failure this replaces, so say it out loud.
+        await (inventory.truncated
+          ? showTimedNotification(
+              `JumpServer assets refreshed: ${inventory.assets.length} of ${inventory.total} (cache cap reached).`,
+              'warning'
+            )
+          : showTimedNotification(`JumpServer assets refreshed: ${inventory.assets.length}`));
       });
     }),
     vscode.commands.registerCommand('jumpserverManager.connect', async (item?: AssetTreeItem) => {

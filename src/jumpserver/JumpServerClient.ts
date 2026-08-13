@@ -15,6 +15,25 @@ interface ListPage {
 
 type AssetPathMap = Map<string, string[]>;
 
+export interface JumpServerAssetInventory {
+  assets: CachedJumpServerAsset[];
+  /** What JumpServer says it has, even when a cap stopped the sync short. */
+  total: number;
+  /** True when a safety cap stopped paging before the end. */
+  truncated: boolean;
+}
+
+/** JumpServer's own DRF default; large enough that most bastions need 1-2 pages. */
+export const ASSET_PAGE_SIZE = 200;
+/**
+ * Ceiling on what one refresh will pull into globalState. It exists so a
+ * malformed `count` cannot make the extension page forever, not because 10k is
+ * a supported deployment size.
+ */
+export const MAX_SYNCED_ASSETS = 10_000;
+/** Parallel page fetches. Enough to hide latency, gentle enough for a bastion. */
+export const ASSET_PAGE_CONCURRENCY = 4;
+
 export interface JumpServerTimeouts {
   /** Auth, connection tokens, endpoints, KoKo warmup: single lookups. */
   requestMs: number;
@@ -360,7 +379,7 @@ export async function defaultWebSocketFactory(
   await new Promise<void>((resolve, reject) => {
     // Both handshake listeners have to come off on settle: the session attaches
     // its own 'error' handler afterwards, and a stale one here would keep
-    // rejecting a promise nobody is waiting on any more. A no-op sink takes
+    // rejecting a promise that nobody awaits by then. A no-op sink takes
     // their place because ws throws when an 'error' event has no listener at
     // all - including the one terminate() raises below.
     const settle = (finish: () => void): void => {
@@ -438,29 +457,67 @@ export class JumpServerClient {
   }
 
   async listAssets(input: { limit: number; offset: number; treePaths?: AssetPathMap }): Promise<CachedJumpServerAsset[]> {
-    await this.ensureAuthToken();
-    const response = await this.authenticatedRequest(
-      `/api/v1/perms/users/self/assets/?limit=${input.limit}&offset=${input.offset}`,
-      {},
-      this.timeouts.listingMs
-    );
-    const body = await response.json() as ListPage | unknown[];
+    const page = await this.fetchAssetPage(input.limit, input.offset);
     // all-with-assets/tree/ is the heaviest endpoint JumpServer exposes; a
     // caller that already holds the nodes must be able to say so.
     const treePaths = input.treePaths ?? await this.safeListAssetTreePaths();
-    const items = Array.isArray(body)
-      ? body
-      : Array.isArray(body.results)
-        ? body.results
-        : Array.isArray(body.items)
-          ? body.items
-          : Array.isArray(body.data)
-            ? body.data
-            : [];
-    return items
-      .filter((item): item is Record<string, any> => Boolean(item && typeof item === 'object'))
-      .map((item) => normalizeJumpServerAsset(item))
-      .map((asset) => this.applyTreePath(asset, treePaths));
+    return this.toAssets(page.records, treePaths);
+  }
+
+  /**
+   * Every asset the account can see, not just the first page.
+   *
+   * A bastion with more than one page of assets is the normal case, and a
+   * single hard-coded page silently hid the rest from both the tree view and
+   * the MCP cache.
+   */
+  async listAllAssets(input: {
+    pageSize?: number;
+    maxAssets?: number;
+    concurrency?: number;
+    treePaths?: AssetPathMap;
+  } = {}): Promise<JumpServerAssetInventory> {
+    const pageSize = boundedCount(input.pageSize, ASSET_PAGE_SIZE);
+    const maxAssets = boundedCount(input.maxAssets, MAX_SYNCED_ASSETS);
+    const concurrency = boundedCount(input.concurrency, ASSET_PAGE_CONCURRENCY);
+    // Authenticate first so the two independent calls below cannot each decide
+    // the token is missing and post the credentials twice.
+    await this.ensureAuthToken();
+    const [first, treePaths] = await Promise.all([
+      this.fetchAssetPage(pageSize, 0),
+      input.treePaths ? Promise.resolve(input.treePaths) : this.safeListAssetTreePaths()
+    ]);
+    const records = [...first.records];
+
+    if (first.total === undefined) {
+      // A bare array carries no count to plan against, so walk forward until a
+      // page comes back short. The cap is the only other stop condition.
+      let lastPageSize = first.records.length;
+      for (let offset = pageSize; lastPageSize === pageSize && records.length < maxAssets; offset += pageSize) {
+        const page = await this.fetchAssetPage(pageSize, offset);
+        records.push(...page.records);
+        lastPageSize = page.records.length;
+      }
+    } else {
+      const wanted = Math.min(first.total, maxAssets);
+      const offsets: number[] = [];
+      for (let offset = pageSize; offset < wanted; offset += pageSize) {
+        offsets.push(offset);
+      }
+      for (let index = 0; index < offsets.length; index += concurrency) {
+        const pages = await Promise.all(
+          offsets.slice(index, index + concurrency).map((offset) => this.fetchAssetPage(pageSize, offset))
+        );
+        for (const page of pages) {
+          records.push(...page.records);
+        }
+      }
+    }
+
+    // Concurrent pages over a shifting result set can repeat a row.
+    const assets = dedupeAssetsById(this.toAssets(records, treePaths)).slice(0, maxAssets);
+    const total = Math.max(first.total ?? assets.length, assets.length);
+    return { assets, total, truncated: assets.length < total };
   }
 
   async listAssetTreePaths(): Promise<AssetPathMap> {
@@ -652,6 +709,24 @@ export class JumpServerClient {
     return headers;
   }
 
+  private async fetchAssetPage(limit: number, offset: number): Promise<{ records: unknown[]; total?: number }> {
+    await this.ensureAuthToken();
+    const response = await this.authenticatedRequest(
+      `/api/v1/perms/users/self/assets/?limit=${limit}&offset=${offset}`,
+      {},
+      this.timeouts.listingMs
+    );
+    const body = await response.json() as ListPage | unknown[];
+    return { records: listPageRecords(body), total: listPageTotal(body) };
+  }
+
+  private toAssets(records: unknown[], treePaths: AssetPathMap): CachedJumpServerAsset[] {
+    return records
+      .filter((item): item is Record<string, any> => Boolean(item && typeof item === 'object'))
+      .map((item) => normalizeJumpServerAsset(item))
+      .map((asset) => this.applyTreePath(asset, treePaths));
+  }
+
   private async safeListAssetTreePaths(): Promise<AssetPathMap> {
     try {
       return await this.listAssetTreePaths();
@@ -751,6 +826,48 @@ export class JumpServerClient {
 
 function isUnauthorizedResponse(response: Response): boolean {
   return response.status === 401 || response.status === 403;
+}
+
+function listPageRecords(body: ListPage | unknown[]): unknown[] {
+  if (Array.isArray(body)) {
+    return body;
+  }
+  for (const candidate of [body.results, body.items, body.data]) {
+    if (Array.isArray(candidate)) {
+      return candidate;
+    }
+  }
+  return [];
+}
+
+function listPageTotal(body: ListPage | unknown[]): number | undefined {
+  if (Array.isArray(body)) {
+    return undefined;
+  }
+  for (const candidate of [body.count, body.total]) {
+    if (Number.isInteger(candidate) && (candidate as number) >= 0) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+function dedupeAssetsById(assets: CachedJumpServerAsset[]): CachedJumpServerAsset[] {
+  const seen = new Set<string>();
+  return assets.filter((asset) => {
+    if (!asset.id) {
+      return true;
+    }
+    if (seen.has(asset.id)) {
+      return false;
+    }
+    seen.add(asset.id);
+    return true;
+  });
+}
+
+function boundedCount(value: number | undefined, fallback: number): number {
+  return Number.isInteger(value) && (value as number) > 0 ? value as number : fallback;
 }
 
 export function extractAssetTreePaths(payload: unknown): AssetPathMap {

@@ -17,6 +17,7 @@ const jumpServerClientMock = vi.hoisted(() => ({
   getUserProfile: vi.fn(),
   listAssetNodes: vi.fn(),
   listAssets: vi.fn(),
+  listAllAssets: vi.fn(),
   openKokoSftpWebSocket: vi.fn(),
   JumpServerClient: vi.fn()
 }));
@@ -131,6 +132,14 @@ beforeEach(() => {
     jumpServerClientMock.calls.push('assets');
     return [{ id: 'asset-1', name: 'gateway02', address: '11.0.139.162', platform: 'Linux', category: 'host', type: 'server', zoneName: 'DEFAULT', nodePath: ['DEFAULT'], protocolNames: ['ssh'], raw: {} }];
   });
+  jumpServerClientMock.listAllAssets.mockImplementation(async () => {
+    jumpServerClientMock.calls.push('assets');
+    return {
+      assets: [{ id: 'asset-1', name: 'gateway02', address: '11.0.139.162', platform: 'Linux', category: 'host', type: 'server', zoneName: 'DEFAULT', nodePath: ['DEFAULT'], protocolNames: ['ssh'], raw: {} }],
+      total: 1,
+      truncated: false
+    };
+  });
   terminalPanelMock.open.mockClear();
   terminalPanelMock.open.mockReturnValue({ getTerminalId: () => 'terminal-opened-1' });
   terminalPanelMock.getActive.mockReturnValue(undefined);
@@ -174,6 +183,7 @@ beforeEach(() => {
     getUserProfile: jumpServerClientMock.getUserProfile,
     listAssetNodes: jumpServerClientMock.listAssetNodes,
     listAssets: jumpServerClientMock.listAssets,
+    listAllAssets: jumpServerClientMock.listAllAssets,
     openKokoSftpWebSocket: jumpServerClientMock.openKokoSftpWebSocket
   }));
   mcpLifecycleMock.syncPackagedHub.mockClear();
@@ -425,8 +435,44 @@ describe('extension command wiring', () => {
     await refresh();
 
     expect(jumpServerClientMock.listAssetNodes).toHaveBeenCalledTimes(1);
-    expect(jumpServerClientMock.listAssets).toHaveBeenCalledWith(
+    expect(jumpServerClientMock.listAllAssets).toHaveBeenCalledWith(
       expect.objectContaining({ treePaths: new Map([['asset-1', ['DEFAULT']]]) })
+    );
+  });
+
+  it('caches every asset the bastion has instead of the first page', async () => {
+    jumpServerClientMock.listAllAssets.mockResolvedValueOnce({
+      assets: Array.from({ length: 640 }, (_unused, index) => ({
+        id: `asset-${index}`,
+        name: `host-${index}`,
+        address: '10.0.0.1',
+        platform: 'Linux',
+        category: 'host',
+        type: 'server',
+        zoneName: 'DEFAULT',
+        nodePath: ['DEFAULT'],
+        protocolNames: ['ssh'],
+        raw: {}
+      })),
+      total: 640,
+      truncated: false
+    });
+    activate(contextWithSettings());
+
+    await registeredCommand('jumpserverManager.refresh')();
+
+    expect(notificationsMock.showTimedNotification).toHaveBeenCalledWith('JumpServer assets refreshed: 640');
+  });
+
+  it('says so out loud when the safety cap stopped the sync short', async () => {
+    jumpServerClientMock.listAllAssets.mockResolvedValueOnce({ assets: [], total: 24_000, truncated: true });
+    activate(contextWithSettings());
+
+    await registeredCommand('jumpserverManager.refresh')();
+
+    expect(notificationsMock.showTimedNotification).toHaveBeenCalledWith(
+      'JumpServer assets refreshed: 0 of 24000 (cache cap reached).',
+      'warning'
     );
   });
 
