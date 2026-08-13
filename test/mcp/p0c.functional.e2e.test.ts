@@ -7,7 +7,11 @@ import {
   ensureAtSeriesMcpConfig,
   hubJsPath,
   listBridgeRecords,
-  syncHubBundle
+  syncHubBundle,
+  type BridgeErrorBody,
+  type BridgeHealthResponse,
+  type BridgeInvokeSuccess,
+  type BridgeToolsResponse
 } from '@at-series/mcp-hub';
 import { JumpServerAgentToolService } from '../../src/agent/JumpServerAgentToolService';
 import { BridgeServer } from '../../src/mcp/BridgeServer';
@@ -24,7 +28,7 @@ describe('P0c functional e2e smoke', () => {
     }
   });
 
-  it('runs Bridge â†?registry â†?health/tools/invoke â†?confirm cancel â†?installer â†?hub sync â†?dispose', async () => {
+  it('runs Bridge ï¿½?registry ï¿½?health/tools/invoke ï¿½?confirm cancel ï¿½?installer ï¿½?hub sync ï¿½?dispose', async () => {
     const home = await mkdtemp(join(tmpdir(), 'p0c-func-'));
     cleanups.push(async () => {
       await rm(home, { recursive: true, force: true });
@@ -42,6 +46,7 @@ describe('P0c functional e2e smoke', () => {
         platform: 'Linux',
         category: 'host',
         type: 'linux',
+        zoneName: 'default',
         nodePath: ['Default'],
         protocolNames: ['ssh'],
         raw: {}
@@ -88,7 +93,9 @@ describe('P0c functional e2e smoke', () => {
     const token = records[0]!.token;
     const base = `http://127.0.0.1:${port}`;
 
-    const health = await fetchJson(`${base}/health`, { headers: { [AT_SERIES_TOKEN_HEADER]: token } });
+    const health = await fetchJson<BridgeHealthResponse>(`${base}/health`, {
+      headers: { [AT_SERIES_TOKEN_HEADER]: token }
+    });
     expect(health.status).toBe(200);
     expect(health.json).toMatchObject({
       ok: true,
@@ -96,14 +103,19 @@ describe('P0c functional e2e smoke', () => {
       protocolVersion: 1
     });
 
-    const tools = await fetchJson(`${base}/tools`, { headers: { [AT_SERIES_TOKEN_HEADER]: token } });
+    const tools = await fetchJson<BridgeToolsResponse>(`${base}/tools`, {
+      headers: { [AT_SERIES_TOKEN_HEADER]: token }
+    });
     expect(tools.status).toBe(200);
+    if (isBridgeError(tools.json)) {
+      throw new Error(`GET /tools returned an error body: ${tools.json.error.code}`);
+    }
     expect(tools.json.tools).toHaveLength(15);
-    expect(tools.json.tools.map((t: { name: string }) => t.name).sort()).toEqual(
+    expect(tools.json.tools.map((t) => t.name).sort()).toEqual(
       AT_JUMPSERVER_TOOL_CATALOG.map((t) => t.name).sort()
     );
 
-    const list = await fetchJson(`${base}/invoke`, {
+    const list = await fetchJson<BridgeInvokeSuccess>(`${base}/invoke`, {
       method: 'POST',
       headers: { [AT_SERIES_TOKEN_HEADER]: token },
       body: { name: 'jumpserver_list_assets', arguments: {} }
@@ -111,12 +123,15 @@ describe('P0c functional e2e smoke', () => {
     expect(list.status).toBe(200);
     expect(list.json).toMatchObject({ ok: true, name: 'jumpserver_list_assets' });
 
-    const cancelled = await fetchJson(`${base}/invoke`, {
+    const cancelled = await fetchJson<BridgeInvokeSuccess>(`${base}/invoke`, {
       method: 'POST',
       headers: { [AT_SERIES_TOKEN_HEADER]: token },
       body: { name: 'jumpserver_send_terminal_input', arguments: { input: 'whoami\n' } }
     });
     expect(cancelled.status).toBe(499);
+    if (!isBridgeError(cancelled.json)) {
+      throw new Error('POST /invoke on a cancelled confirm must return an error body');
+    }
     expect(cancelled.json.error.code).toBe('USER_CANCELLED');
     expect(confirm).toHaveBeenCalled();
     expect(write).not.toHaveBeenCalled();
@@ -196,10 +211,11 @@ describe('P0c functional e2e smoke', () => {
   }, 30_000);
 });
 
-async function fetchJson(
+/** Every Bridge endpoint may answer with an error body instead of its success shape. */
+async function fetchJson<T = unknown>(
   url: string,
   options: { method?: string; headers?: Record<string, string>; body?: unknown } = {}
-) {
+): Promise<{ status: number; json: T | BridgeErrorBody }> {
   const res = await fetch(url, {
     method: options.method ?? 'GET',
     headers: {
@@ -208,7 +224,11 @@ async function fetchJson(
     },
     body: options.body === undefined ? undefined : JSON.stringify(options.body)
   });
-  return { status: res.status, json: (await res.json()) as never };
+  return { status: res.status, json: (await res.json()) as T | BridgeErrorBody };
+}
+
+function isBridgeError(body: unknown): body is BridgeErrorBody {
+  return typeof body === 'object' && body !== null && 'error' in body;
 }
 
 function normalizePath(value: string): string {
