@@ -46,6 +46,23 @@ export interface MysqlSqlExecutionResult {
   truncated: boolean;
 }
 
+export interface RedisCommandExecutionInput extends TerminalExecutionTarget {
+  command: string;
+  timeoutMs?: number;
+  maxOutputBytes?: number;
+}
+
+export interface RedisCommandExecutionResult {
+  terminalId: string;
+  assetId: string;
+  assetName: string;
+  command: string;
+  output: string;
+  durationMs: number;
+  timedOut: boolean;
+  truncated: boolean;
+}
+
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 64_000;
@@ -151,6 +168,56 @@ export class MysqlCliExecutor {
   }
 }
 
+export class RedisCliExecutor {
+  constructor(private readonly options: { idFactory?: () => string } = {}) {}
+
+  async execute(input: RedisCommandExecutionInput): Promise<RedisCommandExecutionResult> {
+    const id = this.options.idFactory?.() ?? randomUUID().replaceAll('-', '');
+    const startMarker = `__JMS_REDIS_START_${id}__`;
+    const endMarker = `__JMS_REDIS_END_${id}__`;
+    const timeoutMs = clamp(input.timeoutMs, DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS);
+    const maxOutputBytes = clamp(input.maxOutputBytes, DEFAULT_MAX_OUTPUT_BYTES, MAX_OUTPUT_BYTES);
+    const started = Date.now();
+    const collection = input.output.collectUntil({
+      marker: endMarker,
+      isComplete: (text) => {
+        const start = findStandaloneRedisMarker(text, startMarker);
+        return start >= 0 && findStandaloneRedisMarker(text, endMarker, start + startMarker.length) >= 0;
+      },
+      findTerminatorIndex: (text) => {
+        const start = findStandaloneRedisMarker(text, startMarker);
+        if (start < 0) {
+          return -1;
+        }
+        return findStandaloneRedisMarker(text, endMarker, start + startMarker.length);
+      },
+      timeoutMs,
+      maxOutputBytes
+    });
+    const command = input.command.trim();
+    // redis-cli submits on CR; LF-only writes stick in the edit buffer and never execute.
+    input.write(
+      `ECHO ${startMarker}\r` +
+      `${command}\r` +
+      `ECHO ${endMarker}\r`
+    );
+    const collected = await collection;
+    // collectUntil keeps the end marker in `terminator`, not `output`.
+    const captured = `${collected.output}${collected.terminator ?? ''}`;
+    const between = extractBetweenRedisMarkers(captured, startMarker, endMarker);
+    return {
+      terminalId: input.terminalId,
+      assetId: input.assetId,
+      assetName: input.assetName,
+      command,
+      output: cleanRedisCliCapture(between, command),
+      durationMs: Date.now() - started,
+      timedOut: collected.timedOut,
+      truncated: collected.truncated
+    };
+  }
+}
+
 /**
  * One shell prompt entry per MCP confirmation: start marker + command + end marker.
  * Marker fragments stay split across printf args so echo cannot satisfy collectors.
@@ -198,6 +265,78 @@ function trimBeforeMarker(text: string, marker: string): string {
   // Prefer the last start marker (executed printf/SELECT output) over an earlier echo.
   const index = text.lastIndexOf(marker);
   return index >= 0 ? text.slice(index + marker.length) : text;
+}
+
+function extractBetweenRedisMarkers(text: string, startMarker: string, endMarker: string): string {
+  const start = findStandaloneRedisMarker(text, startMarker);
+  if (start < 0) {
+    return text;
+  }
+  const end = findStandaloneRedisMarker(text, endMarker, start + startMarker.length);
+  if (end >= 0) {
+    return text.slice(start + startMarker.length, end);
+  }
+  return text.slice(start + startMarker.length);
+}
+
+/**
+ * Accept only a line whose sole content is the marker (ECHO response).
+ * Rejects typed lines like `127.0.0.1:44563> ECHO __JMS_REDIS_END_…__`.
+ */
+function findStandaloneRedisMarker(text: string, marker: string, fromIndex = 0): number {
+  let index = text.indexOf(marker, fromIndex);
+  while (index >= 0) {
+    const lineStart = redisLineStartBefore(text, index);
+    let lineEnd = index + marker.length;
+    while (lineEnd < text.length && text[lineEnd] !== '\n' && text[lineEnd] !== '\r') {
+      lineEnd += 1;
+    }
+    const line = text.slice(lineStart, lineEnd).trim();
+    if (line === marker) {
+      return index;
+    }
+    index = text.indexOf(marker, index + marker.length);
+  }
+  return -1;
+}
+
+function redisLineStartBefore(text: string, index: number): number {
+  for (let i = index - 1; i >= 0; i -= 1) {
+    const ch = text[i];
+    if (ch === '\n' || ch === '\r') {
+      return i + 1;
+    }
+  }
+  return 0;
+}
+
+/** Drop redis-cli prompt redraws and echoed command/ECHO lines from captured body. */
+function cleanRedisCliCapture(text: string, command: string): string {
+  // Normalize CR before stripAnsi — stripAnsi deletes `\r` and would glue lines together.
+  const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const withoutAnsi = stripAnsi(normalized);
+  const commandNorm = command.trim();
+  const kept: string[] = [];
+  for (const line of withoutAnsi.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+    if (/^\d+\.\d+\.\d+\.\d+:\d+>/.test(trimmed)) {
+      continue;
+    }
+    if (trimmed === commandNorm) {
+      continue;
+    }
+    if (/^ECHO\s+/i.test(trimmed)) {
+      continue;
+    }
+    if (/^__JMS_REDIS_(START|END)_[a-z0-9]+__$/i.test(trimmed)) {
+      continue;
+    }
+    kept.push(trimmed);
+  }
+  return kept.join('\n');
 }
 
 function stripAnsi(text: string): string {

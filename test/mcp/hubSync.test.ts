@@ -28,18 +28,18 @@ describe('syncPackagedHubAt', () => {
 
     const result = await syncPackagedHubAt(
       bundlePath,
-      { hubVersion: '0.1.0', pluginVersion: '0.1.5' },
+      { hubVersion: '0.1.8', pluginVersion: '0.1.8' },
       home
     );
 
-    expect(result).toEqual({ updated: true, activeVersion: '0.1.0' });
+    expect(result).toEqual({ updated: true, activeVersion: '0.1.8' });
     await expect(readFile(hubJsPath(home), 'utf8')).resolves.toBe(content);
 
     const meta = JSON.parse(await readFile(hubVersionPath(home), 'utf8'));
     expect(meta).toMatchObject({
-      version: '0.1.0',
+      version: '0.1.8',
       writtenByPluginId: AT_JUMPSERVER_PLUGIN_ID,
-      writtenByPluginVersion: '0.1.5'
+      writtenByPluginVersion: '0.1.8'
     });
   });
 
@@ -49,17 +49,17 @@ describe('syncPackagedHubAt', () => {
     await writeFile(bundlePath, 'module.exports = { sidecar: true };\n', 'utf8');
     await writeFile(
       join(bundleDir, 'hub-version.json'),
-      JSON.stringify({ version: '0.1.0', protocolVersion: 1 }),
+      JSON.stringify({ version: '0.1.8', protocolVersion: 1 }),
       'utf8'
     );
 
     const sidecar = JSON.parse(await readFile(join(bundleDir, 'hub-version.json'), 'utf8'));
     const result = await syncPackagedHubAt(
       bundlePath,
-      { hubVersion: sidecar.version, pluginVersion: '0.1.5' },
+      { hubVersion: sidecar.version, pluginVersion: '0.1.8' },
       home
     );
-    expect(result.activeVersion).toBe('0.1.0');
+    expect(result.activeVersion).toBe('0.1.8');
     expect(syncPackagedHub).toBeTypeOf('function');
   });
 
@@ -73,7 +73,7 @@ describe('syncPackagedHubAt', () => {
         version: '0.2.0',
         protocolVersion: 1,
         writtenByPluginId: AT_JUMPSERVER_PLUGIN_ID,
-        writtenByPluginVersion: '0.1.5',
+        writtenByPluginVersion: '0.1.8',
         writtenAt: 1,
         // syncHubBundle verifies this against the bytes actually on disk before
         // it will skip, so a placeholder here reads as a tampered install.
@@ -87,7 +87,7 @@ describe('syncPackagedHubAt', () => {
 
     const result = await syncPackagedHubAt(
       bundlePath,
-      { hubVersion: '0.1.0', pluginVersion: '0.1.5' },
+      { hubVersion: '0.1.8', pluginVersion: '0.1.8' },
       home
     );
 

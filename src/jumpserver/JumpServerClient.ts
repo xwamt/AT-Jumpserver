@@ -115,6 +115,11 @@ export const DEFAULT_MYSQL_CONNECT_OPTIONS = {
   disableautohash: false
 } as const;
 
+export const DEFAULT_REDIS_CONNECT_OPTIONS = {
+  token_reusable: false,
+  disableautohash: false
+} as const;
+
 export const DEFAULT_SFTP_CONNECT_OPTIONS = {
   token_reusable: false,
   disableautohash: false
@@ -369,6 +374,9 @@ export function buildConnectionTokenPayload(input: {
   if (input.protocol === 'mysql') {
     return buildMysqlConnectionTokenPayload(input);
   }
+  if (input.protocol === 'redis') {
+    return buildRedisConnectionTokenPayload(input);
+  }
   if (input.protocol === 'sftp') {
     return buildSftpConnectionTokenPayload(input);
   }
@@ -410,6 +418,21 @@ export function buildMysqlConnectionTokenPayload(input: {
     input_secret: '',
     connect_method: 'db_client',
     connect_options: DEFAULT_MYSQL_CONNECT_OPTIONS
+  };
+}
+
+export function buildRedisConnectionTokenPayload(input: {
+  assetId: string;
+  account: JumpServerAccountRef;
+}): Record<string, unknown> {
+  return {
+    asset: input.assetId,
+    account: input.account.alias || input.account.id,
+    protocol: 'redis',
+    input_username: input.account.username,
+    input_secret: '',
+    connect_method: 'db_client',
+    connect_options: DEFAULT_REDIS_CONNECT_OPTIONS
   };
 }
 

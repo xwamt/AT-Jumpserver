@@ -34,9 +34,8 @@ function createService(connectedTargets = 0) {
     sftpCreateDirectory: vi.fn(),
     sftpRename: vi.fn(),
     sftpDelete: vi.fn(),
-    mysqlGetContext: vi.fn(),
-    mysqlSendInput: vi.fn(),
-    mysqlExecuteSql: vi.fn()
+    mysqlExecuteSql: vi.fn(),
+    redisExecuteCommand: vi.fn()
   };
 }
 

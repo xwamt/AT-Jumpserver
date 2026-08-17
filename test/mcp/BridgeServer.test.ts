@@ -53,9 +53,8 @@ function createHandler(
       sftpCreateDirectory: vi.fn(),
       sftpRename: vi.fn(),
       sftpDelete: vi.fn(),
-      mysqlGetContext: vi.fn(),
-      mysqlSendInput: vi.fn(),
       mysqlExecuteSql: vi.fn(),
+      redisExecuteCommand: vi.fn(),
       ...overrides.service
     } as never
   });
@@ -168,6 +167,62 @@ describe('createBridgeRequestHandler', () => {
       }
     });
     expect(service.listAssets).toHaveBeenCalledOnce();
+  });
+
+  it('invokes jumpserver_redis_execute_command through POST /invoke', async () => {
+    const redisExecuteCommand = vi.fn(async () => ({
+      stdout: 'PONG',
+      stderr: '',
+      exitCode: 0,
+      truncated: false,
+      timedOut: false
+    }));
+    const handler = createHandler({ service: { redisExecuteCommand } });
+
+    await expect(
+      call(handler, {
+        method: 'POST',
+        path: '/invoke',
+        token: 'secret',
+        tokenHeader: AT_SERIES_TOKEN_HEADER,
+        body: {
+          name: 'jumpserver_redis_execute_command',
+          arguments: { command: 'PING', timeoutMs: 5000 }
+        }
+      })
+    ).resolves.toEqual({
+      status: 200,
+      body: {
+        ok: true,
+        name: 'jumpserver_redis_execute_command',
+        result: {
+          stdout: 'PONG',
+          stderr: '',
+          exitCode: 0,
+          truncated: false,
+          timedOut: false
+        }
+      }
+    });
+    expect(redisExecuteCommand).toHaveBeenCalledWith({ command: 'PING', timeoutMs: 5000 });
+  });
+
+  it('rejects deleted MySQL list/send tools', async () => {
+    const handler = createHandler();
+
+    for (const name of ['jumpserver_mysql_get_context', 'jumpserver_mysql_send_input'] as const) {
+      await expect(
+        call(handler, {
+          method: 'POST',
+          path: '/invoke',
+          token: 'secret',
+          body: { name, arguments: {} }
+        })
+      ).resolves.toMatchObject({
+        status: 404,
+        body: { error: { code: 'NOT_FOUND' } }
+      });
+    }
   });
 
   it('returns 422 VALIDATION_ERROR when invoke args fail schema validation', async () => {

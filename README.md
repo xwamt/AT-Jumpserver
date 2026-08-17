@@ -1,8 +1,8 @@
 # AT JumpServer Terminal
 
-AT JumpServer Terminal is a VS Code / Cursor extension for opening browser-style JumpServer SSH and MySQL terminal sessions from the editor.
+AT JumpServer Terminal is a VS Code / Cursor extension for opening browser-style JumpServer SSH, MySQL, and Redis terminal sessions from the editor.
 
-**Current version: 0.1.5**
+**Current version: 0.1.8**
 
 ## Supported In This Version
 
@@ -10,6 +10,7 @@ AT JumpServer Terminal is a VS Code / Cursor extension for opening browser-style
 - Listing the current user's permitted assets
 - SSH protocol assets
 - MySQL protocol assets through JumpServer `db_client`
+- Redis protocol assets through JumpServer `db_client`
 - SFTP file tree for permitted assets
 - SFTP upload, download, new folder, rename, delete, copy path, and directory navigation through JumpServer KoKo
 - SFTP preview for small text files
@@ -17,7 +18,7 @@ AT JumpServer Terminal is a VS Code / Cursor extension for opening browser-style
 - Copy Host IP from the asset list context menu
 - xterm.js terminal UI
 - JumpServer KoKo WebSocket terminal sessions
-- MCP tools for JumpServer assets, terminal context, SFTP, SSH terminal commands, and MySQL CLI SQL execution (via AT Series hub)
+- MCP tools for JumpServer assets, terminal context, SFTP, SSH terminal commands, MySQL CLI SQL execution, and Redis CLI command execution (via AT Series hub)
 
 ## Not Supported In This Version
 
@@ -25,7 +26,8 @@ AT JumpServer Terminal is a VS Code / Cursor extension for opening browser-style
 - Direct SSH through ssh2
 - Editing files larger than 1 MB or binary files through the preview/edit workflow
 - MySQL GUI/workbench, Chen SQL editor, schema browser, or result grid
-- RDP, PostgreSQL, Redis, Oracle, SQL Server, Kubernetes, or other non-SSH/non-MySQL assets
+- Redis GUI / key browser (Redis uses the shared xterm CLI terminal only)
+- RDP, PostgreSQL, Oracle, SQL Server, Kubernetes, or other non-SSH/non-MySQL/non-Redis assets
 - SSO, MFA, captcha, private token, or access key login
 
 ## Setup
@@ -35,7 +37,7 @@ AT JumpServer Terminal is a VS Code / Cursor extension for opening browser-style
 3. Enter JumpServer base URL, username, password, optional org ID, and TLS verification.
 4. Run `JumpServer: Validate Account`.
 5. Run `JumpServer: Refresh Assets`.
-6. Click an SSH or MySQL asset to connect in a terminal.
+6. Click an SSH, MySQL, or Redis asset to connect in a terminal.
 7. Connect to an SSH asset, then use the Files view for the terminal-backed SFTP session.
 8. Optional: run `Install/Repair AT Series MCP Config` to expose JumpServer tools to MCP-capable agents.
 
@@ -55,7 +57,7 @@ How it fits together:
 
 | Piece | Role |
 |-------|------|
-| `@at-series/mcp-hub` (npm) | Shared hub process Protocol v1 â€” one IDE MCP server named **AT Series** â†’ `node ~/.at-series/mcp/hub.js` |
+| `@at-series/mcp-hub` (npm) | Shared hub process Protocol v1 ï¿?one IDE MCP server named **AT Series** ï¿?`node ~/.at-series/mcp/hub.js` |
 | This extension | Local Bridge on `127.0.0.1` (`GET /health`, `GET /tools`, `POST /invoke`), registry publish under `~/.at-series/bridges/<hostApp>/`, syncs packaged `dist/hub.js` on activate |
 | IDE config | `Install/Repair AT Series MCP Config` (Kiro, Cursor, Continue) |
 
@@ -94,6 +96,8 @@ npm run build
 - Run `whoami`, `pwd`, and `ls`.
 - Connect to a MySQL asset.
 - Run `select 1;` at the MySQL prompt.
+- Connect to a Redis asset.
+- Run `PING` at the Redis prompt.
 - Open files for an SFTP-capable SSH asset.
 - Navigate into a directory and back up.
 - Upload a small text file.
@@ -111,4 +115,5 @@ npm run build
 - Verify bad password and non-SSH assets show clear errors.
 - Verify unsupported database assets show clear errors and do not open a GUI.
 - Verify MCP `jumpserver_run_terminal_command` returns command stdout (not only echoes) after confirmation.
+- Verify MCP `jumpserver_redis_execute_command` runs `PING` and rejects `SUBSCRIBE`.
 - Verify asset context menu includes **Copy Host IP**.

@@ -17,7 +17,7 @@ import { formatError } from '../utils/errors';
 import {
   listAssetsBridgeSchema,
   mysqlExecuteSqlBridgeSchema,
-  mysqlSendInputBridgeSchema,
+  redisExecuteCommandBridgeSchema,
   runTerminalCommandBridgeSchema,
   sendTerminalInputBridgeSchema,
   sftpCreateFileBridgeSchema,
@@ -433,21 +433,19 @@ async function dispatchTool(
       }
       return { ok: true, value: await service.sftpDelete(parsed.data) };
     }
-    case 'jumpserver_mysql_get_context':
-      return { ok: true, value: await service.mysqlGetContext() };
-    case 'jumpserver_mysql_send_input': {
-      const parsed = parseArgsWithSchema(args, mysqlSendInputBridgeSchema);
-      if (!parsed.ok) {
-        return { ok: false, response: bridgeError(422, 'VALIDATION_ERROR', parsed.error) };
-      }
-      return { ok: true, value: await service.mysqlSendInput(parsed.data) };
-    }
     case 'jumpserver_mysql_execute_sql': {
       const parsed = parseArgsWithSchema(args, mysqlExecuteSqlBridgeSchema);
       if (!parsed.ok) {
         return { ok: false, response: bridgeError(422, 'VALIDATION_ERROR', parsed.error) };
       }
       return { ok: true, value: await service.mysqlExecuteSql(parsed.data) };
+    }
+    case 'jumpserver_redis_execute_command': {
+      const parsed = parseArgsWithSchema(args, redisExecuteCommandBridgeSchema);
+      if (!parsed.ok) {
+        return { ok: false, response: bridgeError(422, 'VALIDATION_ERROR', parsed.error) };
+      }
+      return { ok: true, value: await service.redisExecuteCommand(parsed.data) };
     }
     default:
       return {

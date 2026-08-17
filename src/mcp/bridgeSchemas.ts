@@ -82,12 +82,19 @@ export const sftpRenameBridgeSchema = z
   })
   .strict();
 
-export const mysqlSendInputBridgeSchema = sendTerminalInputBridgeSchema;
-
 export const mysqlExecuteSqlBridgeSchema = z
   .object({
     ...terminalTargetFields,
     sql: z.string().min(1),
+    timeoutMs: z.number().int().positive().optional(),
+    maxOutputBytes: z.number().int().positive().optional()
+  })
+  .strict();
+
+export const redisExecuteCommandBridgeSchema = z
+  .object({
+    ...terminalTargetFields,
+    command: z.string().min(1),
     timeoutMs: z.number().int().positive().optional(),
     maxOutputBytes: z.number().int().positive().optional()
   })

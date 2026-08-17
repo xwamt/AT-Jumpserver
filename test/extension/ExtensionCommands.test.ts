@@ -539,7 +539,7 @@ describe('extension command wiring', () => {
     expect(notificationsMock.showTimedNotification).not.toHaveBeenCalledWith(expect.stringContaining('not supported'), 'error');
   });
 
-  it('keeps unsupported assets visible but shows an unsupported message instead of opening a terminal', async () => {
+  it('opens the unified terminal panel for Redis assets', async () => {
     const context = contextWithSettings();
     activate(context);
     const connectCommand = registeredCommand('jumpserverManager.connect');
@@ -553,6 +553,31 @@ describe('extension command wiring', () => {
         type: 'redis',
         zoneName: '',
         nodePath: [],
+        protocolNames: ['redis'],
+        raw: {}
+      }
+    };
+
+    await connectCommand(item);
+
+    expect(terminalPanelMock.open).toHaveBeenCalledWith(context, item.asset, expect.any(Object), expect.any(Object));
+    expect(notificationsMock.showTimedNotification).not.toHaveBeenCalledWith(expect.stringContaining('not supported'), 'error');
+  });
+
+  it('keeps unsupported assets visible but shows an unsupported message instead of opening a terminal', async () => {
+    const context = contextWithSettings();
+    activate(context);
+    const connectCommand = registeredCommand('jumpserverManager.connect');
+    const item = {
+      asset: {
+        id: 'pg-1',
+        name: 'pg-1',
+        address: 'pg.example.com',
+        platform: 'PostgreSQL',
+        category: 'database',
+        type: 'postgresql',
+        zoneName: '',
+        nodePath: [],
         protocolNames: [],
         raw: {}
       }
@@ -561,6 +586,6 @@ describe('extension command wiring', () => {
     await connectCommand(item);
 
     expect(terminalPanelMock.open).not.toHaveBeenCalled();
-    expect(notificationsMock.showTimedNotification).toHaveBeenCalledWith('Asset type is not supported yet: redis-1', 'error');
+    expect(notificationsMock.showTimedNotification).toHaveBeenCalledWith('Asset type is not supported yet: pg-1', 'error');
   });
 });

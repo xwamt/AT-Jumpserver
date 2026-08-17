@@ -25,9 +25,8 @@ export const JUMPSERVER_MCP_TOOL_NAMES = [
   'jumpserver_sftp_create_directory',
   'jumpserver_sftp_rename',
   'jumpserver_sftp_delete',
-  'jumpserver_mysql_get_context',
-  'jumpserver_mysql_send_input',
-  'jumpserver_mysql_execute_sql'
+  'jumpserver_mysql_execute_sql',
+  'jumpserver_redis_execute_command'
 ] as const;
 
 export type JumpServerMcpToolName = typeof JUMPSERVER_MCP_TOOL_NAMES[number];
@@ -104,6 +103,12 @@ export interface SftpDeleteBridgeRequest extends SftpPathBridgeRequest {}
 
 export interface MysqlExecuteSqlBridgeRequest extends TerminalTargetBridgeRequest {
   sql: string;
+  timeoutMs?: number;
+  maxOutputBytes?: number;
+}
+
+export interface RedisExecuteCommandBridgeRequest extends TerminalTargetBridgeRequest {
+  command: string;
   timeoutMs?: number;
   maxOutputBytes?: number;
 }

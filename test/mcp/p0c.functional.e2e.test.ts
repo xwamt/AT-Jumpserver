@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile, mkdir, access } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -75,7 +75,7 @@ describe('P0c functional e2e smoke', () => {
     const bridge = new BridgeServer({
       service,
       hostApp: 'cursor',
-      pluginVersion: '0.1.5',
+      pluginVersion: '0.1.7',
       home
     });
     await bridge.start();
@@ -111,8 +111,8 @@ describe('P0c functional e2e smoke', () => {
     if (isBridgeError(tools.json)) {
       throw new Error(`GET /tools returned an error body: ${tools.json.error.code}`);
     }
-    expect(tools.json.tools).toHaveLength(15);
-    expect(tools.json.tools.map((t) => t.name).sort()).toEqual(
+    expect(tools.json.tools).toHaveLength(14);
+    expect(tools.json.tools.map((t: { name: string }) => t.name).sort()).toEqual(
       AT_JUMPSERVER_TOOL_CATALOG.map((t) => t.name).sort()
     );
 
@@ -149,13 +149,13 @@ describe('P0c functional e2e smoke', () => {
     const bundlePath = join(hubDir, 'packaged-hub.js');
     await writeFile(bundlePath, 'console.log("hub-smoke");\n', 'utf8');
     const sync = await syncHubBundle({
-      version: '0.1.1',
+      version: '0.1.7',
       bundlePath,
       pluginId: AT_JUMPSERVER_PLUGIN_ID,
-      pluginVersion: '0.1.5',
+      pluginVersion: '0.1.7',
       home
     });
-    expect(sync.activeVersion).toBe('0.1.1');
+    expect(sync.activeVersion).toBe('0.1.7');
     await access(hubJsPath(home));
 
     await ensureAtSeriesMcpConfig({

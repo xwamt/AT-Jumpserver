@@ -1,5 +1,5 @@
-export type JumpServerConnectionKind = 'ssh' | 'mysql' | 'unsupported';
-export type JumpServerConnectionProtocol = 'ssh' | 'mysql';
+export type JumpServerConnectionKind = 'ssh' | 'mysql' | 'redis' | 'unsupported';
+export type JumpServerConnectionProtocol = 'ssh' | 'mysql' | 'redis';
 
 export interface AssetLikeForConnection {
   name?: string;
@@ -29,9 +29,20 @@ export function isMysqlAsset(asset: AssetLikeForConnection): boolean {
   return isDatabaseAsset(asset) && hasMysqlMarker([String(asset.name ?? '').toLowerCase()]);
 }
 
+export function isRedisAsset(asset: AssetLikeForConnection): boolean {
+  const values = lowerValues(asset);
+  if (hasRedisMarker(values)) {
+    return true;
+  }
+  return isDatabaseAsset(asset) && hasRedisMarker([String(asset.name ?? '').toLowerCase()]);
+}
+
 export function getAssetConnectionKind(asset: AssetLikeForConnection): JumpServerConnectionKind {
   if (isMysqlAsset(asset)) {
     return 'mysql';
+  }
+  if (isRedisAsset(asset)) {
+    return 'redis';
   }
   if (lowerProtocols(asset).includes('ssh') || isSshCandidateAsset(asset)) {
     return 'ssh';
@@ -43,6 +54,9 @@ export function connectionKindLabel(kind: JumpServerConnectionKind): string {
   if (kind === 'mysql') {
     return 'MySQL';
   }
+  if (kind === 'redis') {
+    return 'Redis';
+  }
   if (kind === 'ssh') {
     return 'SSH';
   }
@@ -50,7 +64,7 @@ export function connectionKindLabel(kind: JumpServerConnectionKind): string {
 }
 
 export function connectionKindProtocol(kind: JumpServerConnectionKind): JumpServerConnectionProtocol {
-  if (kind === 'ssh' || kind === 'mysql') {
+  if (kind === 'ssh' || kind === 'mysql' || kind === 'redis') {
     return kind;
   }
   throw new Error('Unsupported JumpServer asset type.');
@@ -79,4 +93,8 @@ function isSshCandidateAsset(asset: AssetLikeForConnection): boolean {
 
 function hasMysqlMarker(values: string[]): boolean {
   return values.some((value) => value.includes('mysql') || value.includes('mariadb'));
+}
+
+function hasRedisMarker(values: string[]): boolean {
+  return values.some((value) => value.includes('redis'));
 }

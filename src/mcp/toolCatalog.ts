@@ -58,7 +58,8 @@ export const AT_JUMPSERVER_TOOL_CATALOG: ToolCatalogEntry[] = [
   {
     name: 'jumpserver_get_terminal_context',
     title: 'JumpServer Terminal Context',
-    description: 'Return active, connected, and known AT JumpServer Terminal contexts.',
+    description:
+      'Return active, connected, and known AT JumpServer Terminal contexts (SSH, MySQL CLI, and Redis CLI).',
     risk: 'read',
     inputSchema: {
       type: 'object',
@@ -68,7 +69,8 @@ export const AT_JUMPSERVER_TOOL_CATALOG: ToolCatalogEntry[] = [
   {
     name: 'jumpserver_send_terminal_input',
     title: 'JumpServer Send Terminal Input',
-    description: 'Send raw input to a connected JumpServer terminal after confirmation.',
+    description:
+      'Send raw input to a connected JumpServer terminal (SSH, MySQL CLI, or Redis CLI) after confirmation.',
     risk: 'exec',
     inputSchema: {
       type: 'object',
@@ -247,33 +249,6 @@ export const AT_JUMPSERVER_TOOL_CATALOG: ToolCatalogEntry[] = [
     }
   },
   {
-    name: 'jumpserver_mysql_get_context',
-    title: 'JumpServer MySQL Context',
-    description: 'Return active, connected, and known JumpServer MySQL terminal contexts.',
-    risk: 'read',
-    inputSchema: {
-      type: 'object',
-      properties: {}
-    }
-  },
-  {
-    name: 'jumpserver_mysql_send_input',
-    title: 'JumpServer MySQL Send Input',
-    description: 'Send raw input to a connected JumpServer MySQL CLI terminal after confirmation.',
-    risk: 'exec',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        ...terminalIdProperty,
-        input: {
-          type: 'string',
-          description: 'Raw MySQL CLI input to send.'
-        }
-      },
-      required: ['input']
-    }
-  },
-  {
     name: 'jumpserver_mysql_execute_sql',
     title: 'JumpServer MySQL Execute SQL',
     description:
@@ -297,6 +272,34 @@ export const AT_JUMPSERVER_TOOL_CATALOG: ToolCatalogEntry[] = [
         }
       },
       required: ['sql']
+    }
+  },
+  {
+    name: 'jumpserver_redis_execute_command',
+    title: 'JumpServer Redis Execute Command',
+    description:
+      'Execute one non-blocking Redis command through an existing connected JumpServer Redis CLI terminal. ' +
+      'Prefer narrow keys and SCAN over KEYS. Output defaults to 64KB (hard max 256KB). ' +
+      'Blocking commands (SUBSCRIBE/MONITOR/BLPOP/…) are rejected; use jumpserver_send_terminal_input for those.',
+    risk: 'exec',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ...terminalIdProperty,
+        command: {
+          type: 'string',
+          description: 'Single Redis command, e.g. GET mykey or HGETALL user:1'
+        },
+        timeoutMs: {
+          type: 'number',
+          description: 'Optional timeout in milliseconds.'
+        },
+        maxOutputBytes: {
+          type: 'number',
+          description: 'Optional max bytes of output to capture (default 64KB, hard max 256KB).'
+        }
+      },
+      required: ['command']
     }
   }
 ];

@@ -12,7 +12,7 @@ export interface JumpServerEndpoint {
   http_port?: number;
 }
 
-export type JumpServerConnectionProtocol = 'ssh' | 'mysql' | 'sftp';
+export type JumpServerConnectionProtocol = 'ssh' | 'mysql' | 'redis' | 'sftp';
 
 export interface JumpServerAccountRef {
   id: string;

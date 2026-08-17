@@ -2,7 +2,7 @@
   "name": "at-jumpserver-terminal",
   "displayName": "AT JumpServer Terminal",
   "description": "JumpServer-backed terminal for VS Code.",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "publisher": "local",
   "icon": "media/at-terminal-icon.png",
   "engines": {
@@ -161,12 +161,12 @@
       "view/item/context": [
         {
           "command": "jumpserverManager.connect",
-          "when": "view == jumpserverManager.assets && (viewItem == jumpserverAsset || viewItem == jumpserverMysqlAsset || viewItem == jumpserverUnsupportedAsset)",
+          "when": "view == jumpserverManager.assets && (viewItem == jumpserverAsset || viewItem == jumpserverMysqlAsset || viewItem == jumpserverRedisAsset || viewItem == jumpserverUnsupportedAsset)",
           "group": "inline@1"
         },
         {
           "command": "jumpserverManager.copyHostIp",
-          "when": "view == jumpserverManager.assets && (viewItem == jumpserverAsset || viewItem == jumpserverMysqlAsset || viewItem == jumpserverUnsupportedAsset)",
+          "when": "view == jumpserverManager.assets && (viewItem == jumpserverAsset || viewItem == jumpserverMysqlAsset || viewItem == jumpserverRedisAsset || viewItem == jumpserverUnsupportedAsset)",
           "group": "3_copy@1"
         },
         {

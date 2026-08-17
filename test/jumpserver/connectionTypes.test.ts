@@ -4,7 +4,8 @@ import {
   connectionKindProtocol,
   getAssetConnectionKind,
   isDatabaseAsset,
-  isMysqlAsset
+  isMysqlAsset,
+  isRedisAsset
 } from '../../src/jumpserver/connectionTypes';
 
 describe('connectionTypes', () => {
@@ -24,9 +25,31 @@ describe('connectionTypes', () => {
     })).toBe(false);
   });
 
-  it('detects unsupported database assets without hiding them', () => {
+  it('detects Redis assets from protocol and database metadata', () => {
+    expect(isRedisAsset({ protocolNames: ['redis'] })).toBe(true);
+    expect(isRedisAsset({ category: 'database', type: 'redis', platform: 'Redis6+' })).toBe(true);
+    expect(isRedisAsset({ category: 'database', type: '', platform: '', name: 'cache-redis-01' })).toBe(true);
     expect(isDatabaseAsset({ category: 'database', type: 'redis', platform: 'Redis6+' })).toBe(true);
-    expect(getAssetConnectionKind({ category: 'database', type: 'redis', platform: 'Redis6+' })).toBe('unsupported');
+    expect(getAssetConnectionKind({ category: 'database', type: 'redis', platform: 'Redis6+' })).toBe('redis');
+  });
+
+  it('keeps non-Redis databases unsupported', () => {
+    expect(getAssetConnectionKind({
+      category: 'database',
+      type: 'postgresql',
+      platform: 'PostgreSQL',
+      protocolNames: ['postgresql']
+    })).toBe('unsupported');
+  });
+
+  it('does not treat SSH hosts with redis in their name as Redis assets', () => {
+    expect(isRedisAsset({
+      category: 'host',
+      type: 'server',
+      platform: 'Linux',
+      name: 'redis-backup-host',
+      protocolNames: ['ssh']
+    })).toBe(false);
   });
 
   it('treats host server assets without cached protocols as SSH candidates', () => {
@@ -39,7 +62,7 @@ describe('connectionTypes', () => {
     })).toBe('ssh');
   });
 
-  it('routes MySQL before SSH when cached metadata is mixed', () => {
+  it('routes MySQL before Redis/SSH when metadata is mixed', () => {
     expect(getAssetConnectionKind({
       category: 'database',
       type: 'mysql',
@@ -48,11 +71,22 @@ describe('connectionTypes', () => {
     })).toBe('mysql');
   });
 
+  it('routes Redis before SSH when metadata is mixed', () => {
+    expect(getAssetConnectionKind({
+      category: 'database',
+      type: 'redis',
+      platform: 'Redis',
+      protocolNames: ['ssh', 'redis']
+    })).toBe('redis');
+  });
+
   it('maps supported connection kinds to labels and protocols', () => {
     expect(connectionKindLabel('ssh')).toBe('SSH');
     expect(connectionKindLabel('mysql')).toBe('MySQL');
+    expect(connectionKindLabel('redis')).toBe('Redis');
     expect(connectionKindProtocol('ssh')).toBe('ssh');
     expect(connectionKindProtocol('mysql')).toBe('mysql');
+    expect(connectionKindProtocol('redis')).toBe('redis');
     expect(() => connectionKindProtocol('unsupported')).toThrow('Unsupported JumpServer asset type.');
   });
 });

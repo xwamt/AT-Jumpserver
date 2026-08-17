@@ -56,7 +56,7 @@ describe('JumpServerTreeProvider', () => {
   });
 
 
-  it('marks MySQL and unsupported database assets without hiding them', () => {
+  it('marks MySQL, Redis, and unsupported database assets without hiding them', () => {
     const mysql = new AssetTreeItem({
       id: 'mysql-1',
       name: 'mysql-1',
@@ -81,12 +81,29 @@ describe('JumpServerTreeProvider', () => {
       protocolNames: [],
       raw: {}
     });
+    const postgresql = new AssetTreeItem({
+      id: 'pg-1',
+      name: 'pg-1',
+      address: 'pg.example.com',
+      platform: 'PostgreSQL',
+      category: 'database',
+      type: 'postgresql',
+      zoneName: '',
+      nodePath: [],
+      protocolNames: [],
+      raw: {}
+    });
 
     expect(getAssetOpenKind(mysql.asset)).toBe('mysql');
     expect(mysql.contextValue).toBe('jumpserverMysqlAsset');
     expect(mysql.description).toBe('db.example.com - MySQL');
-    expect(getAssetOpenKind(redis.asset)).toBe('unsupported');
-    expect(redis.contextValue).toBe('jumpserverUnsupportedAsset');
+    expect(mysql.tooltip).toBe('mysql-1 (db.example.com) - MySQL');
+    expect(getAssetOpenKind(redis.asset)).toBe('redis');
+    expect(redis.contextValue).toBe('jumpserverRedisAsset');
+    expect(redis.description).toBe('redis.example.com - Redis');
+    expect(redis.tooltip).toBe('redis-1 (redis.example.com) - Redis');
+    expect(getAssetOpenKind(postgresql.asset)).toBe('unsupported');
+    expect(postgresql.contextValue).toBe('jumpserverUnsupportedAsset');
   });
 
   it('routes MySQL database assets to the terminal even if cached protocols include ssh', () => {

@@ -5,8 +5,9 @@ import type { JumpServerSftpManager } from '../sftp/JumpServerSftpManager';
 import type { JumpServerSftpEntry } from '../sftp/SftpTypes';
 import type { ActiveTerminalContext, TerminalContextRegistry } from '../terminal/TerminalContext';
 import { formatCommandConfirmMessage } from '../utils/commandPreview';
+import { isBlockingRedisCommand, isReadOnlyRedisCommand } from './RedisSafety';
 import { isReadOnlySql } from './SqlSafety';
-import { MysqlCliExecutor, ShellTerminalExecutor } from './TerminalExecutors';
+import { MysqlCliExecutor, RedisCliExecutor, ShellTerminalExecutor } from './TerminalExecutors';
 
 export interface JumpServerAgentToolServiceDependencies {
   configManager: Pick<JumpServerConfigManager, 'listCachedAssets'>;
@@ -23,6 +24,7 @@ export interface JumpServerAgentToolServiceDependencies {
 export class JumpServerAgentToolService {
   private readonly shellExecutor: ShellTerminalExecutor;
   private readonly mysqlExecutor: MysqlCliExecutor;
+  private readonly redisExecutor = new RedisCliExecutor();
   private readonly terminalQueues = new Map<string, Promise<unknown>>();
 
   constructor(private readonly dependencies: JumpServerAgentToolServiceDependencies) {
@@ -202,30 +204,6 @@ export class JumpServerAgentToolService {
     return { path: input.path, deleted: true };
   }
 
-  async mysqlGetContext() {
-    const snapshot = this.dependencies.terminalContext.getSnapshot();
-    return {
-      activeTerminal: snapshot.activeTerminal?.connectionKind === 'mysql' ? snapshot.activeTerminal : undefined,
-      connectedTerminals: snapshot.connectedTerminals.filter((terminal) => terminal.connectionKind === 'mysql'),
-      knownTerminals: snapshot.knownTerminals.filter((terminal) => terminal.connectionKind === 'mysql')
-    };
-  }
-
-  async mysqlSendInput(input: { terminalId?: string; input?: string }) {
-    const target = this.resolveTerminal(input.terminalId);
-    if (getAssetConnectionKind(target.asset) !== 'mysql') {
-      throw new Error('A connected JumpServer MySQL terminal is required.');
-    }
-    const data = input.input ?? '';
-    await this.requireConfirm(formatCommandConfirmMessage({
-      action: 'Send input to JumpServer MySQL terminal',
-      target: formatAssetTarget(target.asset),
-      command: data
-    }));
-    target.write(data);
-    return { terminalId: target.terminalId, bytesWritten: Buffer.byteLength(data, 'utf8') };
-  }
-
   async mysqlExecuteSql(input: { terminalId?: string; sql?: string; timeoutMs?: number; maxOutputBytes?: number }) {
     const sql = input.sql?.trim();
     if (!sql) {
@@ -253,6 +231,55 @@ export class JumpServerAgentToolService {
         assetId: liveTarget.asset.id,
         assetName: liveTarget.asset.name,
         sql,
+        timeoutMs: input.timeoutMs,
+        maxOutputBytes: input.maxOutputBytes,
+        write: liveTarget.write,
+        output
+      });
+    });
+  }
+
+  async redisExecuteCommand(input: {
+    terminalId?: string;
+    command?: string;
+    timeoutMs?: number;
+    maxOutputBytes?: number;
+  }) {
+    const command = input.command?.trim();
+    if (!command) {
+      throw new Error('Redis command cannot be empty.');
+    }
+    if (/[\r\n]/.test(command)) {
+      throw new Error('Only a single Redis command is supported per jumpserver_redis_execute_command call.');
+    }
+    if (isBlockingRedisCommand(command)) {
+      throw new Error(
+        'Blocking Redis commands are not supported via jumpserver_redis_execute_command. ' +
+        'Use the open Redis terminal with jumpserver_send_terminal_input instead.'
+      );
+    }
+    const target = this.resolveTerminal(input.terminalId);
+    if (getAssetConnectionKind(target.asset) !== 'redis') {
+      throw new Error('A connected JumpServer Redis terminal is required.');
+    }
+    if (!isReadOnlyRedisCommand(command)) {
+      const ok = await this.dependencies.confirm(formatCommandConfirmMessage({
+        action: 'Run state-changing Redis command',
+        target: formatAssetTarget(target.asset),
+        command
+      }));
+      if (!ok) {
+        throw new Error('Redis command execution was cancelled.');
+      }
+    }
+    return await this.enqueueTerminal(target.terminalId, async () => {
+      const liveTarget = this.resolveTerminal(target.terminalId);
+      const output = this.requireOutput(liveTarget.terminalId);
+      return await this.redisExecutor.execute({
+        terminalId: liveTarget.terminalId,
+        assetId: liveTarget.asset.id,
+        assetName: liveTarget.asset.name,
+        command,
         timeoutMs: input.timeoutMs,
         maxOutputBytes: input.maxOutputBytes,
         write: liveTarget.write,

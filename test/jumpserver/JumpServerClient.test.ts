@@ -13,12 +13,14 @@ import {
   buildConnectionTokenPayload,
   buildSftpConnectionTokenPayload,
   buildMysqlConnectionTokenPayload,
+  buildRedisConnectionTokenPayload,
   buildKokoConnectUrl,
   buildKokoSftpWsUrl,
   buildKokoWsUrl,
   buildOrigin,
   DEFAULT_CONNECT_OPTIONS,
   DEFAULT_MYSQL_CONNECT_OPTIONS,
+  DEFAULT_REDIS_CONNECT_OPTIONS,
   DEFAULT_SFTP_CONNECT_OPTIONS,
   extractAssetTreeNodes,
   JumpServerClient,
@@ -185,6 +187,27 @@ describe('JumpServerClient pure helpers', () => {
       connect_method: 'db_client',
       connect_options: DEFAULT_MYSQL_CONNECT_OPTIONS
     });
+  });
+
+  it('builds Redis db_client connection-token payload with account alias', () => {
+    const redisPayload = buildRedisConnectionTokenPayload({
+      assetId: 'redis-1',
+      account: { id: 'acc-1', alias: '@redis', username: 'redis' }
+    });
+    expect(redisPayload).toEqual({
+      asset: 'redis-1',
+      account: '@redis',
+      protocol: 'redis',
+      input_username: 'redis',
+      input_secret: '',
+      connect_method: 'db_client',
+      connect_options: DEFAULT_REDIS_CONNECT_OPTIONS
+    });
+    expect(buildConnectionTokenPayload({
+      assetId: 'redis-1',
+      account: { id: 'acc-1', alias: '@redis', username: 'redis' },
+      protocol: 'redis'
+    })).toEqual(redisPayload);
   });
 
   it('builds SFTP connection-token payload with the probe-confirmed method', () => {
