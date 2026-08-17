@@ -57,7 +57,7 @@ How it fits together:
 
 | Piece | Role |
 |-------|------|
-| `@at-series/mcp-hub` (npm) | Shared hub process Protocol v1 ï¿?one IDE MCP server named **AT Series** ï¿?`node ~/.at-series/mcp/hub.js` |
+| `@at-series/mcp-hub` (npm) | Shared hub process Protocol v1 â†’ one IDE MCP server named **AT Series** â†’ `node ~/.at-series/mcp/hub.js` |
 | This extension | Local Bridge on `127.0.0.1` (`GET /health`, `GET /tools`, `POST /invoke`), registry publish under `~/.at-series/bridges/<hostApp>/`, syncs packaged `dist/hub.js` on activate |
 | IDE config | `Install/Repair AT Series MCP Config` (Kiro, Cursor, Continue) |
 
