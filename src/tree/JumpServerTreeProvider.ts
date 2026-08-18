@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
 import type { CachedJumpServerAsset, CachedJumpServerNode } from '../config/schema';
 import { AssetTreeItem, GroupTreeItem } from './TreeItems';
+import { t } from '../i18n/t';
+
 
 export interface JumpServerAssetSource {
   listCachedAssets(): Promise<CachedJumpServerAsset[]>;
@@ -59,8 +61,9 @@ export class JumpServerTreeProvider implements vscode.TreeDataProvider<GroupTree
     if (asset.zoneName.trim()) {
       return [asset.zoneName.trim()];
     }
-    return ['Default'];
+    return [t('Default')];
   }
+
 
   private startsWith(path: string[], prefix: string[]): boolean {
     return prefix.every((value, index) => path[index] === value);

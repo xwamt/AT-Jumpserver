@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { formatFileSize } from '../sftp/FileSize';
 import type { JumpServerSftpEntry } from '../sftp/SftpTypes';
+import { t } from '../i18n/t';
 
 export class SftpPlaceholderTreeItem extends vscode.TreeItem {
   constructor(label: string) {
@@ -13,9 +14,10 @@ export class SftpParentDirectoryTreeItem extends vscode.TreeItem {
   constructor() {
     super('..', vscode.TreeItemCollapsibleState.None);
     this.contextValue = 'jumpserverSftpParentDirectory';
-    this.command = { command: 'jumpserverManager.sftp.goUp', title: 'Go Up' };
+    this.command = { command: 'jumpserverManager.sftp.goUp', title: t('Go Up') };
   }
 }
+
 
 export class SftpDirectoryTreeItem extends vscode.TreeItem {
   constructor(

@@ -1,10 +1,11 @@
 {
   "name": "at-jumpserver-terminal",
-  "displayName": "AT JumpServer Terminal",
-  "description": "JumpServer-backed terminal for VS Code.",
-  "version": "0.1.7",
+  "displayName": "%atJumpServer.displayName%",
+  "description": "%atJumpServer.description%",
+  "version": "0.1.8",
   "publisher": "local",
   "icon": "media/at-terminal-icon.png",
+  "l10n": "./l10n",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -22,7 +23,7 @@
       "activitybar": [
         {
           "id": "jumpserverManager",
-          "title": "AT JumpServer",
+          "title": "%atJumpServer.viewsContainer.title%",
           "icon": "media/at-terminal-activity.svg"
         }
       ]
@@ -31,105 +32,106 @@
       "jumpserverManager": [
         {
           "id": "jumpserverManager.assets",
-          "name": "Assets"
+          "name": "%atJumpServer.view.assets.name%"
         },
         {
           "id": "jumpserverManager.sftpFiles",
-          "name": "Files"
+          "name": "%atJumpServer.view.sftpFiles.name%"
         }
       ]
     },
     "commands": [
       {
         "command": "jumpserverManager.configure",
-        "title": "JumpServer: Configure",
+        "title": "%atJumpServer.command.configure.title%",
         "icon": "$(gear)"
       },
       {
         "command": "jumpserverManager.validate",
-        "title": "JumpServer: Validate Account"
+        "title": "%atJumpServer.command.validate.title%"
       },
       {
         "command": "jumpserverManager.refresh",
-        "title": "JumpServer: Refresh Assets",
+        "title": "%atJumpServer.command.refresh.title%",
         "icon": "$(refresh)"
       },
       {
         "command": "jumpserverManager.connect",
-        "title": "JumpServer: Connect"
+        "title": "%atJumpServer.command.connect.title%"
       },
       {
         "command": "jumpserverManager.copyHostIp",
-        "title": "Copy Host IP",
+        "title": "%atJumpServer.command.copyHostIp.title%",
         "icon": "$(copy)"
       },
       {
         "command": "jumpserverManager.sftp.refresh",
-        "title": "JumpServer Files: Refresh",
+        "title": "%atJumpServer.command.sftp.refresh.title%",
         "icon": "$(refresh)"
       },
       {
         "command": "jumpserverManager.sftp.goUp",
-        "title": "JumpServer Files: Go Up",
+        "title": "%atJumpServer.command.sftp.goUp.title%",
         "icon": "$(arrow-up)"
       },
       {
         "command": "jumpserverManager.sftp.upload",
-        "title": "JumpServer Files: Upload",
+        "title": "%atJumpServer.command.sftp.upload.title%",
         "icon": "$(cloud-upload)"
       },
       {
         "command": "jumpserverManager.sftp.download",
-        "title": "JumpServer Files: Download",
+        "title": "%atJumpServer.command.sftp.download.title%",
         "icon": "$(cloud-download)"
       },
       {
         "command": "jumpserverManager.sftp.preview",
-        "title": "JumpServer Files: Preview",
+        "title": "%atJumpServer.command.sftp.preview.title%",
         "icon": "$(open-preview)"
       },
       {
         "command": "jumpserverManager.sftp.edit",
-        "title": "JumpServer Files: Edit",
+        "title": "%atJumpServer.command.sftp.edit.title%",
         "icon": "$(edit)"
       },
       {
         "command": "jumpserverManager.sftp.delete",
-        "title": "JumpServer Files: Delete",
+        "title": "%atJumpServer.command.sftp.delete.title%",
         "icon": "$(trash)"
       },
       {
         "command": "jumpserverManager.sftp.rename",
-        "title": "JumpServer Files: Rename",
+        "title": "%atJumpServer.command.sftp.rename.title%",
         "icon": "$(edit)"
       },
       {
         "command": "jumpserverManager.sftp.newFolder",
-        "title": "JumpServer Files: New Folder",
+        "title": "%atJumpServer.command.sftp.newFolder.title%",
         "icon": "$(new-folder)"
       },
       {
         "command": "jumpserverManager.sftp.copyPath",
-        "title": "JumpServer Files: Copy Path",
+        "title": "%atJumpServer.command.sftp.copyPath.title%",
         "icon": "$(copy)"
       },
       {
         "command": "jumpserverManager.installMcpConfig",
-        "title": "Install/Repair AT Series MCP Config"
+        "title": "%atJumpServer.command.installMcpConfig.title%"
       },
       {
         "command": "jumpserverManager.uninstallAtSeriesMcpConfig",
-        "title": "Uninstall AT Series MCP Config"
+        "title": "%atJumpServer.command.uninstallAtSeriesMcpConfig.title%"
       },
       {
         "command": "jumpserverManager.disconnect",
-        "title": "JumpServer: Disconnect"
+        "title": "%atJumpServer.command.disconnect.title%"
       },
       {
         "command": "jumpserverManager.reconnect",
-        "title": "JumpServer: Reconnect"
+        "title": "%atJumpServer.command.reconnect.title%"
       }
     ],
+
     "menus": {
       "view/title": [
         {
@@ -212,8 +214,9 @@
       ]
     },
     "configuration": {
-      "title": "AT JumpServer Terminal",
+      "title": "%atJumpServer.configuration.title%",
       "properties": {
+
         "jumpserverManager.terminalFontSize": {
           "type": "number",
           "default": 14,

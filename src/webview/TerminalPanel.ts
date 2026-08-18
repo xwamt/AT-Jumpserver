@@ -8,6 +8,7 @@ import type { TerminalContextRegistry } from '../terminal/TerminalContext';
 import { formatError } from '../utils/errors';
 import { showTimedNotification } from '../utils/notifications';
 import { renderWebviewHtml, type WebviewAsset } from './html';
+import { t } from '../i18n/t';
 
 type TerminalMessage =
   | { type: 'ready'; rows: number; cols: number }
@@ -65,12 +66,13 @@ export function renderTerminalBody(settings: TerminalSettings): string {
   return `<main class="terminal-shell">
   <header class="terminal-status terminal-status--connecting" id="status" role="status" aria-live="polite">
     <span class="terminal-status-dot"></span>
-    <span class="terminal-status-text">Starting...</span>
+    <span class="terminal-status-text">${escapeAttr(t('Starting...'))}</span>
     <span class="terminal-host">xterm.js</span>
   </header>
   <section id="terminal" class="terminal-surface" data-scrollback="${escapeAttr(settings.scrollback)}" data-font-size="${escapeAttr(settings.fontSize)}" data-font-family="${escapeAttr(settings.fontFamily)}" data-semantic-highlight="${escapeAttr(settings.semanticHighlight)}"></section>
 </main>`;
 }
+
 
 export function formatTerminalNotice(message: string): string {
   return `\r\n\x1b[31m${message}\x1b[0m\r\n`;
@@ -136,7 +138,7 @@ export class TerminalPanel {
     const connectionKind = getAssetConnectionKind(asset);
     const panel = vscode.window.createWebviewPanel(
       'jumpserverTerminal',
-      `JumpServer ${connectionKindLabel(connectionKind)}: ${asset.name}`,
+      t('JumpServer {kind}: {name}', { kind: connectionKindLabel(connectionKind), name: asset.name }),
       createTerminalViewColumn(),
       {
         enableScripts: true,
@@ -200,7 +202,7 @@ export class TerminalPanel {
   async reconnect(): Promise<void> {
     const generation = ++this.connectionGeneration;
     try {
-      this.postStatus('Reconnecting...');
+      this.postStatus(t('Reconnecting...'));
       this.session.dispose();
       this.session = this.createSession(generation);
       await this.session.connect();
@@ -228,11 +230,12 @@ export class TerminalPanel {
     this.session.dispose();
     this.connected = false;
     this.terminalContext?.markDisconnected(this.terminalId);
-    this.postStatus(reason ?? 'Disconnected');
-    const notice = formatTerminalNotice(reason ?? 'Connection disconnected');
+    this.postStatus(reason ?? t('Disconnected'));
+    const notice = formatTerminalNotice(reason ?? t('Connection disconnected'));
     this.terminalContext?.appendOutput(this.terminalId, notice);
     this.postWebviewMessage({ type: 'output', payload: notice });
   }
+
 
   private bind(): void {
     this.panel.webview.onDidReceiveMessage((message: TerminalMessage) => {
@@ -327,9 +330,12 @@ export class TerminalPanel {
         this.armIdleDisconnect();
         return;
       }
-      const message = `Disconnected after ${this.settings.idleDisconnectMinutes} minute(s) of inactivity.`;
+      const message = t('Disconnected after {minutes} minute(s) of inactivity.', {
+        minutes: this.settings.idleDisconnectMinutes
+      });
       this.disconnect(message);
       void showTimedNotification(message, 'warning');
+
     }, remaining);
   }
 

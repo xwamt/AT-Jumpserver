@@ -25,6 +25,8 @@ coverage/
 docs/*
 !docs/decisions/
 !docs/decisions/**
+!docs/releases/
+!docs/releases/**
 !docs/superpowers/
 !docs/superpowers/**
 # The Continue sample config is user-facing and is asserted by

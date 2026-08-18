@@ -7,6 +7,8 @@ import { formatError } from '../utils/errors';
 import { showTimedNotification } from '../utils/notifications';
 import { remoteBasename } from './RemotePath';
 import type { JumpServerSftpFileStat } from './SftpTypes';
+import { t } from '../i18n/t';
+
 
 export type SftpEditSyncState = 'idle' | 'pending' | 'uploading' | 'conflict' | 'failed';
 export type SftpEditConflictChoice = 'overwrite' | 'cancel';
@@ -85,8 +87,9 @@ export class SftpEditSessionManager {
   async openRemoteFile(remotePath: string): Promise<SftpEditSession> {
     const connectionKey = this.options.sftp.getActiveConnectionKey();
     if (!connectionKey) {
-      throw new Error('No active JumpServer SFTP asset.');
+      throw new Error(t('No active JumpServer SFTP asset.'));
     }
+
 
     const key = buildEditSessionKey(connectionKey, remotePath);
     const existing = this.sessionsByKey.get(key);
@@ -270,7 +273,7 @@ export class SftpEditSessionManager {
   private async failSync(session: SftpEditSession, error: unknown): Promise<void> {
     session.syncState = 'failed';
     session.lastError = formatError(error);
-    this.options.ui.showStatus('failed', `Remote sync failed: ${session.lastError}`);
+    this.options.ui.showStatus('failed', t('Remote sync failed: {error}', { error: session.lastError }));
     await this.options.ui.showError(session.remotePath, session.lastError);
   }
 }
@@ -287,31 +290,34 @@ export function createVscodeSftpEditUi(statusBarItem: vscode.StatusBarItem): Sft
       await vscode.window.showTextDocument(visibleDocument, { preview: false });
     },
     async confirmAutoSync(remotePath) {
+      const enableSyncAction = t('Enable Sync');
       const answer = await vscode.window.showWarningMessage(
-        `Enable automatic sync to ${remotePath} for this edit session?`,
+        t('Enable automatic sync to {remotePath} for this edit session?', { remotePath }),
         { modal: true },
-        'Enable Sync'
+        enableSyncAction
       );
-      return answer === 'Enable Sync';
+      return answer === enableSyncAction;
     },
     async resolveConflict(remotePath) {
+      const overwriteAction = t('Overwrite Remote');
+      const cancelAction = t('Cancel Upload');
       const answer = await vscode.window.showWarningMessage(
-        `Remote file changed: ${remotePath}`,
+        t('Remote file changed: {remotePath}', { remotePath }),
         { modal: true },
-        'Overwrite Remote',
-        'Cancel Upload'
+        overwriteAction,
+        cancelAction
       );
-      return answer === 'Overwrite Remote' ? 'overwrite' : 'cancel';
+      return answer === overwriteAction ? 'overwrite' : 'cancel';
     },
     showStatus(state, message) {
       statusBarItem.text =
         state === 'uploading'
-          ? '$(sync~spin) Uploading remote file...'
+          ? t('$(sync~spin) Uploading remote file...')
           : state === 'idle'
-            ? '$(check) Remote file synced'
+            ? t('$(check) Remote file synced')
             : state === 'conflict'
-              ? '$(warning) Remote file changed'
-              : '$(error) Remote sync failed';
+              ? t('$(warning) Remote file changed')
+              : t('$(error) Remote sync failed');
       statusBarItem.tooltip = message;
       statusBarItem.show();
       if (state === 'idle') {
@@ -319,13 +325,17 @@ export function createVscodeSftpEditUi(statusBarItem: vscode.StatusBarItem): Sft
       }
     },
     async showError(remotePath, message) {
-      showTimedNotification(`Remote sync failed for ${remotePath}: ${message}`, 'error');
+      showTimedNotification(
+        t('Remote sync failed for {remotePath}: {message}', { remotePath, message }),
+        'error'
+      );
     },
     async promptUnsyncedClose() {
       return 'discard';
     }
   };
 }
+
 
 function safeCacheSegment(value: string): string {
   return remoteBasename(value)

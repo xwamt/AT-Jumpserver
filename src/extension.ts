@@ -27,6 +27,7 @@ import { showTimedNotification } from './utils/notifications';
 import { errorMessage } from './utils/redaction';
 import { JumpServerConfigPanel } from './webview/JumpServerConfigPanel';
 import { TerminalPanel } from './webview/TerminalPanel';
+import { t } from './i18n/t';
 
 let extensionCleanup: { dispose(): void } | undefined;
 
@@ -69,8 +70,9 @@ export function activate(context: vscode.ExtensionContext): void {
     terminalContext,
     sftp: sftpManager,
     confirm: async (message) => {
-      const answer = await vscode.window.showWarningMessage(message, { modal: true }, 'Continue');
-      return answer === 'Continue';
+      const continueAction = t('Continue');
+      const answer = await vscode.window.showWarningMessage(message, { modal: true }, continueAction);
+      return answer === continueAction;
     }
   });
   const hubReady = syncPackagedHub(context)
@@ -81,7 +83,9 @@ export function activate(context: vscode.ExtensionContext): void {
     .catch((error) => {
       log.error(`hub sync failed: ${errorMessage(error)}`);
       void showTimedNotification(
-        `AT Series hub sync failed: ${errorMessage(error)}. MCP may not start until Repair succeeds.`,
+        t('AT Series hub sync failed: {message}. MCP may not start until Repair succeeds.', {
+          message: errorMessage(error)
+        }),
         'warning'
       );
       throw error;
@@ -96,7 +100,10 @@ export function activate(context: vscode.ExtensionContext): void {
   });
   void bridgeServer.start().catch((error) => {
     log.error(`MCP bridge failed to start: ${errorMessage(error)}`);
-    void showTimedNotification(`JumpServer MCP bridge failed to start: ${errorMessage(error)}`, 'warning');
+    void showTimedNotification(
+      t('JumpServer MCP bridge failed to start: {message}', { message: errorMessage(error) }),
+      'warning'
+    );
   });
   void hubReady
     .then(() =>
@@ -106,9 +113,13 @@ export function activate(context: vscode.ExtensionContext): void {
       })
     )
     .catch((error) => {
-      void showTimedNotification(`AT Series MCP config could not be updated: ${errorMessage(error)}`, 'warning');
+      void showTimedNotification(
+        t('AT Series MCP config could not be updated: {message}', { message: errorMessage(error) }),
+        'warning'
+      );
     });
   let disposed = false;
+
 
   const cleanup = {
     dispose(): void {
@@ -163,7 +174,7 @@ export function activate(context: vscode.ExtensionContext): void {
         await client.ensureAuthToken();
         // Verifying an account should not drag the whole node tree along.
         await client.getUserProfile();
-        showTimedNotification('JumpServer account verified.');
+        showTimedNotification(t('JumpServer account verified.'));
       });
     }),
     vscode.commands.registerCommand('jumpserverManager.refresh', async () => {
@@ -178,10 +189,15 @@ export function activate(context: vscode.ExtensionContext): void {
         // A silently short list is the failure this replaces, so say it out loud.
         await (inventory.truncated
           ? showTimedNotification(
-              `JumpServer assets refreshed: ${inventory.assets.length} of ${inventory.total} (cache cap reached).`,
+              t('JumpServer assets refreshed: {count} of {total} (cache cap reached).', {
+                count: inventory.assets.length,
+                total: inventory.total
+              }),
               'warning'
             )
-          : showTimedNotification(`JumpServer assets refreshed: ${inventory.assets.length}`));
+          : showTimedNotification(
+              t('JumpServer assets refreshed: {count}', { count: inventory.assets.length })
+            ));
       });
     }),
     vscode.commands.registerCommand('jumpserverManager.connect', async (item?: AssetTreeItem) => {
@@ -191,7 +207,10 @@ export function activate(context: vscode.ExtensionContext): void {
       await runCommand(async () => {
         const kind = getAssetOpenKind(item.asset);
         if (kind === 'unsupported') {
-          showTimedNotification(`Asset type is not supported yet: ${item.asset.name}`, 'error');
+          showTimedNotification(
+            t('Asset type is not supported yet: {name}', { name: item.asset.name }),
+            'error'
+          );
           return;
         }
         const client = await createClient(configManager);
@@ -202,7 +221,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('jumpserverManager.copyHostIp', async (item?: AssetTreeItem) => {
       const address = item?.asset?.address;
       if (!address) {
-        await vscode.window.showWarningMessage('Host IP is not available.');
+        await vscode.window.showWarningMessage(t('Host IP is not available.'));
         return;
       }
       await runCommand(async () => {
@@ -286,8 +305,13 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
       await runCommand(async () => {
-        const answer = await vscode.window.showWarningMessage(`Delete ${item.entry.path}?`, { modal: true }, 'Delete');
-        if (answer !== 'Delete') {
+        const deleteAction = t('Delete');
+        const answer = await vscode.window.showWarningMessage(
+          t('Delete {path}?', { path: item.entry.path }),
+          { modal: true },
+          deleteAction
+        );
+        if (answer !== deleteAction) {
           return;
         }
         await sftpManager.deleteEntry(item.entry);
@@ -299,7 +323,7 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
       await runCommand(async () => {
-        const nextName = await vscode.window.showInputBox({ prompt: 'New name', value: item.entry.name });
+        const nextName = await vscode.window.showInputBox({ prompt: t('New name'), value: item.entry.name });
         if (!nextName || nextName === item.entry.name) {
           return;
         }
@@ -312,7 +336,7 @@ export function activate(context: vscode.ExtensionContext): void {
         if (!await ensureSftpAssetOpen(sftpManager)) {
           return;
         }
-        const name = await vscode.window.showInputBox({ prompt: 'Folder name' });
+        const name = await vscode.window.showInputBox({ prompt: t('Folder name') });
         if (!name) {
           return;
         }
@@ -326,7 +350,7 @@ export function activate(context: vscode.ExtensionContext): void {
       }
       await runCommand(async () => {
         await vscode.env.clipboard.writeText(item.entry.path);
-        showTimedNotification('Remote path copied.');
+        showTimedNotification(t('Remote path copied.'));
       });
     }),
     vscode.commands.registerCommand('jumpserverManager.installMcpConfig', async () => {
@@ -334,7 +358,7 @@ export function activate(context: vscode.ExtensionContext): void {
         try {
           await syncPackagedHub(context);
         } catch (error) {
-          showTimedNotification(`AT Series hub sync failed: ${errorMessage(error)}`, 'error');
+          showTimedNotification(t('AT Series hub sync failed: {message}', { message: errorMessage(error) }), 'error');
           return;
         }
         const result = await ensureAtSeriesConfigForCurrentIde({
@@ -343,12 +367,14 @@ export function activate(context: vscode.ExtensionContext): void {
         });
         if (result) {
           showTimedNotification(
-            result.updated ? 'AT Series MCP config installed/repaired.' : 'AT Series MCP config is already up to date.'
+            result.updated
+              ? t('AT Series MCP config installed/repaired.')
+              : t('AT Series MCP config is already up to date.')
           );
           return;
         }
         showTimedNotification(
-          'No supported IDE MCP config target was detected. Open a workspace to install Continue config.',
+          t('No supported IDE MCP config target was detected. Open a workspace to install Continue config.'),
           'warning'
         );
       });
@@ -360,15 +386,15 @@ export function activate(context: vscode.ExtensionContext): void {
           workspaceFolder: currentWorkspaceFolder()
         });
         if (result?.removed) {
-          showTimedNotification('AT Series MCP config uninstalled.');
+          showTimedNotification(t('AT Series MCP config uninstalled.'));
           return;
         }
         if (result) {
-          showTimedNotification('AT Series MCP config was not present.');
+          showTimedNotification(t('AT Series MCP config was not present.'));
           return;
         }
         showTimedNotification(
-          'No supported IDE MCP config target was detected. Open a workspace to uninstall Continue config.',
+          t('No supported IDE MCP config target was detected. Open a workspace to uninstall Continue config.'),
           'warning'
         );
       });
@@ -430,7 +456,10 @@ async function tryOpenSftpFiles(
     if (notifyErrors) {
       throw error;
     }
-    showTimedNotification(`Files are not available for ${asset.name}: ${errorMessage(error)}`, 'warning');
+    showTimedNotification(
+      t('Files are not available for {name}: {message}', { name: asset.name, message: errorMessage(error) }),
+      'warning'
+    );
   }
 }
 
@@ -438,7 +467,7 @@ async function ensureSftpAssetOpen(manager: JumpServerSftpManager): Promise<bool
   if (manager.getState().kind !== 'none') {
     return true;
   }
-  showTimedNotification('Open files from a JumpServer asset first.', 'warning');
+  showTimedNotification(t('Open files from a JumpServer asset first.'), 'warning');
   return false;
 }
 
@@ -447,7 +476,7 @@ async function ensurePreviewEditAllowed(
   item: SftpFileTreeItem
 ): Promise<void> {
   if (!await ensureSftpAssetOpen(manager)) {
-    throw new Error('Open files from a JumpServer asset first.');
+    throw new Error(t('Open files from a JumpServer asset first.'));
   }
   const stat = item.entry.size === undefined
     ? await manager.stat(item.entry.path)
@@ -471,9 +500,10 @@ function getSftpTargetDirectory(
   if (state.kind === 'active' || state.kind === 'disconnected') {
     return state.rootPath;
   }
-  throw new Error('No active JumpServer SFTP asset.');
+  throw new Error(t('No active JumpServer SFTP asset.'));
 }
 
 function localBasename(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).pop() || remoteBasename(path);
 }
+

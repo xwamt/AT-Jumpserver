@@ -7,6 +7,7 @@ import {
   SftpParentDirectoryTreeItem,
   SftpPlaceholderTreeItem
 } from './SftpTreeItems';
+import { t } from '../i18n/t';
 
 export interface SftpTreeSource {
   getState(): JumpServerSftpTreeState;
@@ -32,8 +33,9 @@ export class SftpTreeProvider implements vscode.TreeDataProvider<SftpTreeNode> {
   async getChildren(element?: SftpTreeNode): Promise<SftpTreeNode[]> {
     const state = this.source.getState();
     if (state.kind === 'none') {
-      return element ? [] : [new SftpPlaceholderTreeItem('Open files from a JumpServer asset')];
+      return element ? [] : [new SftpPlaceholderTreeItem(t('Open files from a JumpServer asset'))];
     }
+
     if (state.kind === 'disconnected') {
       return element ? [] : state.entries.map((entry) => this.toTreeItem(entry, true));
     }

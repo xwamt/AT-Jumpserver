@@ -1,3 +1,5 @@
+import { t } from '../i18n/t';
+
 export const DEFAULT_SFTP_EDIT_MAX_BYTES = 1024 * 1024;
 
 export class SftpFileGuardError extends Error {
@@ -17,12 +19,22 @@ export interface EditableFileCheck {
 export function assertTextFileEditable(input: EditableFileCheck): void {
   const maxBytes = input.maxBytes ?? DEFAULT_SFTP_EDIT_MAX_BYTES;
   if (input.size !== undefined && input.size > maxBytes) {
-    throw new SftpFileGuardError(`Remote file is larger than ${formatBytes(maxBytes)}: ${input.remotePath}. Use Download instead.`);
+    throw new SftpFileGuardError(
+      t('Remote file is larger than {size}: {path}. Use Download instead.', {
+        size: formatBytes(maxBytes),
+        path: input.remotePath
+      })
+    );
   }
   if (input.sample && isLikelyBinary(input.sample)) {
-    throw new SftpFileGuardError(`Remote file appears to be binary: ${input.remotePath}. Use Download instead.`);
+    throw new SftpFileGuardError(
+      t('Remote file appears to be binary: {path}. Use Download instead.', {
+        path: input.remotePath
+      })
+    );
   }
 }
+
 
 export function isLikelyBinary(sample: Buffer): boolean {
   if (sample.length === 0) {

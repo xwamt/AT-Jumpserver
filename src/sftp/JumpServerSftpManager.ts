@@ -3,6 +3,8 @@ import type { CachedJumpServerAsset } from '../config/schema';
 import { dirname } from './RemotePath';
 import type { JumpServerSftpEntry, JumpServerSftpFileStat } from './SftpTypes';
 import { TransferService, type TransferReporter } from './TransferService';
+import { t } from '../i18n/t';
+
 
 export interface JumpServerSftpSessionLike {
   connect(): Promise<void>;
@@ -147,7 +149,7 @@ export class JumpServerSftpManager {
   async changeToParentDirectory(): Promise<string> {
     const state = this.getState();
     if (state.kind !== 'active') {
-      throw new Error('No active JumpServer SFTP asset.');
+      throw new Error(t('No active JumpServer SFTP asset.'));
     }
     return await this.changeDirectory(dirname(state.rootPath));
   }
@@ -165,14 +167,14 @@ export class JumpServerSftpManager {
   }
 
   async uploadFile(localPath: string, remotePath: string, connectionKey?: string): Promise<void> {
-    await this.transfers.run(`Upload ${remotePath}`, async () => {
+    await this.transfers.run(t('Upload {path}', { path: remotePath }), async () => {
       const bytes = await readFile(localPath);
       await (await this.ensureSession(this.requireConnection(connectionKey))).uploadBytes(remotePath, bytes);
     });
   }
 
   async downloadFile(remotePath: string, localPath: string, isDir = false, connectionKey?: string): Promise<void> {
-    await this.transfers.run(`Download ${remotePath}`, async () => {
+    await this.transfers.run(t('Download {path}', { path: remotePath }), async () => {
       const bytes = await (await this.ensureSession(this.requireConnection(connectionKey))).downloadFile(remotePath, isDir);
       await writeFile(localPath, bytes);
     });
@@ -201,10 +203,11 @@ export class JumpServerSftpManager {
   private requireConnection(connectionKey?: string): ManagedConnection {
     const active = connectionKey ? this.connections.get(connectionKey) : this.getActiveConnection();
     if (!active) {
-      throw new Error('No active JumpServer SFTP asset.');
+      throw new Error(t('No active JumpServer SFTP asset.'));
     }
     return active;
   }
+
 
   private async ensureSession(connection: ManagedConnection): Promise<JumpServerSftpSessionLike> {
     if (connection.session) {

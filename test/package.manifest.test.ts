@@ -7,8 +7,8 @@ const manifest = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 
 describe('AT JumpServer Terminal manifest', () => {
   it('declares JumpServer terminal, SFTP file commands, and MCP install command', () => {
     expect(manifest.name).toBe('at-jumpserver-terminal');
-    expect(manifest.displayName).toBe('AT JumpServer Terminal');
-    expect(manifest.version).toBe('0.1.7');
+    expect(manifest.displayName).toBe('%atJumpServer.displayName%');
+    expect(manifest.version).toBe('0.1.8');
     expect(manifest.contributes.viewsContainers.activitybar[0].id).toBe('jumpserverManager');
     expect(manifest.contributes.viewsContainers.activitybar[0].icon).toBe('media/at-terminal-activity.svg');
 
@@ -35,7 +35,7 @@ describe('AT JumpServer Terminal manifest', () => {
       'jumpserverManager.reconnect'
     ]);
     expect(manifest.contributes.views.jumpserverManager).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'jumpserverManager.sftpFiles', name: 'Files' })
+      expect.objectContaining({ id: 'jumpserverManager.sftpFiles', name: '%atJumpServer.view.sftpFiles.name%' })
     ]));
     expect(manifest.contributes.commands).toEqual(expect.arrayContaining([
       expect.objectContaining({ command: 'jumpserverManager.sftp.upload' }),
@@ -63,14 +63,15 @@ describe('AT JumpServer Terminal manifest', () => {
     expect(manifest.contributes.commands).toEqual(expect.arrayContaining([
       expect.objectContaining({
         command: 'jumpserverManager.installMcpConfig',
-        title: 'Install/Repair AT Series MCP Config'
+        title: '%atJumpServer.command.installMcpConfig.title%'
       }),
       expect.objectContaining({
         command: 'jumpserverManager.uninstallAtSeriesMcpConfig',
-        title: 'Uninstall AT Series MCP Config'
+        title: '%atJumpServer.command.uninstallAtSeriesMcpConfig.title%'
       })
     ]));
   });
+
 
   it('uses icon-only actions in the JumpServer view title', () => {
     const commandsById = new Map(manifest.contributes.commands.map((command: { command: string; icon?: unknown; title: string }) => [command.command, command]));
@@ -104,10 +105,11 @@ describe('AT JumpServer Terminal manifest', () => {
     expect(manifest.contributes.commands).toEqual(expect.arrayContaining([
       expect.objectContaining({
         command: 'jumpserverManager.copyHostIp',
-        title: 'Copy Host IP',
+        title: '%atJumpServer.command.copyHostIp.title%',
         icon: '$(copy)'
       })
     ]));
+
     const copyHostIpMenu = manifest.contributes.menus['view/item/context'].find(
       (item: { command: string }) => item.command === 'jumpserverManager.copyHostIp'
     );

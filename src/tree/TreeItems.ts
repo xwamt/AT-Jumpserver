@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import type { CachedJumpServerAsset } from '../config/schema';
 import { getAssetConnectionKind, isDatabaseAsset, type JumpServerConnectionKind } from '../jumpserver/connectionTypes';
+import { t } from '../i18n/t';
 
 export class GroupTreeItem extends vscode.TreeItem {
   readonly contextValue = 'jumpserverGroup';
@@ -9,8 +10,8 @@ export class GroupTreeItem extends vscode.TreeItem {
     readonly path: string[],
     collapsibleState = vscode.TreeItemCollapsibleState.Collapsed
   ) {
-    super(path.at(-1) || 'Default', collapsibleState);
-    this.label = path.at(-1) || 'Default';
+    super(path.at(-1) || t('Default'), collapsibleState);
+    this.label = path.at(-1) || t('Default');
     this.id = `group:${path.join('/') || 'Default'}`;
   }
 }
@@ -26,11 +27,12 @@ export class AssetTreeItem extends vscode.TreeItem {
     this.tooltip = `${asset.name}${asset.address ? ` (${asset.address})` : ''}${kind === 'mysql' ? ' - MySQL' : kind === 'redis' ? ' - Redis' : ''}`;
     this.command = {
       command: 'jumpserverManager.connect',
-      title: 'Connect',
+      title: t('Connect'),
       arguments: [this]
     };
   }
 }
+
 
 export const getAssetOpenKind = getAssetConnectionKind;
 
