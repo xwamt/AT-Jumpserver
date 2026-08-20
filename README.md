@@ -34,8 +34,8 @@ AT JumpServer Terminal is a VS Code / Cursor extension for opening browser-style
 
 1. Open the AT JumpServer activity bar.
 2. Run `JumpServer: Configure`.
-3. Enter JumpServer base URL, username, password, optional org ID, and TLS verification.
-4. Run `JumpServer: Validate Account`.
+3. Enter JumpServer base URL, username, password, and TLS verification. Org ID can stay empty.
+4. Run `JumpServer: Validate Account`. If the account can see more than one organization, pick one; the Default organization is saved automatically only on a reserved single-org deployment. An empty org ID with more than one organization prompts on Validate and Refresh rather than silently mixing inventories.
 5. Run `JumpServer: Refresh Assets`.
 6. Click an SSH, MySQL, or Redis asset to connect in a terminal.
 7. Connect to an SSH asset, then use the Files view for the terminal-backed SFTP session.
