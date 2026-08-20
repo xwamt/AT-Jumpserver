@@ -15,6 +15,10 @@ describe('AT JumpServer Terminal manifest', () => {
     const commandIds = manifest.contributes.commands.map((command: { command: string }) => command.command);
     expect(commandIds).toEqual([
       'jumpserverManager.configure',
+      'jumpserverManager.addBastion',
+      'jumpserverManager.removeBastion',
+      'jumpserverManager.refreshBastion',
+      'jumpserverManager.editBastion',
       'jumpserverManager.validate',
       'jumpserverManager.refresh',
       'jumpserverManager.connect',
@@ -124,7 +128,8 @@ describe('AT JumpServer Terminal manifest', () => {
 
   it('does not show a standalone Open Files action on assets', () => {
     const assetMenus = manifest.contributes.menus['view/item/context'].filter(
-      (item: { when: string }) => item.when.includes('view == jumpserverManager.assets')
+      (item: { when: string }) =>
+        item.when.includes('view == jumpserverManager.assets') && !item.when.includes('jumpserverBastion')
     );
 
     expect(assetMenus.map((item: { command: string }) => item.command)).toEqual([
@@ -132,6 +137,19 @@ describe('AT JumpServer Terminal manifest', () => {
       'jumpserverManager.copyHostIp'
     ]);
     expect(JSON.stringify(manifest)).not.toContain('jumpserverManager.sftp.open');
+  });
+
+  it('shows bastion actions when the tree item is a JumpServer bastion', () => {
+    const bastionMenus = manifest.contributes.menus['view/item/context'].filter(
+      (item: { when: string }) => item.when.includes('viewItem == jumpserverBastion')
+    );
+
+    expect(bastionMenus.map((item: { command: string }) => item.command)).toEqual([
+      'jumpserverManager.refreshBastion',
+      'jumpserverManager.editBastion',
+      'jumpserverManager.removeBastion'
+    ]);
+    expect(bastionMenus.every((item: { when: string }) => item.when.includes('view == jumpserverManager.assets'))).toBe(true);
   });
 
   it('keeps SFTP file open actions out of inline tree buttons', () => {

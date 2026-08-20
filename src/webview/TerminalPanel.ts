@@ -177,6 +177,18 @@ export class TerminalPanel {
     TerminalPanel.active = undefined;
   }
 
+  static disposeSessionsForBastion(bastionId: string): string[] {
+    const terminalIds: string[] = [];
+    for (const terminal of Array.from(TerminalPanel.panels)) {
+      if (terminal.asset.bastionId !== bastionId) {
+        continue;
+      }
+      terminalIds.push(terminal.terminalId);
+      terminal.panel.dispose();
+    }
+    return terminalIds;
+  }
+
   async connect(): Promise<void> {
     const generation = this.connectionGeneration;
     try {

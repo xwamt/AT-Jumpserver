@@ -4,7 +4,12 @@ import * as vscode from 'vscode';
 const terminalPanelMock = vi.hoisted(() => ({
   open: vi.fn(),
   getActive: vi.fn(),
-  disconnectAll: vi.fn()
+  disconnectAll: vi.fn(),
+  disposeSessionsForBastion: vi.fn((): string[] => [])
+}));
+
+const configPanelMock = vi.hoisted(() => ({
+  open: vi.fn()
 }));
 
 const notificationsMock = vi.hoisted(() => ({
@@ -72,6 +77,10 @@ vi.mock('../../src/webview/TerminalPanel', () => ({
   TerminalPanel: terminalPanelMock
 }));
 
+vi.mock('../../src/webview/JumpServerConfigPanel', () => ({
+  JumpServerConfigPanel: configPanelMock
+}));
+
 vi.mock('../../src/utils/notifications', () => ({
   showTimedNotification: notificationsMock.showTimedNotification
 }));
@@ -93,7 +102,88 @@ vi.mock('../../src/mcp/McpConfigInstaller', () => ({
 }));
 
 import { activate, deactivate } from '../../src/extension';
+import type { CachedJumpServerAsset, JumpServerBastion } from '../../src/config/schema';
+import { BastionTreeItem } from '../../src/tree/BastionTreeItem';
 
+const PROD_BASTION_ID = '11111111-1111-1111-1111-111111111111';
+const TEST_BASTION_ID = '22222222-2222-2222-2222-222222222222';
+
+function prodBastion(overrides: Partial<JumpServerBastion> = {}): JumpServerBastion {
+  return {
+    id: PROD_BASTION_ID,
+    name: 'Prod JMS',
+    baseUrl: 'https://prod.example.com',
+    orgId: '',
+    username: 'alan',
+    verifyTls: true,
+    updatedAt: 1,
+    ...overrides
+  };
+}
+
+function testBastion(overrides: Partial<JumpServerBastion> = {}): JumpServerBastion {
+  return {
+    id: TEST_BASTION_ID,
+    name: 'Test JMS',
+    baseUrl: 'https://test.example.com',
+    orgId: '',
+    username: 'alan',
+    verifyTls: true,
+    updatedAt: 1,
+    ...overrides
+  };
+}
+
+function contextWithBastions(
+  bastions: JumpServerBastion[],
+  passwords: Record<string, string> = Object.fromEntries(bastions.map((bastion) => [bastion.id, 'secret']))
+): vscode.ExtensionContext {
+  const data = new Map<string, unknown>([
+    ['jumpserverManager.bastions', bastions]
+  ]);
+  return {
+    globalState: {
+      get: vi.fn((key, fallback) => data.has(key) ? data.get(key) : fallback),
+      update: vi.fn(async (key, value) => {
+        data.set(key, value);
+      })
+    },
+    secrets: {
+      get: vi.fn(async (key: string) => {
+        const prefix = 'jumpserverManager.password.';
+        if (key.startsWith(prefix)) {
+          return passwords[key.slice(prefix.length)];
+        }
+        return undefined;
+      }),
+      store: vi.fn(),
+      delete: vi.fn()
+    },
+    subscriptions: [],
+    extensionUri: vscode.Uri.file('extension-root')
+  } as unknown as vscode.ExtensionContext;
+}
+
+function emptyContext(): vscode.ExtensionContext {
+  return contextWithBastions([]);
+}
+
+function sshAsset(overrides: Partial<CachedJumpServerAsset> = {}): CachedJumpServerAsset {
+  return {
+    id: 'server-1',
+    name: 'uat-service',
+    address: '10.0.0.11',
+    platform: 'Linux',
+    category: 'host',
+    type: 'server',
+    zoneName: '',
+    nodePath: [],
+    protocolNames: ['ssh'],
+    bastionId: PROD_BASTION_ID,
+    raw: {},
+    ...overrides
+  };
+}
 
 function contextWithSettings(orgId = ''): vscode.ExtensionContext {
   const data = new Map<string, unknown>([
@@ -156,6 +246,9 @@ beforeEach(() => {
   terminalPanelMock.open.mockReturnValue({ getTerminalId: () => 'terminal-opened-1' });
   terminalPanelMock.getActive.mockReturnValue(undefined);
   terminalPanelMock.disconnectAll.mockClear();
+  terminalPanelMock.disposeSessionsForBastion.mockReset();
+  terminalPanelMock.disposeSessionsForBastion.mockReturnValue([]);
+  configPanelMock.open.mockReset();
   notificationsMock.showTimedNotification.mockResolvedValue(undefined);
   sftpManagerMock.openAsset.mockImplementation(async (asset) => {
     sftpManagerMock.getState.mockReturnValue({ kind: 'active', asset, rootPath: '/' });
@@ -225,6 +318,10 @@ describe('extension command wiring', () => {
     expect(vscode.window.createTreeView).toHaveBeenCalledWith('jumpserverManager.assets', expect.any(Object));
     expect(vscode.window.createTreeView).toHaveBeenCalledWith('jumpserverManager.sftpFiles', expect.any(Object));
     expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.configure', expect.any(Function));
+    expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.addBastion', expect.any(Function));
+    expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.removeBastion', expect.any(Function));
+    expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.refreshBastion', expect.any(Function));
+    expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.editBastion', expect.any(Function));
     expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.validate', expect.any(Function));
     expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.refresh', expect.any(Function));
     expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.connect', expect.any(Function));
@@ -322,23 +419,10 @@ describe('extension command wiring', () => {
   });
 
   it('automatically opens the SFTP file tree when connecting an SSH asset', async () => {
-    const context = contextWithSettings();
+    const context = contextWithBastions([prodBastion()]);
     activate(context);
     const connectCommand = registeredCommand('jumpserverManager.connect');
-    const item = {
-      asset: {
-        id: 'server-1',
-        name: 'uat-service',
-        address: '10.0.0.11',
-        platform: 'Linux',
-        category: 'host',
-        type: 'server',
-        zoneName: '',
-        nodePath: [],
-        protocolNames: ['ssh'],
-        bastionId: 'b1', raw: {}
-      }
-    };
+    const item = { asset: sshAsset() };
 
     await connectCommand(item);
 
@@ -347,22 +431,11 @@ describe('extension command wiring', () => {
   });
 
   it('switches the SFTP file tree when the active terminal changes', async () => {
-    const context = contextWithSettings();
+    const context = contextWithBastions([prodBastion()]);
     activate(context);
     const connectCommand = registeredCommand('jumpserverManager.connect');
     await connectCommand({
-      asset: {
-        id: 'asset-1',
-        name: 'asset-1',
-        address: '',
-        platform: 'Linux',
-        category: 'host',
-        type: 'server',
-        zoneName: '',
-        nodePath: [],
-        protocolNames: ['ssh'],
-        bastionId: 'b1', raw: {}
-      }
+      asset: sshAsset({ id: 'asset-1', name: 'asset-1', address: '' })
     });
     const registry = terminalPanelMock.open.mock.calls[0]?.[3];
 
@@ -376,22 +449,11 @@ describe('extension command wiring', () => {
   });
 
   it('removes only the closed terminal SFTP connection', async () => {
-    const context = contextWithSettings();
+    const context = contextWithBastions([prodBastion()]);
     activate(context);
     const connectCommand = registeredCommand('jumpserverManager.connect');
     await connectCommand({
-      asset: {
-        id: 'asset-1',
-        name: 'asset-1',
-        address: '',
-        platform: 'Linux',
-        category: 'host',
-        type: 'server',
-        zoneName: '',
-        nodePath: [],
-        protocolNames: ['ssh'],
-        bastionId: 'b1', raw: {}
-      }
+      asset: sshAsset({ id: 'asset-1', name: 'asset-1', address: '' })
     });
     const registry = terminalPanelMock.open.mock.calls[0]?.[3];
 
@@ -477,7 +539,7 @@ describe('extension command wiring', () => {
 
     await registeredCommand('jumpserverManager.refresh')();
 
-    expect(notificationsMock.showTimedNotification).toHaveBeenCalledWith('JumpServer assets refreshed: 640');
+    expect(notificationsMock.showTimedNotification).toHaveBeenCalledWith('JumpServer assets refreshed: 1 succeeded.');
   });
 
   it('says so out loud when the safety cap stopped the sync short', async () => {
@@ -487,7 +549,7 @@ describe('extension command wiring', () => {
     await registeredCommand('jumpserverManager.refresh')();
 
     expect(notificationsMock.showTimedNotification).toHaveBeenCalledWith(
-      'JumpServer assets refreshed: 0 of 24000 (cache cap reached).',
+      'JumpServer assets refreshed: 1 succeeded. JumpServer assets refreshed: 0 of 24000 (cache cap reached).',
       'warning'
     );
   });
@@ -596,22 +658,19 @@ describe('extension command wiring', () => {
   });
 
   it('opens the unified terminal panel for MySQL assets', async () => {
-    const context = contextWithSettings();
+    const context = contextWithBastions([prodBastion()]);
     activate(context);
     const connectCommand = registeredCommand('jumpserverManager.connect');
     const item = {
-      asset: {
+      asset: sshAsset({
         id: 'mysql-1',
         name: 'mysql-1',
         address: 'db.example.com',
         platform: 'MySQL',
         category: 'database',
         type: 'mysql',
-        zoneName: '',
-        nodePath: [],
-        protocolNames: ['mysql'],
-        bastionId: 'b1', raw: {}
-      }
+        protocolNames: ['mysql']
+      })
     };
 
     await connectCommand(item);
@@ -621,23 +680,10 @@ describe('extension command wiring', () => {
   });
 
   it('opens SSH server assets even when cached protocol names are missing', async () => {
-    const context = contextWithSettings();
+    const context = contextWithBastions([prodBastion()]);
     activate(context);
     const connectCommand = registeredCommand('jumpserverManager.connect');
-    const item = {
-      asset: {
-        id: 'server-1',
-        name: 'uat-service',
-        address: '10.0.0.11',
-        platform: 'Linux',
-        category: 'host',
-        type: 'server',
-        zoneName: '',
-        nodePath: [],
-        protocolNames: [],
-        bastionId: 'b1', raw: {}
-      }
-    };
+    const item = { asset: sshAsset({ protocolNames: [] }) };
 
     await connectCommand(item);
 
@@ -646,22 +692,19 @@ describe('extension command wiring', () => {
   });
 
   it('opens the unified terminal panel for Redis assets', async () => {
-    const context = contextWithSettings();
+    const context = contextWithBastions([prodBastion()]);
     activate(context);
     const connectCommand = registeredCommand('jumpserverManager.connect');
     const item = {
-      asset: {
+      asset: sshAsset({
         id: 'redis-1',
         name: 'redis-1',
         address: 'redis.example.com',
         platform: 'Redis6+',
         category: 'database',
         type: 'redis',
-        zoneName: '',
-        nodePath: [],
-        protocolNames: ['redis'],
-        bastionId: 'b1', raw: {}
-      }
+        protocolNames: ['redis']
+      })
     };
 
     await connectCommand(item);
@@ -671,27 +714,120 @@ describe('extension command wiring', () => {
   });
 
   it('keeps unsupported assets visible but shows an unsupported message instead of opening a terminal', async () => {
-    const context = contextWithSettings();
+    const context = contextWithBastions([prodBastion()]);
     activate(context);
     const connectCommand = registeredCommand('jumpserverManager.connect');
     const item = {
-      asset: {
+      asset: sshAsset({
         id: 'pg-1',
         name: 'pg-1',
         address: 'pg.example.com',
         platform: 'PostgreSQL',
         category: 'database',
         type: 'postgresql',
-        zoneName: '',
-        nodePath: [],
-        protocolNames: [],
-        bastionId: 'b1', raw: {}
-      }
+        protocolNames: []
+      })
     };
 
     await connectCommand(item);
 
     expect(terminalPanelMock.open).not.toHaveBeenCalled();
     expect(notificationsMock.showTimedNotification).toHaveBeenCalledWith('Asset type is not supported yet: pg-1', 'error');
+  });
+
+  it('opens the add bastion panel when none are configured', async () => {
+    activate(emptyContext());
+
+    await registeredCommand('jumpserverManager.configure')();
+
+    expect(configPanelMock.open).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      { mode: 'add' }
+    );
+    expect(vscode.window.showQuickPick).not.toHaveBeenCalled();
+  });
+
+  it('refreshes every configured bastion independently', async () => {
+    activate(contextWithBastions([prodBastion(), testBastion()]));
+
+    await registeredCommand('jumpserverManager.refresh')();
+
+    expect(jumpServerClientMock.JumpServerClient).toHaveBeenCalledTimes(2);
+    expect(jumpServerClientMock.JumpServerClient.mock.calls.map(([settings]) => settings.baseUrl)).toEqual([
+      'https://prod.example.com',
+      'https://test.example.com'
+    ]);
+    expect(jumpServerClientMock.listAllAssets).toHaveBeenCalledTimes(2);
+  });
+
+  it('refreshes only the bastion from the tree item argument', async () => {
+    activate(contextWithBastions([prodBastion(), testBastion()]));
+
+    await registeredCommand('jumpserverManager.refreshBastion')(new BastionTreeItem(prodBastion()));
+
+    expect(jumpServerClientMock.JumpServerClient).toHaveBeenCalledTimes(1);
+    expect(jumpServerClientMock.JumpServerClient.mock.calls[0][0].baseUrl).toBe('https://prod.example.com');
+    expect(jumpServerClientMock.listAllAssets).toHaveBeenCalledTimes(1);
+  });
+
+  it('removes the picked bastion after confirm and disposes its sessions', async () => {
+    const context = contextWithBastions([prodBastion(), testBastion()]);
+    terminalPanelMock.disposeSessionsForBastion.mockReturnValue(['term-a', 'term-b']);
+    vi.mocked(vscode.window.showQuickPick).mockResolvedValueOnce({
+      label: 'Test JMS',
+      description: 'https://test.example.com',
+      bastionId: TEST_BASTION_ID
+    } as never);
+    vi.mocked(vscode.window.showWarningMessage).mockResolvedValueOnce('Delete' as never);
+
+    activate(context);
+    await registeredCommand('jumpserverManager.removeBastion')();
+
+    expect(context.globalState.get('jumpserverManager.bastions', [])).toHaveLength(1);
+    expect(context.globalState.get<JumpServerBastion[]>('jumpserverManager.bastions', [])[0]?.id).toBe(PROD_BASTION_ID);
+    expect(terminalPanelMock.disposeSessionsForBastion).toHaveBeenCalledWith(TEST_BASTION_ID);
+    expect(sftpManagerMock.removeTerminal).toHaveBeenCalledWith('term-a');
+    expect(sftpManagerMock.removeTerminal).toHaveBeenCalledWith('term-b');
+  });
+
+  it('validates only the picked bastion when several are configured', async () => {
+    const context = contextWithBastions([prodBastion(), testBastion()]);
+    let healthChecksDuringPick = 0;
+    vi.mocked(vscode.window.showQuickPick).mockImplementationOnce(async () => {
+      healthChecksDuringPick = jumpServerClientMock.healthCheck.mock.calls.length;
+      return {
+        label: 'Test JMS',
+        description: 'https://test.example.com',
+        bastionId: TEST_BASTION_ID
+      } as never;
+    });
+
+    activate(context);
+    await registeredCommand('jumpserverManager.validate')();
+
+    expect(healthChecksDuringPick).toBe(0);
+    expect(jumpServerClientMock.healthCheck).toHaveBeenCalledTimes(1);
+    expect(jumpServerClientMock.JumpServerClient).toHaveBeenCalledTimes(1);
+    expect(jumpServerClientMock.JumpServerClient.mock.calls[0][0].baseUrl).toBe('https://test.example.com');
+    const saved = context.globalState.get<JumpServerBastion[]>('jumpserverManager.bastions', []);
+    expect(saved.find((bastion) => bastion.id === PROD_BASTION_ID)?.orgId).toBe('');
+    expect(saved.find((bastion) => bastion.id === TEST_BASTION_ID)?.orgId).toBe(
+      '00000000-0000-0000-0000-000000000002'
+    );
+  });
+
+  it('connects using the client for the asset bastion', async () => {
+    activate(contextWithBastions([prodBastion(), testBastion()]));
+    const connectCommand = registeredCommand('jumpserverManager.connect');
+
+    await connectCommand({ asset: sshAsset({ id: 'prod-host', name: 'prod-host' }) });
+    await connectCommand({
+      asset: sshAsset({ id: 'test-host', name: 'test-host', bastionId: TEST_BASTION_ID })
+    });
+
+    expect(jumpServerClientMock.JumpServerClient).toHaveBeenCalledTimes(2);
+    expect(jumpServerClientMock.JumpServerClient.mock.calls[0][0].baseUrl).toBe('https://prod.example.com');
+    expect(jumpServerClientMock.JumpServerClient.mock.calls[1][0].baseUrl).toBe('https://test.example.com');
   });
 });

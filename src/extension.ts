@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { JumpServerAgentToolService } from './agent/JumpServerAgentToolService';
 import { JumpServerConfigManager } from './config/JumpServerConfigManager';
-import type { CachedJumpServerAsset } from './config/schema';
+import type { CachedJumpServerAsset, JumpServerBastion } from './config/schema';
 import { assetPathsFromNodes, JumpServerClient } from './jumpserver/JumpServerClient';
 import { resolveOrgContext } from './jumpserver/orgContext';
 import { BridgeServer } from './mcp/BridgeServer';
@@ -45,7 +45,10 @@ export function activate(context: vscode.ExtensionContext): void {
   const terminalContext = new TerminalContextRegistry();
   const treeProvider = new JumpServerTreeProvider(configManager);
   const sftpManager = new JumpServerSftpManager({
-    createSession: async (asset) => new JumpServerSftpSession({ asset, client: await createClient(configManager) }),
+    createSession: async (asset) => new JumpServerSftpSession({
+      asset,
+      client: await createClient(configManager, asset.bastionId)
+    }),
     reporter: new VscodeTransferReporter()
   });
   const sftpTreeProvider = new SftpTreeProvider({
@@ -166,17 +169,90 @@ export function activate(context: vscode.ExtensionContext): void {
       void sftpPreviewStore.deletePreviewFilesForClosedTabs(event.closed);
     }),
     cleanup,
-    vscode.commands.registerCommand('jumpserverManager.configure', () => {
+    vscode.commands.registerCommand('jumpserverManager.configure', async () => {
+      await runCommand(async () => {
+        const bastions = await configManager.listBastions();
+        if (bastions.length === 0) {
+          await JumpServerConfigPanel.open(context, configManager, { mode: 'add' });
+          return;
+        }
+        const picked = await vscode.window.showQuickPick(
+          [
+            ...bastions.map((bastion) => ({
+              label: bastion.name,
+              description: bastion.baseUrl,
+              bastionId: bastion.id
+            })),
+            { label: t('Add JumpServer'), description: '', bastionId: '' }
+          ],
+          { title: t('Select a JumpServer bastion'), ignoreFocusOut: true }
+        );
+        if (!picked) {
+          return;
+        }
+        await JumpServerConfigPanel.open(
+          context,
+          configManager,
+          picked.bastionId === '' ? { mode: 'add' } : { mode: 'edit', bastionId: picked.bastionId }
+        );
+      });
+    }),
+    vscode.commands.registerCommand('jumpserverManager.addBastion', () => {
       void JumpServerConfigPanel.open(context, configManager, { mode: 'add' });
     }),
-    vscode.commands.registerCommand('jumpserverManager.validate', async () => {
+    vscode.commands.registerCommand('jumpserverManager.editBastion', async (item?: BastionCommandArg) => {
       await runCommand(async () => {
-        const client = await createClient(configManager);
+        const bastion = await pickBastion(configManager, item);
+        if (!bastion) {
+          return;
+        }
+        await JumpServerConfigPanel.open(context, configManager, { mode: 'edit', bastionId: bastion.id });
+      });
+    }),
+    vscode.commands.registerCommand('jumpserverManager.removeBastion', async (item?: BastionCommandArg) => {
+      await runCommand(async () => {
+        const bastion = await pickBastion(configManager, item);
+        if (!bastion) {
+          return;
+        }
+        const deleteAction = t('Delete');
+        const answer = await vscode.window.showWarningMessage(
+          t('Delete JumpServer bastion {name}?', { name: bastion.name }),
+          { modal: true },
+          deleteAction
+        );
+        if (answer !== deleteAction) {
+          return;
+        }
+        await configManager.deleteBastion(bastion.id);
+        for (const terminalId of TerminalPanel.disposeSessionsForBastion(bastion.id)) {
+          sftpManager.removeTerminal(terminalId);
+        }
+        treeProvider.refresh();
+      });
+    }),
+    vscode.commands.registerCommand('jumpserverManager.refreshBastion', async (item?: BastionCommandArg) => {
+      await runCommand(async () => {
+        const bastion = await pickBastion(configManager, item);
+        if (!bastion) {
+          return;
+        }
+        const result = await refreshBastion(configManager, treeProvider, bastion.id);
+        notifyRefreshSummary([bastion], [{ status: 'fulfilled', value: result }]);
+      });
+    }),
+    vscode.commands.registerCommand('jumpserverManager.validate', async (item?: BastionCommandArg) => {
+      await runCommand(async () => {
+        const bastion = await pickBastion(configManager, item);
+        if (!bastion) {
+          return;
+        }
+        const client = await createClient(configManager, bastion.id);
         await client.healthCheck();
         await client.ensureAuthToken();
         // Verifying an account should not drag the whole node tree along.
         await client.getUserProfile();
-        const org = await ensureOrgContext(configManager, client);
+        const org = await ensureOrgContext(configManager, client, bastion);
         if (!org) {
           return;
         }
@@ -186,34 +262,14 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand('jumpserverManager.refresh', async () => {
       await runCommand(async () => {
-        const client = await createClient(configManager);
-        const org = await ensureOrgContext(configManager, client);
-        if (!org) {
-          return;
+        const bastions = await configManager.listBastions();
+        if (bastions.length === 0) {
+          throw new Error('JumpServer is not configured.');
         }
-        client.setOrgId(org.id);
-        const bastionId = (await configManager.listBastions())[0]?.id;
-        if (!bastionId) {
-          return;
-        }
-        const nodes = await client.listAssetNodes();
-        await configManager.saveCachedAssetNodes(bastionId, nodes);
-        treeProvider.refresh();
-        const inventory = await client.listAllAssets({ treePaths: assetPathsFromNodes(nodes) });
-        await configManager.saveCachedAssets(bastionId, inventory.assets);
-        treeProvider.refresh();
-        // A silently short list is the failure this replaces, so say it out loud.
-        await (inventory.truncated
-          ? showTimedNotification(
-              t('JumpServer assets refreshed: {count} of {total} (cache cap reached).', {
-                count: inventory.assets.length,
-                total: inventory.total
-              }),
-              'warning'
-            )
-          : showTimedNotification(
-              t('JumpServer assets refreshed: {count}', { count: inventory.assets.length })
-            ));
+        const results = await Promise.allSettled(
+          bastions.map((bastion) => refreshBastion(configManager, treeProvider, bastion.id))
+        );
+        notifyRefreshSummary(bastions, results);
       });
     }),
     vscode.commands.registerCommand('jumpserverManager.connect', async (item?: AssetTreeItem) => {
@@ -229,7 +285,7 @@ export function activate(context: vscode.ExtensionContext): void {
           );
           return;
         }
-        const client = await createClient(configManager);
+        const client = await createClient(configManager, item.asset.bastionId);
         const terminal = TerminalPanel.open(context, item.asset, client, terminalContext);
         await tryOpenSftpFiles(sftpManager, sftpTreeProvider, item.asset, terminal.getTerminalId(), false);
       });
@@ -429,20 +485,136 @@ export function deactivate(): void {
   TerminalPanel.disconnectAll();
 }
 
+type BastionCommandArg = string | { bastion?: { id?: string } };
+
+type BastionRefreshResult =
+  | { cancelled: true }
+  | { cancelled: false; truncated: boolean; count: number; total: number };
+
+async function pickBastion(
+  configManager: JumpServerConfigManager,
+  item?: BastionCommandArg
+): Promise<JumpServerBastion | undefined> {
+  const requestedId = bastionIdFromArg(item);
+  if (requestedId) {
+    return configManager.requireBastion(requestedId);
+  }
+  const bastions = await configManager.listBastions();
+  if (bastions.length === 0) {
+    throw new Error('JumpServer is not configured.');
+  }
+  if (bastions.length === 1) {
+    return bastions[0];
+  }
+  const picked = await vscode.window.showQuickPick(
+    bastions.map((bastion) => ({
+      label: bastion.name,
+      description: bastion.baseUrl,
+      bastionId: bastion.id
+    })),
+    { title: t('Select a JumpServer bastion'), ignoreFocusOut: true }
+  );
+  if (!picked) {
+    return undefined;
+  }
+  return configManager.requireBastion(picked.bastionId);
+}
+
+function bastionIdFromArg(item?: BastionCommandArg): string | undefined {
+  if (typeof item === 'string' && item) {
+    return item;
+  }
+  if (item && typeof item === 'object' && typeof item.bastion?.id === 'string' && item.bastion.id) {
+    return item.bastion.id;
+  }
+  return undefined;
+}
+
+async function refreshBastion(
+  configManager: JumpServerConfigManager,
+  treeProvider: JumpServerTreeProvider,
+  bastionId: string
+): Promise<BastionRefreshResult> {
+  const bastion = await configManager.requireBastion(bastionId);
+  const client = await createClient(configManager, bastionId);
+  const org = await ensureOrgContext(configManager, client, bastion);
+  if (!org) {
+    return { cancelled: true };
+  }
+  client.setOrgId(org.id);
+  const nodes = await client.listAssetNodes();
+  await configManager.saveCachedAssetNodes(bastionId, nodes);
+  treeProvider.refresh();
+  const inventory = await client.listAllAssets({ treePaths: assetPathsFromNodes(nodes) });
+  await configManager.saveCachedAssets(bastionId, inventory.assets);
+  treeProvider.refresh();
+  return {
+    cancelled: false,
+    truncated: inventory.truncated,
+    count: inventory.assets.length,
+    total: inventory.total
+  };
+}
+
+function notifyRefreshSummary(
+  bastions: JumpServerBastion[],
+  results: PromiseSettledResult<BastionRefreshResult>[]
+): void {
+  const failed = results
+    .map((result, index) => ({ result, bastion: bastions[index] }))
+    .filter((entry): entry is { result: PromiseRejectedResult; bastion: JumpServerBastion } =>
+      entry.result.status === 'rejected'
+    );
+  const succeeded = results.filter(
+    (result): result is PromiseFulfilledResult<Exclude<BastionRefreshResult, { cancelled: true }>> =>
+      result.status === 'fulfilled' && !result.value.cancelled
+  );
+  if (succeeded.length === 0 && failed.length === 0) {
+    return;
+  }
+  const truncated = succeeded.filter((result) => result.value.truncated);
+  const warning = failed.length > 0 || truncated.length > 0;
+  if (failed.length > 0) {
+    showTimedNotification(
+      t('JumpServer assets refreshed: {ok} succeeded, {fail} failed ({names}).', {
+        ok: succeeded.length,
+        fail: failed.length,
+        names: failed.map((entry) => entry.bastion.name).join(', ')
+      }),
+      'warning'
+    );
+    return;
+  }
+  let message = t('JumpServer assets refreshed: {ok} succeeded.', { ok: succeeded.length });
+  if (truncated.length > 0) {
+    message = `${message} ${truncated.map((result) =>
+      t('JumpServer assets refreshed: {count} of {total} (cache cap reached).', {
+        count: result.value.count,
+        total: result.value.total
+      })
+    ).join(' ')}`;
+  }
+  if (warning) {
+    showTimedNotification(message, 'warning');
+    return;
+  }
+  showTimedNotification(message);
+}
+
 async function ensureOrgContext(
   configManager: JumpServerConfigManager,
-  client: JumpServerClient
+  client: JumpServerClient,
+  bastion: JumpServerBastion
 ): Promise<{ id: string; name: string } | undefined> {
-  const settings = await configManager.requireSettings();
   const accessible = await client.listAccessibleOrgs();
-  const context = resolveOrgContext({ savedOrgId: settings.orgId, accessibleOrgs: accessible });
-  if (settings.orgId && !context.selectedOrgAccessible) {
+  const context = resolveOrgContext({ savedOrgId: bastion.orgId, accessibleOrgs: accessible });
+  if (bastion.orgId && !context.selectedOrgAccessible) {
     showTimedNotification(
-      t('Saved JumpServer organization {org} is no longer accessible.', { org: settings.orgId })
+      t('Saved JumpServer organization {org} is no longer accessible.', { org: bastion.orgId })
     );
   }
   if (context.effectiveOrg && context.effectiveOrg.source === 'reserved_auto_select') {
-    await configManager.saveSettings({ ...settings, orgId: context.effectiveOrg.id, updatedAt: Date.now() });
+    await configManager.saveBastion({ ...bastion, orgId: context.effectiveOrg.id, updatedAt: Date.now() });
     return context.effectiveOrg;
   }
   if (context.effectiveOrg && !context.selectionRequired) {
@@ -461,14 +633,20 @@ async function ensureOrgContext(
     showTimedNotification(t('Organization selection was cancelled.'), 'error');
     return undefined;
   }
-  await configManager.saveSettings({ ...settings, orgId: picked.orgId, updatedAt: Date.now() });
+  await configManager.saveBastion({ ...bastion, orgId: picked.orgId, updatedAt: Date.now() });
   return { id: picked.orgId, name: picked.name };
 }
 
-async function createClient(configManager: JumpServerConfigManager): Promise<JumpServerClient> {
-  const settings = await configManager.requireSettings();
-  const password = await configManager.requirePassword();
-  return new JumpServerClient({ ...settings, password });
+async function createClient(configManager: JumpServerConfigManager, bastionId: string): Promise<JumpServerClient> {
+  const bastion = await configManager.requireBastion(bastionId);
+  const password = await configManager.requirePassword(bastionId);
+  return new JumpServerClient({
+    baseUrl: bastion.baseUrl,
+    orgId: bastion.orgId,
+    username: bastion.username,
+    password,
+    verifyTls: bastion.verifyTls
+  });
 }
 
 async function runCommand(command: () => Promise<void>): Promise<void> {

@@ -64,10 +64,11 @@ export class JumpServerConfigPanel {
         );
         return;
       }
+      const savedId = payload.bastionId || idFactory();
       try {
         await store.saveBastion(
           {
-            id: payload.bastionId || idFactory(),
+            id: savedId,
             name: bastionDisplayName(payload.displayName, payload.baseUrl),
             baseUrl: payload.baseUrl,
             orgId: payload.orgId,
@@ -83,7 +84,7 @@ export class JumpServerConfigPanel {
         );
         return;
       }
-      await vscode.commands.executeCommand('jumpserverManager.refresh');
+      await vscode.commands.executeCommand('jumpserverManager.refreshBastion', savedId);
       await vscode.window.showInformationMessage(t('JumpServer configuration saved.'));
       panel.dispose();
     });

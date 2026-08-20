@@ -299,6 +299,6 @@ describe('JumpServerConfigPanel', () => {
       }
     });
 
-    expect(vscode.commands.executeCommand).toHaveBeenCalledWith('jumpserverManager.refresh');
+    expect(vscode.commands.executeCommand).toHaveBeenCalledWith('jumpserverManager.refreshBastion', FIXED_BASTION_ID);
   });
 });

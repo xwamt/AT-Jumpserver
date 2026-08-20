@@ -94,11 +94,18 @@ function createPanel() {
       viewStateListeners.push(listener);
       return { dispose: vi.fn() };
     }),
+    dispose: vi.fn(),
     onDidDispose: vi.fn((listener: () => void) => {
       disposeListeners.push(listener);
       return { dispose: vi.fn() };
     })
   } as unknown as vscode.WebviewPanel;
+
+  panel.dispose = vi.fn(() => {
+    for (const listener of disposeListeners) {
+      listener();
+    }
+  });
 
   return {
     panel,
@@ -435,5 +442,29 @@ describe('TerminalPanel rendering helpers', () => {
 
     expect(disposeSession).toHaveBeenCalledTimes(2);
     expect(TerminalPanel.getActive()).toBeUndefined();
+  });
+
+  it('disposes terminal panels for a bastion and returns their ids', async () => {
+    const keepHost = createPanel();
+    const dropHostA = createPanel();
+    const dropHostB = createPanel();
+    vi.mocked(vscode.window.createWebviewPanel)
+      .mockReturnValueOnce(keepHost.panel)
+      .mockReturnValueOnce(dropHostA.panel)
+      .mockReturnValueOnce(dropHostB.panel);
+
+    const keep = TerminalPanel.open(extensionContext(), { ...asset('keep'), bastionId: 'b-keep' }, jumpServerClient());
+    const dropA = TerminalPanel.open(extensionContext(), { ...asset('drop-a'), bastionId: 'b-drop' }, jumpServerClient());
+    const dropB = TerminalPanel.open(extensionContext(), { ...asset('drop-b'), bastionId: 'b-drop' }, jumpServerClient());
+    await flushPromises();
+
+    const ids = TerminalPanel.disposeSessionsForBastion('b-drop');
+
+    expect(ids).toEqual(expect.arrayContaining([dropA.getTerminalId(), dropB.getTerminalId()]));
+    expect(ids).toHaveLength(2);
+    expect(ids).not.toContain(keep.getTerminalId());
+    expect(dropHostA.panel.dispose).toHaveBeenCalled();
+    expect(dropHostB.panel.dispose).toHaveBeenCalled();
+    expect(keepHost.panel.dispose).not.toHaveBeenCalled();
   });
 });
