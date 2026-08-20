@@ -29,6 +29,7 @@ import {
   parseCsrfMiddlewareToken,
   resolveFirstUsableAccount
 } from '../../src/jumpserver/JumpServerClient';
+import { DEFAULT_ORG_ID } from '../../src/jumpserver/orgs';
 
 describe('JumpServerClient pure helpers', () => {
   it('builds browser origin from baseUrl', () => {
@@ -589,6 +590,95 @@ describe('defaultWebSocketFactory', () => {
     expect(() => socket.emit('error', new Error('late failure'))).not.toThrow();
     socket.close();
     await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+});
+
+describe('JumpServerClient health and orgs', () => {
+  const settings = {
+    baseUrl: 'https://jumpserver.example.com',
+    orgId: '',
+    username: 'alan',
+    password: 'secret',
+    verifyTls: true
+  };
+
+  it('reads health, orgs, and the current org', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ status: 'ok' }))
+      .mockResolvedValueOnce(jsonResponse({ token: 'bearer-1' }))
+      .mockResolvedValueOnce(jsonResponse({ results: [{ id: DEFAULT_ORG_ID, name: 'Default' }] }))
+      .mockResolvedValueOnce(jsonResponse({ id: DEFAULT_ORG_ID, name: 'Default' }));
+    const client = new JumpServerClient({
+      baseUrl: 'https://jumpserver.example.com',
+      orgId: '',
+      username: 'alan',
+      password: 'secret',
+      verifyTls: true
+    }, fetchMock);
+
+    await expect(client.healthCheck()).resolves.toEqual({ status: 'ok' });
+    const orgs = await client.listAccessibleOrgs();
+    expect(orgs).toEqual([{ id: DEFAULT_ORG_ID, name: 'Default' }]);
+    await expect(client.getCurrentOrg()).resolves.toMatchObject({ id: DEFAULT_ORG_ID, name: 'Default' });
+    expect(fetchMock).toHaveBeenNthCalledWith(1, 'https://jumpserver.example.com/api/health/', expect.any(Object));
+    expect(fetchMock.mock.calls.some(([url]) => String(url) === 'https://jumpserver.example.com/api/v1/orgs/orgs/' || String(url).startsWith('https://jumpserver.example.com/api/v1/orgs/orgs/?'))).toBe(true);
+    expect(fetchMock).toHaveBeenCalledWith('https://jumpserver.example.com/api/v1/orgs/orgs/current/', expect.any(Object));
+  });
+
+  it('treats a missing health endpoint as optional', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response('', { status: 404 }));
+    const client = new JumpServerClient({
+      baseUrl: 'https://jumpserver.example.com',
+      orgId: '',
+      username: 'alan',
+      password: 'secret',
+      verifyTls: true
+    }, fetchMock);
+
+    await expect(client.healthCheck()).resolves.toEqual({ skipped: true });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls.every(([url]) => !String(url).includes('/authentication/auth/'))).toBe(true);
+  });
+
+  it('follows a rewritten org list next link', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ token: 'bearer-1' }))
+      .mockResolvedValueOnce(jsonResponse({
+        count: 2,
+        next: 'https://internal.example.com/api/v1/orgs/orgs/?limit=1&offset=1',
+        results: [{ id: DEFAULT_ORG_ID, name: 'Default' }]
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        count: 2,
+        next: null,
+        results: [{ id: 'org-prod', name: 'Prod' }]
+      }));
+    const client = new JumpServerClient(settings, fetchMock);
+
+    const orgs = await client.listAccessibleOrgs();
+
+    expect(orgs).toEqual([
+      { id: DEFAULT_ORG_ID, name: 'Default' },
+      { id: 'org-prod', name: 'Prod' }
+    ]);
+    const called = fetchMock.mock.calls.map((call) => String(call[0]));
+    expect(called.some((url) => url.startsWith('https://jumpserver.example.com/api/v1/orgs/orgs/') && url.includes('offset=1'))).toBe(true);
+    expect(called.every((url) => !url.includes('internal.example.com'))).toBe(true);
+  });
+
+  it('skips org list entries that have no id', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ token: 'bearer-1' }))
+      .mockResolvedValueOnce(jsonResponse({
+        results: [
+          { name: 'Nameless' },
+          { id: DEFAULT_ORG_ID, name: 'Default' },
+          { id: '', name: 'Empty' }
+        ]
+      }));
+    const client = new JumpServerClient(settings, fetchMock);
+
+    await expect(client.listAccessibleOrgs()).resolves.toEqual([{ id: DEFAULT_ORG_ID, name: 'Default' }]);
   });
 });
 

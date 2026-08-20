@@ -3,6 +3,7 @@ import type { JumpServerAccountRef, JumpServerConnectionProtocol, JumpServerEndp
 import { log } from '../utils/logger';
 import { apiErrorMessageFromPayload, classifyRestFailure, JumpServerApiError } from './apiError';
 import { buildSelfAssetListPath, pageSignature, rewritePaginationRef, throttleWaitMs } from './pagination';
+import type { JumpServerOrg } from './orgs';
 import { createJumpServerFetch, type FetchLike } from './restTransport';
 import { buildOrigin } from './urls';
 import WebSocket from 'ws';
@@ -662,6 +663,55 @@ export class JumpServerClient {
     return await response.json() as Record<string, unknown>;
   }
 
+  async healthCheck(): Promise<Record<string, unknown>> {
+    const response = await this.request('/api/health/', { headers: { Accept: 'application/json' } }, false);
+    if (response.status === 404) {
+      return { skipped: true };
+    }
+    if (!response.ok) {
+      await this.requireOkResponse(response, '/api/health/');
+    }
+    const raw = await response.text();
+    if (!raw) {
+      return {};
+    }
+    try {
+      const payload = JSON.parse(raw) as unknown;
+      if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+        return payload as Record<string, unknown>;
+      }
+      return {};
+    } catch {
+      return {};
+    }
+  }
+
+  async listAccessibleOrgs(): Promise<JumpServerOrg[]> {
+    const records = await this.getPaginated('/api/v1/orgs/orgs/');
+    const orgs: JumpServerOrg[] = [];
+    for (const item of records) {
+      if (!item || typeof item !== 'object') {
+        continue;
+      }
+      const id = (item as { id?: unknown }).id;
+      if (!id) {
+        continue;
+      }
+      const name = (item as { name?: unknown }).name;
+      orgs.push({ id: String(id), name: String(name || id) });
+    }
+    return orgs;
+  }
+
+  async getCurrentOrg(): Promise<JumpServerOrg> {
+    const response = await this.authenticatedRequest('/api/v1/orgs/orgs/current/');
+    const body = await response.json() as { id?: unknown; name?: unknown };
+    if (!body.id) {
+      throw new Error('JumpServer current org response did not include id.');
+    }
+    return { id: String(body.id), name: String(body.name || body.id) };
+  }
+
   async getAssetDetail(assetId: string): Promise<Record<string, any>> {
     await this.ensureAuthToken();
     const response = await this.authenticatedRequest(`/api/v1/perms/users/self/assets/${encodeURIComponent(assetId)}/`);
@@ -837,6 +887,42 @@ export class JumpServerClient {
     next?: string | null;
   }> {
     return this.fetchAssetPageFromPath(buildSelfAssetListPath(limit, offset));
+  }
+
+  private async getPaginated(path: string): Promise<unknown[]> {
+    const first = await this.fetchListPage(path);
+    const records = [...first.records];
+    const seen = new Set<string>([pageSignature(first.records)]);
+
+    if (typeof first.next !== 'string' || first.next.length === 0) {
+      return records;
+    }
+
+    let nextRef: string | null = first.next;
+    while (nextRef) {
+      const page = await this.fetchListPage(rewritePaginationRef(this.settings.baseUrl, nextRef));
+      if (page.records.length === 0) {
+        break;
+      }
+      const signature = pageSignature(page.records);
+      if (seen.has(signature)) {
+        break;
+      }
+      seen.add(signature);
+      records.push(...page.records);
+      nextRef = typeof page.next === 'string' && page.next.length > 0 ? page.next : null;
+    }
+    return records;
+  }
+
+  private async fetchListPage(pathOrUrl: string): Promise<{
+    records: unknown[];
+    total?: number;
+    next?: string | null;
+  }> {
+    const response = await this.authenticatedRequest(pathOrUrl, {}, 'listing');
+    const body = await response.json() as ListPage | unknown[];
+    return { records: listPageRecords(body), total: listPageTotal(body), next: listPageNext(body) };
   }
 
   private async fetchAssetPageFromPath(pathOrUrl: string): Promise<{
