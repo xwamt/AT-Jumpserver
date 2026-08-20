@@ -9,6 +9,8 @@ form?.addEventListener('submit', (event) => {
   vscode.postMessage({
     type: 'save',
     payload: {
+      displayName: String(data.get('displayName') || ''),
+      bastionId: String(data.get('bastionId') || ''),
       baseUrl: String(data.get('baseUrl') || ''),
       orgId: String(data.get('orgId') || ''),
       username: String(data.get('username') || ''),

@@ -167,7 +167,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     cleanup,
     vscode.commands.registerCommand('jumpserverManager.configure', () => {
-      void JumpServerConfigPanel.open(context, configManager);
+      void JumpServerConfigPanel.open(context, configManager, { mode: 'add' });
     }),
     vscode.commands.registerCommand('jumpserverManager.validate', async () => {
       await runCommand(async () => {

@@ -1,18 +1,23 @@
+import { randomUUID } from 'node:crypto';
 import * as vscode from 'vscode';
 import { ZodError } from 'zod';
-import type { JumpServerSettings } from '../config/schema';
+import { bastionDisplayName, type JumpServerBastion } from '../config/schema';
 import { formatError } from '../utils/errors';
 import { renderWebviewHtml, type WebviewAsset } from './html';
 import { t } from '../i18n/t';
 
 export interface JumpServerConfigPanelStore {
-  getSettings(): Promise<JumpServerSettings | undefined>;
-  saveSettings(settings: JumpServerSettings, password?: string): Promise<void>;
+  getBastion(id: string): Promise<JumpServerBastion | undefined>;
+  saveBastion(bastion: JumpServerBastion, password?: string): Promise<void>;
 }
+
+export type JumpServerConfigPanelInput = { mode: 'add' } | { mode: 'edit'; bastionId: string };
 
 type ConfigMessage = {
   type: 'save';
   payload: {
+    displayName: string;
+    bastionId: string;
     baseUrl: string;
     orgId: string;
     username: string;
@@ -22,7 +27,12 @@ type ConfigMessage = {
 };
 
 export class JumpServerConfigPanel {
-  static async open(context: vscode.ExtensionContext, store: JumpServerConfigPanelStore): Promise<void> {
+  static async open(
+    context: vscode.ExtensionContext,
+    store: JumpServerConfigPanelStore,
+    input: JumpServerConfigPanelInput,
+    idFactory: () => string = randomUUID
+  ): Promise<void> {
     const panel = vscode.window.createWebviewPanel(
       'jumpserverConfig',
       t('Configure JumpServer'),
@@ -32,11 +42,13 @@ export class JumpServerConfigPanel {
         localResourceRoots: [context.extensionUri]
       }
     );
-    const settings = await store.getSettings();
+    const bastion = input.mode === 'edit' ? await store.getBastion(input.bastionId) : undefined;
     panel.webview.html = renderWebviewHtml(
       panel.webview,
       createConfigAssets(context.extensionUri),
-      renderJumpServerConfigBody(settings)
+      renderJumpServerConfigBody(
+        input.mode === 'edit' ? (bastion ?? { id: input.bastionId }) : undefined
+      )
     );
     panel.webview.onDidReceiveMessage(async (message: ConfigMessage) => {
       if (message?.type !== 'save') {
@@ -53,8 +65,10 @@ export class JumpServerConfigPanel {
         return;
       }
       try {
-        await store.saveSettings(
+        await store.saveBastion(
           {
+            id: payload.bastionId || idFactory(),
+            name: bastionDisplayName(payload.displayName, payload.baseUrl),
             baseUrl: payload.baseUrl,
             orgId: payload.orgId,
             username: payload.username,
@@ -97,14 +111,19 @@ export function createConfigAssets(extensionUri: vscode.Uri): WebviewAsset {
   };
 }
 
-export function renderJumpServerConfigBody(settings?: JumpServerSettings): string {
+export function renderJumpServerConfigBody(bastion?: Partial<JumpServerBastion>): string {
+  const hiddenBastionId = bastion?.id
+    ? `<input type="hidden" name="bastionId" value="${escapeAttr(bastion.id)}" />`
+    : '';
   return `<main class="config-shell">
   <form id="configForm" class="config-form">
-    <label>${escapeAttr(t('Base URL'))}<input name="baseUrl" required value="${escapeAttr(settings?.baseUrl ?? '')}" /></label>
-    <label>${escapeAttr(t('Org ID'))}<input name="orgId" value="${escapeAttr(settings?.orgId ?? '')}" /></label>
-    <label>${escapeAttr(t('Username'))}<input name="username" required value="${escapeAttr(settings?.username ?? '')}" /></label>
+    ${hiddenBastionId}
+    <label>${escapeAttr(t('Display name'))}<input name="displayName" value="${escapeAttr(bastion?.name ?? '')}" /></label>
+    <label>${escapeAttr(t('Base URL'))}<input name="baseUrl" required value="${escapeAttr(bastion?.baseUrl ?? '')}" /></label>
+    <label>${escapeAttr(t('Org ID'))}<input name="orgId" value="${escapeAttr(bastion?.orgId ?? '')}" /></label>
+    <label>${escapeAttr(t('Username'))}<input name="username" required value="${escapeAttr(bastion?.username ?? '')}" /></label>
     <label>${escapeAttr(t('Password'))}<input name="password" type="password" autocomplete="current-password" /></label>
-    <label class="config-row"><input name="verifyTls" type="checkbox" ${settings?.verifyTls === false ? '' : 'checked'} /> ${escapeAttr(t('Verify TLS'))}</label>
+    <label class="config-row"><input name="verifyTls" type="checkbox" ${bastion?.verifyTls === false ? '' : 'checked'} /> ${escapeAttr(t('Verify TLS'))}</label>
     <button type="submit">${escapeAttr(t('Save'))}</button>
   </form>
 </main>`;
@@ -113,4 +132,3 @@ export function renderJumpServerConfigBody(settings?: JumpServerSettings): strin
 function escapeAttr(value: string): string {
   return value.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 }
-

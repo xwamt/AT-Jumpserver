@@ -58,6 +58,7 @@
   "JumpServer configuration was not saved: the form sent no values.": "JumpServer 配置未保存：表单未提交任何内容。",
   "JumpServer configuration was not saved. {message}": "JumpServer 配置未保存。{message}",
   "JumpServer configuration saved.": "JumpServer 配置已保存。",
+  "Display name": "显示名",
   "Base URL": "服务地址",
   "Org ID": "组织 ID",
   "Username": "用户名",
