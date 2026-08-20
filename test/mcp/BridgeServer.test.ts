@@ -169,6 +169,28 @@ describe('createBridgeRequestHandler', () => {
     expect(service.listAssets).toHaveBeenCalledOnce();
   });
 
+  it('forwards bastionId on jumpserver_list_assets invoke', async () => {
+    const service = {
+      listAssets: vi.fn(async () => ({ assets: [] })),
+      getTerminalContext: async () => ({ connectedTerminals: [], knownTerminals: [] })
+    };
+    const handler = createHandler({ service });
+
+    await expect(
+      call(handler, {
+        method: 'POST',
+        path: '/invoke',
+        token: 'secret',
+        tokenHeader: AT_SERIES_TOKEN_HEADER,
+        body: { name: 'jumpserver_list_assets', arguments: { bastionId: 'b2' } }
+      })
+    ).resolves.toMatchObject({
+      status: 200,
+      body: { ok: true, name: 'jumpserver_list_assets' }
+    });
+    expect(service.listAssets).toHaveBeenCalledWith({ bastionId: 'b2' });
+  });
+
   it('invokes jumpserver_redis_execute_command through POST /invoke', async () => {
     const redisExecuteCommand = vi.fn(async () => ({
       stdout: 'PONG',

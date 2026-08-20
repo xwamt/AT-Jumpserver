@@ -34,6 +34,19 @@ describe('toolCatalog', () => {
     expect(byName.jumpserver_mysql_send_input).toBeUndefined();
   });
 
+  it('documents list_assets bastion fields and optional filter', () => {
+    const list = AT_JUMPSERVER_TOOL_CATALOG.find((t) => t.name === 'jumpserver_list_assets');
+    expect(list?.description).toMatch(/bastionId/);
+    expect(list?.description).toMatch(/bastionName/);
+    expect(list?.description).toMatch(/disambiguate/i);
+    expect(list?.description).toMatch(/bastion name/i);
+    expect(list?.inputSchema.properties).toEqual(
+      expect.objectContaining({
+        bastionId: expect.objectContaining({ type: 'string' })
+      })
+    );
+  });
+
   it('documents Redis execute limits and interactive fallback', () => {
     const redis = AT_JUMPSERVER_TOOL_CATALOG.find((t) => t.name === 'jumpserver_redis_execute_command');
     expect(redis?.description).toMatch(/non-blocking/i);

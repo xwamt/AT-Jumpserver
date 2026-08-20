@@ -63,6 +63,27 @@ describe('JumpServerAgentToolService', () => {
     });
   });
 
+  it('includes bastionId and bastionName and can filter by bastion', async () => {
+    const service = serviceWith({
+      configManager: {
+        listBastions: async () => [
+          { id: 'b1', name: 'Prod JMS', baseUrl: 'https://prod.example.com', orgId: '', username: 'a', verifyTls: true, updatedAt: 1 },
+          { id: 'b2', name: 'Test JMS', baseUrl: 'https://test.example.com', orgId: '', username: 'a', verifyTls: true, updatedAt: 1 }
+        ],
+        listCachedAssets: async () => [
+          asset({ id: 'a1', name: 'web', bastionId: 'b1' }),
+          asset({ id: 'a1', name: 'web', bastionId: 'b2' })
+        ]
+      }
+    });
+    await expect(service.listAssets({ bastionId: 'b2' })).resolves.toMatchObject({
+      total: 1,
+      assets: [expect.objectContaining({ assetId: 'a1', bastionId: 'b2', bastionName: 'Test JMS' })]
+    });
+    await expect(service.listAssets({ search: 'Prod' })).resolves.toMatchObject({ total: 1 });
+    await expect(service.listAssets({ bastionId: 'missing' })).resolves.toMatchObject({ assets: [], total: 0 });
+  });
+
   it('returns terminal context snapshots', async () => {
     const terminalContext = new TerminalContextRegistry();
     terminalContext.setActive({
@@ -489,6 +510,17 @@ function serviceWith(overrides: Record<string, unknown>) {
   return new JumpServerAgentToolService({
     configManager: {
       listCachedAssets: async () => [],
+      listBastions: async () => [
+        {
+          id: 'b1',
+          name: 'Default',
+          baseUrl: 'https://jms.example.com',
+          orgId: '',
+          username: 'a',
+          verifyTls: true,
+          updatedAt: 1
+        }
+      ],
       ...(overrides.configManager as object)
     } as never,
     terminalContext,

@@ -1,5 +1,5 @@
 import type { JumpServerConfigManager } from '../config/JumpServerConfigManager';
-import type { CachedJumpServerAsset } from '../config/schema';
+import { bastionDisplayName, type CachedJumpServerAsset } from '../config/schema';
 import { getAssetConnectionKind } from '../jumpserver/connectionTypes';
 import type { JumpServerSftpManager } from '../sftp/JumpServerSftpManager';
 import type { JumpServerSftpEntry } from '../sftp/SftpTypes';
@@ -10,7 +10,7 @@ import { isReadOnlySql } from './SqlSafety';
 import { MysqlCliExecutor, RedisCliExecutor, ShellTerminalExecutor } from './TerminalExecutors';
 
 export interface JumpServerAgentToolServiceDependencies {
-  configManager: Pick<JumpServerConfigManager, 'listCachedAssets'>;
+  configManager: Pick<JumpServerConfigManager, 'listCachedAssets' | 'listBastions'>;
   terminalContext: TerminalContextRegistry;
   sftp: Pick<JumpServerSftpManager,
     | 'listDirectory' | 'stat' | 'readFile' | 'writeFile' | 'createFile' | 'mkdir' | 'rename' | 'deleteEntry'
@@ -45,20 +45,34 @@ export class JumpServerAgentToolService {
     return next;
   }
 
-  async listAssets(input: { limit?: number; offset?: number; search?: string } = {}) {
-    const assets = await this.dependencies.configManager.listCachedAssets();
+  async listAssets(input: { limit?: number; offset?: number; search?: string; bastionId?: string } = {}) {
+    const [assets, bastions] = await Promise.all([
+      this.dependencies.configManager.listCachedAssets(),
+      this.dependencies.configManager.listBastions()
+    ]);
+    const bastionNames = new Map(bastions.map((bastion) => [bastion.id, bastion.name]));
+    const scoped = input.bastionId
+      ? assets.filter((asset) => asset.bastionId === input.bastionId)
+      : assets;
     const search = input.search?.trim().toLowerCase();
     const filtered = search
-      ? assets.filter((asset) => {
-          const haystack = [asset.id, asset.name, asset.address, ...(asset.nodePath ?? [])].join(' ').toLowerCase();
+      ? scoped.filter((asset) => {
+          const haystack = [
+            asset.id,
+            asset.name,
+            asset.address,
+            ...(asset.nodePath ?? []),
+            asset.bastionId,
+            bastionNames.get(asset.bastionId) ?? bastionDisplayName('', '')
+          ].join(' ').toLowerCase();
           return haystack.includes(search);
         })
-      : assets;
+      : scoped;
     const limit = clampPositiveInteger(input.limit, DEFAULT_LIST_ASSETS_LIMIT, MAX_LIST_ASSETS_LIMIT);
     const offset = Number.isInteger(input.offset) && (input.offset as number) >= 0 ? (input.offset as number) : 0;
     const page = filtered.slice(offset, offset + limit);
     return {
-      assets: page.map(assetSummary),
+      assets: page.map((asset) => assetSummary(asset, bastionNames)),
       total: filtered.length,
       offset,
       limit,
@@ -329,7 +343,7 @@ export function formatAssetTarget(asset: Pick<CachedJumpServerAsset, 'name' | 'a
   return asset.address ? `${asset.name} (${asset.address})` : asset.name;
 }
 
-function assetSummary(asset: CachedJumpServerAsset) {
+function assetSummary(asset: CachedJumpServerAsset, bastionNames: Map<string, string>) {
   return {
     assetId: asset.id,
     name: asset.name,
@@ -339,7 +353,9 @@ function assetSummary(asset: CachedJumpServerAsset) {
     type: asset.type,
     protocolNames: asset.protocolNames,
     connectionKind: getAssetConnectionKind(asset),
-    nodePath: asset.nodePath
+    nodePath: asset.nodePath,
+    bastionId: asset.bastionId,
+    bastionName: bastionNames.get(asset.bastionId) ?? bastionDisplayName('', '')
   };
 }
 

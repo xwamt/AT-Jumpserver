@@ -8,7 +8,8 @@ export const listAssetsBridgeSchema = z
   .object({
     limit: z.number().int().positive().optional(),
     offset: z.number().int().nonnegative().optional(),
-    search: z.string().optional()
+    search: z.string().optional(),
+    bastionId: z.string().min(1).optional()
   })
   .strict();
 

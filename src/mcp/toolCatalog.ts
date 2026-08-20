@@ -35,14 +35,19 @@ export const AT_JUMPSERVER_TOOL_CATALOG: ToolCatalogEntry[] = [
     name: 'jumpserver_list_assets',
     title: 'JumpServer List Assets',
     description:
-      'List cached AT JumpServer Terminal assets without exposing credentials. Supports optional search plus limit/offset pagination (default limit 200, hard max 500). When truncated is true, page with offset instead of dumping the full cache.',
+      'List cached AT JumpServer Terminal assets without exposing credentials. Each result includes bastionId and bastionName so agents can disambiguate duplicate asset names across bastions. Supports an optional bastionId filter, search (matches asset fields plus bastion name/id), and limit/offset pagination (default limit 200, hard max 500). When truncated is true, page with offset instead of dumping the full cache.',
     risk: 'read',
     inputSchema: {
       type: 'object',
       properties: {
         search: {
           type: 'string',
-          description: 'Optional case-insensitive filter matched against asset id, name, address, and node path.'
+          description:
+            'Optional case-insensitive filter matched against asset id, name, address, node path, bastion id, and bastion name.'
+        },
+        bastionId: {
+          type: 'string',
+          description: 'Optional JumpServer bastion id. When set, only assets from that bastion are returned.'
         },
         limit: {
           type: 'number',
