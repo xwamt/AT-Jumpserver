@@ -1,6 +1,7 @@
 import type { CachedJumpServerAsset, CachedJumpServerNode } from '../config/schema';
 import type { JumpServerAccountRef, JumpServerConnectionProtocol, JumpServerEndpoint, JumpServerSettingsWithPassword } from './types';
 import { log } from '../utils/logger';
+import { classifyRestFailure } from './apiError';
 import { createJumpServerFetch, type FetchLike } from './restTransport';
 import WebSocket from 'ws';
 /**
@@ -54,29 +55,7 @@ export interface JumpServerTimeouts {
 /** Which of the three budgets a call is spending. Also the label used in logs. */
 export type JumpServerTimeoutBudget = 'request' | 'listing';
 
-/**
- * "HTTP 502" in a log line tells a user nothing they can act on. The class does:
- * `auth-rejected` means re-enter the password, `server-error` means the bastion
- * is unwell, `throttled` means back off.
- */
-export function classifyRestFailure(status: number): string {
-  if (status === 401 || status === 403) {
-    return 'auth-rejected';
-  }
-  if (status === 404) {
-    return 'not-found';
-  }
-  if (status === 408 || status === 429) {
-    return 'throttled';
-  }
-  if (status >= 500) {
-    return 'server-error';
-  }
-  if (status >= 400) {
-    return 'client-error';
-  }
-  return 'unexpected-status';
-}
+export { classifyRestFailure, JumpServerApiError } from './apiError';
 
 /** The path alone. Query strings here carry connection tokens. */
 function logRoute(url: string): string {

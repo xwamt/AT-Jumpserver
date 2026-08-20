@@ -43,7 +43,7 @@ afterEach(() => {
 describe('classifyRestFailure', () => {
   it('names the failure class a JumpServer status belongs to', () => {
     expect(classifyRestFailure(401)).toBe('auth-rejected');
-    expect(classifyRestFailure(403)).toBe('auth-rejected');
+    expect(classifyRestFailure(403)).toBe('forbidden');
     expect(classifyRestFailure(404)).toBe('not-found');
     expect(classifyRestFailure(429)).toBe('throttled');
     expect(classifyRestFailure(502)).toBe('server-error');
