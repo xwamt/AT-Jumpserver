@@ -23,6 +23,7 @@ import {
   DEFAULT_REDIS_CONNECT_OPTIONS,
   DEFAULT_SFTP_CONNECT_OPTIONS,
   extractAssetTreeNodes,
+  JumpServerApiError,
   JumpServerClient,
   normalizeJumpServerAsset,
   parseCsrfMiddlewareToken,
@@ -880,6 +881,68 @@ describe('JumpServerClient REST flow', () => {
       rejectUnauthorized: true,
       headers: expect.objectContaining({ Cookie: 'csrftoken=abc; sessionid=session-1' })
     }));
+  });
+
+  it('surfaces the JumpServer detail field instead of a bare status', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes('/authentication/auth/')) {
+        return jsonResponse({ token: 'bearer-1' });
+      }
+      return jsonResponse({ detail: 'You do not have permission to perform this action.' }, { status: 403 });
+    });
+    const client = new JumpServerClient({
+      baseUrl: 'https://jumpserver.example.com',
+      orgId: 'org-1',
+      username: 'alan',
+      password: 'secret',
+      verifyTls: true
+    }, fetchMock);
+
+    const error = await client.getAssetDetail('asset-1').catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(JumpServerApiError);
+    expect(String(error)).toMatch(/You do not have permission to perform this action/);
+    expect((error as JumpServerApiError).reason).toBe('forbidden');
+  });
+
+  it('sends an RFC 1123 Date header on REST calls', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ token: 'bearer-1' }))
+      .mockResolvedValueOnce(jsonResponse({ id: 'user-1' }));
+    const client = new JumpServerClient({
+      baseUrl: 'https://jumpserver.example.com',
+      orgId: '',
+      username: 'alan',
+      password: 'secret',
+      verifyTls: true
+    }, fetchMock);
+
+    await client.getUserProfile();
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      'https://jumpserver.example.com/api/v1/users/profile/',
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Date: expect.stringMatching(/^[A-Z][a-z]{2}, \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT$/)
+        })
+      })
+    );
+  });
+
+  it('surfaces the API detail when authentication fails', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ detail: 'Unable to log in with provided credentials.' }, { status: 400 }));
+    const client = new JumpServerClient({
+      baseUrl: 'https://jumpserver.example.com',
+      orgId: '',
+      username: 'alan',
+      password: 'secret',
+      verifyTls: true
+    }, fetchMock);
+
+    const error = await client.getUserProfile().catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(JumpServerApiError);
+    expect(String(error)).toMatch(/Unable to log in with provided credentials/);
   });
 });
 

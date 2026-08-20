@@ -1,7 +1,7 @@
 import type { CachedJumpServerAsset, CachedJumpServerNode } from '../config/schema';
 import type { JumpServerAccountRef, JumpServerConnectionProtocol, JumpServerEndpoint, JumpServerSettingsWithPassword } from './types';
 import { log } from '../utils/logger';
-import { classifyRestFailure } from './apiError';
+import { apiErrorMessageFromPayload, classifyRestFailure, JumpServerApiError } from './apiError';
 import { createJumpServerFetch, type FetchLike } from './restTransport';
 import WebSocket from 'ws';
 /**
@@ -56,6 +56,10 @@ export interface JumpServerTimeouts {
 export type JumpServerTimeoutBudget = 'request' | 'listing';
 
 export { classifyRestFailure, JumpServerApiError } from './apiError';
+
+export function rfc1123Date(now = new Date()): string {
+  return now.toUTCString().replace(/UTC$/, 'GMT');
+}
 
 /** The path alone. Query strings here carry connection tokens. */
 function logRoute(url: string): string {
@@ -503,9 +507,21 @@ export class JumpServerClient {
       headers: { 'content-type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify({ username: this.settings.username, password: this.settings.password })
     }, false);
+    if (!response.ok) {
+      await this.requireOkResponse(response, '/api/v1/authentication/auth/', 'POST');
+    }
     const body = await response.json() as { token?: unknown };
     if (!body.token) {
-      throw new Error('JumpServer auth response did not include token.');
+      throw new JumpServerApiError(
+        apiErrorMessageFromPayload(body, 'JumpServer auth response did not include token.'),
+        {
+          statusCode: response.status,
+          method: 'POST',
+          path: logRoute(resolveJumpServerUrl(this.settings.baseUrl, '/api/v1/authentication/auth/')),
+          reason: classifyRestFailure(response.status),
+          details: body
+        }
+      );
     }
     this.authToken = String(body.token);
     return this.authToken;
@@ -766,7 +782,8 @@ export class JumpServerClient {
   restHeaders(): Record<string, string> {
     const headers: Record<string, string> = {
       Authorization: `Bearer ${this.authToken}`,
-      Accept: 'application/json'
+      Accept: 'application/json',
+      Date: rfc1123Date()
     };
     if (this.settings.orgId) {
       headers['X-JMS-ORG'] = this.settings.orgId;
@@ -818,25 +835,45 @@ export class JumpServerClient {
     budget: JumpServerTimeoutBudget = 'request'
   ): Promise<Response> {
     await this.ensureAuthToken();
+    const method = typeof init.method === 'string' ? init.method : 'GET';
     let response = await this.request(pathOrUrl, this.withRestHeaders(init), false, budget);
     if (!isUnauthorizedResponse(response)) {
-      return this.requireOkResponse(response, pathOrUrl);
+      return await this.requireOkResponse(response, pathOrUrl, method);
     }
     this.resetRestAuth();
     await this.ensureAuthToken();
     response = await this.request(pathOrUrl, this.withRestHeaders(init), false, budget);
-    return this.requireOkResponse(response, pathOrUrl);
+    return await this.requireOkResponse(response, pathOrUrl, method);
   }
 
-  private requireOkResponse(response: Response, pathOrUrl: string): Response {
+  private async readErrorPayload(response: Response): Promise<unknown> {
+    const raw = await response.text();
+    if (!raw) {
+      return undefined;
+    }
+    try {
+      return JSON.parse(raw) as unknown;
+    } catch {
+      return raw;
+    }
+  }
+
+  private async requireOkResponse(response: Response, pathOrUrl: string, method = 'GET'): Promise<Response> {
     if (response.ok) {
       return response;
     }
-    log.warn(
-      `REST ${classifyRestFailure(response.status)} (HTTP ${response.status}): ` +
-        logRoute(resolveJumpServerUrl(this.settings.baseUrl, pathOrUrl))
-    );
-    throw new Error(`JumpServer request failed with HTTP ${response.status}.`);
+    const payload = await this.readErrorPayload(response);
+    const route = logRoute(resolveJumpServerUrl(this.settings.baseUrl, pathOrUrl));
+    const reason = classifyRestFailure(response.status);
+    const detail = apiErrorMessageFromPayload(payload, `HTTP ${response.status}`);
+    log.warn(`REST ${reason} (HTTP ${response.status}): ${route}`);
+    throw new JumpServerApiError(detail, {
+      statusCode: response.status,
+      method,
+      path: route,
+      reason,
+      details: payload
+    });
   }
 
   private withRestHeaders(init: RequestInit): RequestInit {
@@ -865,6 +902,9 @@ export class JumpServerClient {
     if (cookieHeader && !hasHeader(headers, 'Cookie')) {
       headers.Cookie = cookieHeader;
     }
+    if (!hasHeader(headers, 'Date')) {
+      headers.Date = rfc1123Date();
+    }
     const response = await withDeadline(
       (signal) => this.fetchImpl(url, { ...init, headers, signal }),
       budget === 'listing' ? this.timeouts.listingMs : this.timeouts.requestMs,
@@ -873,7 +913,11 @@ export class JumpServerClient {
     );
     this.captureCookies(response, url);
     if (requireOk && !response.ok) {
-      return this.requireOkResponse(response, pathOrUrl);
+      return await this.requireOkResponse(
+        response,
+        pathOrUrl,
+        typeof init.method === 'string' ? init.method : 'GET'
+      );
     }
     return response;
   }
