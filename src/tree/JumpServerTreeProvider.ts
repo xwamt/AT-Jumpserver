@@ -1,16 +1,19 @@
 import * as vscode from 'vscode';
-import type { CachedJumpServerAsset, CachedJumpServerNode } from '../config/schema';
+import type { CachedJumpServerAsset, CachedJumpServerNode, JumpServerBastion } from '../config/schema';
+import { BastionTreeItem, EmptyBastionTreeItem } from './BastionTreeItem';
 import { AssetTreeItem, GroupTreeItem } from './TreeItems';
 import { t } from '../i18n/t';
 
+export type JumpServerTreeElement = BastionTreeItem | EmptyBastionTreeItem | GroupTreeItem | AssetTreeItem;
 
 export interface JumpServerAssetSource {
+  listBastions(): Promise<JumpServerBastion[]>;
   listCachedAssets(): Promise<CachedJumpServerAsset[]>;
   listCachedAssetNodes?(): Promise<CachedJumpServerNode[]>;
 }
 
-export class JumpServerTreeProvider implements vscode.TreeDataProvider<GroupTreeItem | AssetTreeItem> {
-  private readonly changed = new vscode.EventEmitter<GroupTreeItem | AssetTreeItem | undefined>();
+export class JumpServerTreeProvider implements vscode.TreeDataProvider<JumpServerTreeElement> {
+  private readonly changed = new vscode.EventEmitter<JumpServerTreeElement | undefined>();
   readonly onDidChangeTreeData = this.changed.event;
 
   constructor(private readonly source: JumpServerAssetSource) {}
@@ -19,20 +22,31 @@ export class JumpServerTreeProvider implements vscode.TreeDataProvider<GroupTree
     this.changed.fire(undefined);
   }
 
-  getTreeItem(element: GroupTreeItem | AssetTreeItem): vscode.TreeItem {
+  getTreeItem(element: JumpServerTreeElement): vscode.TreeItem {
     return element;
   }
 
-  async getChildren(element?: GroupTreeItem | AssetTreeItem): Promise<Array<GroupTreeItem | AssetTreeItem>> {
-    if (element instanceof AssetTreeItem) {
+  async getChildren(element?: JumpServerTreeElement): Promise<JumpServerTreeElement[]> {
+    if (!element) {
+      const bastions = await this.source.listBastions();
+      if (bastions.length === 0) {
+        return [new EmptyBastionTreeItem()];
+      }
+      return [...bastions]
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .map((bastion) => new BastionTreeItem(bastion));
+    }
+    if (element instanceof AssetTreeItem || element instanceof EmptyBastionTreeItem) {
       return [];
     }
-    const nodes = await this.source.listCachedAssetNodes?.() ?? [];
-    const assets = await this.source.listCachedAssets();
+    const bastionId = element instanceof BastionTreeItem ? element.bastion.id : element.bastionId;
+    const nodes = (await this.source.listCachedAssetNodes?.() ?? []).filter((node) => node.bastionId === bastionId);
+    const assets = (await this.source.listCachedAssets()).filter((asset) => asset.bastionId === bastionId);
+    const groupElement = element instanceof GroupTreeItem ? element : undefined;
     if (nodes.length > 0) {
-      return this.getNodeTreeChildren(nodes, assets, element);
+      return this.getNodeTreeChildren(nodes, assets, bastionId, groupElement);
     }
-    const parentPath = element?.path ?? [];
+    const parentPath = groupElement?.path ?? [];
     const childGroups = new Set<string>();
     const childAssets: CachedJumpServerAsset[] = [];
 
@@ -49,7 +63,7 @@ export class JumpServerTreeProvider implements vscode.TreeDataProvider<GroupTree
     }
 
     return [
-      ...Array.from(childGroups).sort((a, b) => a.localeCompare(b)).map((group) => new GroupTreeItem([...parentPath, group])),
+      ...Array.from(childGroups).sort((a, b) => a.localeCompare(b)).map((group) => new GroupTreeItem([...parentPath, group], bastionId)),
       ...childAssets.sort((a, b) => a.name.localeCompare(b.name)).map((asset) => new AssetTreeItem(asset))
     ];
   }
@@ -72,6 +86,7 @@ export class JumpServerTreeProvider implements vscode.TreeDataProvider<GroupTree
   private getNodeTreeChildren(
     nodes: CachedJumpServerNode[],
     assets: CachedJumpServerAsset[],
+    bastionId: string,
     element?: GroupTreeItem
   ): Array<GroupTreeItem | AssetTreeItem> {
     const parentPath = element?.path ?? [];
@@ -79,7 +94,7 @@ export class JumpServerTreeProvider implements vscode.TreeDataProvider<GroupTree
     const childNodePaths = Array.from(nodePaths.values())
       .filter((path) => path.length === parentPath.length + 1 && this.startsWith(path, parentPath))
       .sort((a, b) => (a.at(-1) || '').localeCompare(b.at(-1) || ''))
-      .map((path) => new GroupTreeItem(path));
+      .map((path) => new GroupTreeItem(path, bastionId));
     const assetIds = new Set(nodes.find((node) => samePath(node.path, parentPath))?.assetIds ?? []);
     const childAssets = assets
       .filter((asset) => assetIds.has(asset.id) || samePath(asset.nodePath, parentPath))
