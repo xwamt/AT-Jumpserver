@@ -192,11 +192,15 @@ export function activate(context: vscode.ExtensionContext): void {
           return;
         }
         client.setOrgId(org.id);
+        const bastionId = (await configManager.listBastions())[0]?.id;
+        if (!bastionId) {
+          return;
+        }
         const nodes = await client.listAssetNodes();
-        await configManager.saveCachedAssetNodes(nodes);
+        await configManager.saveCachedAssetNodes(bastionId, nodes);
         treeProvider.refresh();
         const inventory = await client.listAllAssets({ treePaths: assetPathsFromNodes(nodes) });
-        await configManager.saveCachedAssets(inventory.assets);
+        await configManager.saveCachedAssets(bastionId, inventory.assets);
         treeProvider.refresh();
         // A silently short list is the failure this replaces, so say it out loud.
         await (inventory.truncated

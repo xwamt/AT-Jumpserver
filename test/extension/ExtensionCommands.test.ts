@@ -509,8 +509,8 @@ describe('extension command wiring', () => {
     );
     expect(jumpServerClientMock.setOrgId).toHaveBeenCalledWith('00000000-0000-0000-0000-000000000002');
     expect(context.globalState.update).toHaveBeenCalledWith(
-      'jumpserverManager.settings',
-      expect.objectContaining({ orgId: '00000000-0000-0000-0000-000000000002' })
+      'jumpserverManager.bastions',
+      [expect.objectContaining({ orgId: '00000000-0000-0000-0000-000000000002' })]
     );
   });
 
@@ -532,8 +532,8 @@ describe('extension command wiring', () => {
 
     expect(vscode.window.showQuickPick).toHaveBeenCalled();
     expect(context.globalState.update).toHaveBeenCalledWith(
-      'jumpserverManager.settings',
-      expect.objectContaining({ orgId: '11111111-1111-1111-1111-111111111111' })
+      'jumpserverManager.bastions',
+      [expect.objectContaining({ orgId: '11111111-1111-1111-1111-111111111111' })]
     );
     expect(jumpServerClientMock.setOrgId).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
   });
