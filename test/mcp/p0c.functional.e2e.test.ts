@@ -57,7 +57,7 @@ describe('P0c functional e2e smoke', () => {
     });
 
     const service = new JumpServerAgentToolService({
-      configManager: { listCachedAssets: async () => [] },
+      configManager: { listCachedAssets: async () => [], listBastions: async () => [] },
       terminalContext,
       sftp: {
         listDirectory: async () => [],
