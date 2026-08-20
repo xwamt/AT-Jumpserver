@@ -3,7 +3,7 @@ import type { JumpServerAccountRef, JumpServerConnectionProtocol, JumpServerEndp
 import { log } from '../utils/logger';
 import { apiErrorMessageFromPayload, classifyRestFailure, JumpServerApiError } from './apiError';
 import { buildSelfAssetListPath, pageSignature, rewritePaginationRef, throttleWaitMs } from './pagination';
-import type { JumpServerOrg } from './orgs';
+import { GLOBAL_ORG_ID, type JumpServerOrg } from './orgs';
 import { createJumpServerFetch, type FetchLike } from './restTransport';
 import { buildOrigin } from './urls';
 import WebSocket from 'ws';
@@ -243,6 +243,22 @@ export function parseCsrfMiddlewareToken(html: string): string {
     throw new Error('Unable to find csrfmiddlewaretoken in JumpServer login page.');
   }
   return match[1];
+}
+
+function normalizeJumpServerOrgs(records: unknown[]): JumpServerOrg[] {
+  const orgs: JumpServerOrg[] = [];
+  for (const item of records) {
+    if (!item || typeof item !== 'object') {
+      continue;
+    }
+    const id = (item as { id?: unknown }).id;
+    if (!id) {
+      continue;
+    }
+    const name = (item as { name?: unknown }).name;
+    orgs.push({ id: String(id), name: String(name || id) });
+  }
+  return orgs;
 }
 
 export function normalizeJumpServerAsset(item: Record<string, any>): CachedJumpServerAsset {
@@ -693,20 +709,23 @@ export class JumpServerClient {
   }
 
   async listAccessibleOrgs(): Promise<JumpServerOrg[]> {
-    const records = await this.getPaginated('/api/v1/orgs/orgs/');
-    const orgs: JumpServerOrg[] = [];
-    for (const item of records) {
-      if (!item || typeof item !== 'object') {
-        continue;
+    const previousOrgId = this.orgId;
+    try {
+      this.setOrgId(GLOBAL_ORG_ID);
+      let records: unknown[];
+      try {
+        records = await this.getPaginated('/api/v1/orgs/orgs/');
+      } catch (error) {
+        if (!(error instanceof JumpServerApiError) || error.reason !== 'forbidden') {
+          throw error;
+        }
+        this.setOrgId('');
+        records = await this.getPaginated('/api/v1/orgs/orgs/');
       }
-      const id = (item as { id?: unknown }).id;
-      if (!id) {
-        continue;
-      }
-      const name = (item as { name?: unknown }).name;
-      orgs.push({ id: String(id), name: String(name || id) });
+      return normalizeJumpServerOrgs(records);
+    } finally {
+      this.setOrgId(previousOrgId);
     }
-    return orgs;
   }
 
   async getCurrentOrg(): Promise<JumpServerOrg> {

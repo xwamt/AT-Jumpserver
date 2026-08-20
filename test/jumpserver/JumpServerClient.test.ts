@@ -29,7 +29,7 @@ import {
   parseCsrfMiddlewareToken,
   resolveFirstUsableAccount
 } from '../../src/jumpserver/JumpServerClient';
-import { DEFAULT_ORG_ID } from '../../src/jumpserver/orgs';
+import { DEFAULT_ORG_ID, GLOBAL_ORG_ID } from '../../src/jumpserver/orgs';
 
 describe('JumpServerClient pure helpers', () => {
   it('builds browser origin from baseUrl', () => {
@@ -708,6 +708,56 @@ describe('JumpServerClient health and orgs', () => {
     const client = new JumpServerClient(settings, fetchMock);
 
     await expect(client.listAccessibleOrgs()).resolves.toEqual([{ id: DEFAULT_ORG_ID, name: 'Default' }]);
+  });
+
+  it('lists organizations under the global org header even when a saved org is set', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ token: 'bearer-1' }))
+      .mockResolvedValueOnce(jsonResponse({ results: [{ id: DEFAULT_ORG_ID, name: 'Default' }] }));
+    const client = new JumpServerClient({
+      baseUrl: 'https://jumpserver.example.com',
+      orgId: 'gone-org',
+      username: 'alan',
+      password: 'secret',
+      verifyTls: true
+    }, fetchMock);
+
+    await client.listAccessibleOrgs();
+
+    const orgListCalls = fetchMock.mock.calls.filter(([url]) => {
+      const value = String(url);
+      return value.includes('/api/v1/orgs/orgs/') && !value.includes('/current/');
+    });
+    expect(orgListCalls).toHaveLength(1);
+    const headers = (orgListCalls[0][1] as RequestInit).headers as Record<string, string>;
+    expect(headers['X-JMS-ORG']).toBe(GLOBAL_ORG_ID);
+    expect(headers['X-JMS-ORG']).not.toBe('gone-org');
+  });
+
+  it('retries org listing without an org header after a forbidden global-org response', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ token: 'bearer-1' }))
+      .mockResolvedValueOnce(jsonResponse({ detail: 'org forbidden' }, { status: 403 }))
+      .mockResolvedValueOnce(jsonResponse({ results: [{ id: DEFAULT_ORG_ID, name: 'Default' }] }));
+    const client = new JumpServerClient({
+      baseUrl: 'https://jumpserver.example.com',
+      orgId: 'gone-org',
+      username: 'alan',
+      password: 'secret',
+      verifyTls: true
+    }, fetchMock);
+
+    await expect(client.listAccessibleOrgs()).resolves.toEqual([{ id: DEFAULT_ORG_ID, name: 'Default' }]);
+
+    const orgListCalls = fetchMock.mock.calls.filter(([url]) => {
+      const value = String(url);
+      return value.includes('/api/v1/orgs/orgs/') && !value.includes('/current/');
+    });
+    expect(orgListCalls).toHaveLength(2);
+    const firstHeaders = (orgListCalls[0][1] as RequestInit).headers as Record<string, string>;
+    const secondHeaders = (orgListCalls[1][1] as RequestInit).headers as Record<string, string>;
+    expect(firstHeaders['X-JMS-ORG']).toBe(GLOBAL_ORG_ID);
+    expect(secondHeaders).not.toHaveProperty('X-JMS-ORG');
   });
 });
 

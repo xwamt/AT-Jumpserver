@@ -493,7 +493,8 @@ describe('extension command wiring', () => {
   });
 
   it('verifies the account against the user profile without pulling the whole node tree', async () => {
-    activate(contextWithSettings());
+    const context = contextWithSettings();
+    activate(context);
     const validate = registeredCommand('jumpserverManager.validate');
 
     await validate();
@@ -505,6 +506,11 @@ describe('extension command wiring', () => {
     expect(jumpServerClientMock.listAssets).not.toHaveBeenCalled();
     expect(notificationsMock.showTimedNotification).toHaveBeenCalledWith(
       'JumpServer account verified. Organization: Default.'
+    );
+    expect(jumpServerClientMock.setOrgId).toHaveBeenCalledWith('00000000-0000-0000-0000-000000000002');
+    expect(context.globalState.update).toHaveBeenCalledWith(
+      'jumpserverManager.settings',
+      expect.objectContaining({ orgId: '00000000-0000-0000-0000-000000000002' })
     );
   });
 
