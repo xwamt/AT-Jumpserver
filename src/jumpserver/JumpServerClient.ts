@@ -894,23 +894,35 @@ export class JumpServerClient {
     const records = [...first.records];
     const seen = new Set<string>([pageSignature(first.records)]);
 
-    if (typeof first.next !== 'string' || first.next.length === 0) {
-      return records;
-    }
-
-    let nextRef: string | null = first.next;
-    while (nextRef) {
-      const page = await this.fetchListPage(rewritePaginationRef(this.settings.baseUrl, nextRef));
-      if (page.records.length === 0) {
-        break;
+    if (typeof first.next === 'string' && first.next.length > 0) {
+      let nextRef: string | null = first.next;
+      while (nextRef) {
+        const page = await this.fetchListPage(rewritePaginationRef(this.settings.baseUrl, nextRef));
+        if (page.records.length === 0) {
+          break;
+        }
+        const signature = pageSignature(page.records);
+        if (seen.has(signature)) {
+          break;
+        }
+        seen.add(signature);
+        records.push(...page.records);
+        nextRef = typeof page.next === 'string' && page.next.length > 0 ? page.next : null;
       }
-      const signature = pageSignature(page.records);
-      if (seen.has(signature)) {
-        break;
+    } else if (first.total !== undefined && first.records.length > 0) {
+      const pageSize = first.records.length;
+      for (let offset = pageSize; offset < first.total; offset += pageSize) {
+        const page = await this.fetchListPage(appendLimitOffset(path, pageSize, offset));
+        if (page.records.length === 0) {
+          break;
+        }
+        const signature = pageSignature(page.records);
+        if (seen.has(signature)) {
+          break;
+        }
+        seen.add(signature);
+        records.push(...page.records);
       }
-      seen.add(signature);
-      records.push(...page.records);
-      nextRef = typeof page.next === 'string' && page.next.length > 0 ? page.next : null;
     }
     return records;
   }
@@ -1089,6 +1101,11 @@ export class JumpServerClient {
 
 function isUnauthorizedResponse(response: Response): boolean {
   return response.status === 401;
+}
+
+function appendLimitOffset(path: string, limit: number, offset: number): string {
+  const separator = path.includes('?') ? '&' : '?';
+  return `${path}${separator}limit=${limit}&offset=${offset}`;
 }
 
 function listPageRecords(body: ListPage | unknown[]): unknown[] {

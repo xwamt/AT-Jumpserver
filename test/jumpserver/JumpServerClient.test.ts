@@ -621,8 +621,8 @@ describe('JumpServerClient health and orgs', () => {
     expect(orgs).toEqual([{ id: DEFAULT_ORG_ID, name: 'Default' }]);
     await expect(client.getCurrentOrg()).resolves.toMatchObject({ id: DEFAULT_ORG_ID, name: 'Default' });
     expect(fetchMock).toHaveBeenNthCalledWith(1, 'https://jumpserver.example.com/api/health/', expect.any(Object));
-    expect(fetchMock.mock.calls.some(([url]) => String(url) === 'https://jumpserver.example.com/api/v1/orgs/orgs/' || String(url).startsWith('https://jumpserver.example.com/api/v1/orgs/orgs/?'))).toBe(true);
-    expect(fetchMock).toHaveBeenCalledWith('https://jumpserver.example.com/api/v1/orgs/orgs/current/', expect.any(Object));
+    expect(fetchMock).toHaveBeenNthCalledWith(3, 'https://jumpserver.example.com/api/v1/orgs/orgs/', expect.any(Object));
+    expect(fetchMock).toHaveBeenNthCalledWith(4, 'https://jumpserver.example.com/api/v1/orgs/orgs/current/', expect.any(Object));
   });
 
   it('treats a missing health endpoint as optional', async () => {
@@ -638,6 +638,8 @@ describe('JumpServerClient health and orgs', () => {
     await expect(client.healthCheck()).resolves.toEqual({ skipped: true });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls.every(([url]) => !String(url).includes('/authentication/auth/'))).toBe(true);
+    const [, init] = fetchMock.mock.calls[0];
+    expect((init as RequestInit).headers).not.toEqual(expect.objectContaining({ Authorization: expect.anything() }));
   });
 
   it('follows a rewritten org list next link', async () => {
@@ -645,7 +647,7 @@ describe('JumpServerClient health and orgs', () => {
       .mockResolvedValueOnce(jsonResponse({ token: 'bearer-1' }))
       .mockResolvedValueOnce(jsonResponse({
         count: 2,
-        next: 'https://internal.example.com/api/v1/orgs/orgs/?limit=1&offset=1',
+        next: 'https://internal.example.com/api/v1/orgs/orgs/?limit=1&cursor=page-2',
         results: [{ id: DEFAULT_ORG_ID, name: 'Default' }]
       }))
       .mockResolvedValueOnce(jsonResponse({
@@ -662,8 +664,35 @@ describe('JumpServerClient health and orgs', () => {
       { id: 'org-prod', name: 'Prod' }
     ]);
     const called = fetchMock.mock.calls.map((call) => String(call[0]));
-    expect(called.some((url) => url.startsWith('https://jumpserver.example.com/api/v1/orgs/orgs/') && url.includes('offset=1'))).toBe(true);
+    expect(called.some((url) => url === 'https://jumpserver.example.com/api/v1/orgs/orgs/?limit=1&cursor=page-2')).toBe(true);
     expect(called.every((url) => !url.includes('internal.example.com'))).toBe(true);
+  });
+
+  it('walks org pages by offset when count is present and next is missing', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ token: 'bearer-1' }))
+      .mockResolvedValueOnce(jsonResponse({
+        count: 2,
+        results: [{ id: DEFAULT_ORG_ID, name: 'Default' }]
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        count: 2,
+        results: [{ id: 'org-prod', name: 'Prod' }]
+      }));
+    const client = new JumpServerClient({
+      baseUrl: 'https://jumpserver.example.com',
+      orgId: '',
+      username: 'alan',
+      password: 'secret',
+      verifyTls: true
+    }, fetchMock);
+
+    await expect(client.listAccessibleOrgs()).resolves.toEqual([
+      { id: DEFAULT_ORG_ID, name: 'Default' },
+      { id: 'org-prod', name: 'Prod' }
+    ]);
+    const called = fetchMock.mock.calls.map((call) => String(call[0]));
+    expect(called.some((url) => url.includes('/api/v1/orgs/orgs/') && url.includes('offset=1'))).toBe(true);
   });
 
   it('skips org list entries that have no id', async () => {
