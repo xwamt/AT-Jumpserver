@@ -84,6 +84,26 @@ describe('JumpServerAgentToolService', () => {
     await expect(service.listAssets({ bastionId: 'missing' })).resolves.toMatchObject({ assets: [], total: 0 });
   });
 
+  it('loads bastions before cached assets so migration cannot race', async () => {
+    const order: string[] = [];
+    const service = serviceWith({
+      configManager: {
+        listBastions: async () => {
+          order.push('bastions');
+          return [{ id: 'b1', name: 'Default', baseUrl: 'https://jms.example.com', orgId: '', username: 'a', verifyTls: true, updatedAt: 1 }];
+        },
+        listCachedAssets: async () => {
+          order.push('assets');
+          return [asset({ id: 'a1' })];
+        }
+      }
+    });
+
+    await service.listAssets();
+
+    expect(order).toEqual(['bastions', 'assets']);
+  });
+
   it('returns terminal context snapshots', async () => {
     const terminalContext = new TerminalContextRegistry();
     terminalContext.setActive({

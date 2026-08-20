@@ -46,10 +46,8 @@ export class JumpServerAgentToolService {
   }
 
   async listAssets(input: { limit?: number; offset?: number; search?: string; bastionId?: string } = {}) {
-    const [assets, bastions] = await Promise.all([
-      this.dependencies.configManager.listCachedAssets(),
-      this.dependencies.configManager.listBastions()
-    ]);
+    const bastions = await this.dependencies.configManager.listBastions();
+    const assets = await this.dependencies.configManager.listCachedAssets();
     const bastionNames = new Map(bastions.map((bastion) => [bastion.id, bastion.name]));
     const scoped = input.bastionId
       ? assets.filter((asset) => asset.bastionId === input.bastionId)
