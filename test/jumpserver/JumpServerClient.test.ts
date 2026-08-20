@@ -851,6 +851,22 @@ describe('JumpServerClient REST flow', () => {
     }));
   });
 
+  it('does not treat HTTP 403 as an expired Bearer token', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ token: 'bearer-1' }))
+      .mockResolvedValueOnce(jsonResponse({ detail: 'forbidden' }, { status: 403 }));
+    const client = new JumpServerClient({
+      baseUrl: 'https://jumpserver.example.com',
+      orgId: 'wrong-org',
+      username: 'alan',
+      password: 'secret',
+      verifyTls: true
+    }, fetchMock);
+
+    await expect(client.listAssetNodes()).rejects.toMatchObject({ reason: 'forbidden', statusCode: 403 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it('opens KoKo SFTP websocket with warmed cookies', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response('', { status: 302, headers: { location: '/core/auth/login/?next=%2Fkoko%2Fconnect%2F%3Fdisableautohash%3Dfalse%26token%3Dtoken-1' } }))

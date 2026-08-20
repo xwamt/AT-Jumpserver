@@ -941,7 +941,7 @@ export class JumpServerClient {
 }
 
 function isUnauthorizedResponse(response: Response): boolean {
-  return response.status === 401 || response.status === 403;
+  return response.status === 401;
 }
 
 function listPageRecords(body: ListPage | unknown[]): unknown[] {
