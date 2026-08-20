@@ -7,6 +7,18 @@ const httpUrlSchema = z
   .transform((value) => value.replace(/\/+$/, ''))
   .refine((value) => /^https?:\/\//i.test(value), 'baseUrl must start with http:// or https://');
 
+export function bastionDisplayName(name: string, baseUrl: string): string {
+  const trimmed = name.trim();
+  if (trimmed) {
+    return trimmed;
+  }
+  try {
+    return new URL(baseUrl).hostname || baseUrl.replace(/\/+$/, '');
+  } catch {
+    return baseUrl.replace(/\/+$/, '') || 'JumpServer';
+  }
+}
+
 export const jumpServerSettingsSchema = z
   .object({
     baseUrl: httpUrlSchema,
@@ -17,10 +29,29 @@ export const jumpServerSettingsSchema = z
   })
   .strip();
 
+export const jumpServerBastionSchema = z
+  .object({
+    id: z.string().uuid(),
+    name: z.string(),
+    baseUrl: httpUrlSchema,
+    orgId: z.string().trim().optional().default(''),
+    username: z.string().trim().min(1),
+    verifyTls: z.boolean().default(true),
+    updatedAt: z.number().int().nonnegative()
+  })
+  .strip()
+  .transform((value) => ({
+    ...value,
+    name: bastionDisplayName(value.name, value.baseUrl)
+  }));
+
+export const jumpServerBastionListSchema = z.array(jumpServerBastionSchema);
+
 export const cachedJumpServerAssetSchema = z
   .object({
     id: z.string().min(1),
     name: z.string().min(1),
+    bastionId: z.string().min(1),
     address: z.string().optional().default(''),
     platform: z.string().optional().default(''),
     category: z.string().optional().default(''),
@@ -38,6 +69,7 @@ export const cachedJumpServerNodeSchema = z
   .object({
     id: z.string().min(1),
     name: z.string().min(1),
+    bastionId: z.string().min(1),
     path: z.array(z.string().min(1)).default([]),
     assetIds: z.array(z.string().min(1)).default([]),
     raw: z.record(z.unknown()).default({})
@@ -47,6 +79,7 @@ export const cachedJumpServerNodeSchema = z
 export const cachedJumpServerNodeListSchema = z.array(cachedJumpServerNodeSchema);
 
 export type JumpServerSettings = z.infer<typeof jumpServerSettingsSchema>;
+export type JumpServerBastion = z.infer<typeof jumpServerBastionSchema>;
 export type CachedJumpServerAsset = z.infer<typeof cachedJumpServerAssetSchema>;
 export type CachedJumpServerNode = z.infer<typeof cachedJumpServerNodeSchema>;
 
@@ -54,6 +87,14 @@ const SECRET_FIELD_PATTERN = /password|secret|token|cookie|authorization|private
 
 export function parseJumpServerSettings(value: unknown): JumpServerSettings {
   return jumpServerSettingsSchema.parse(value);
+}
+
+export function parseJumpServerBastion(value: unknown): JumpServerBastion {
+  return jumpServerBastionSchema.parse(value);
+}
+
+export function parseJumpServerBastionList(value: unknown): JumpServerBastion[] {
+  return jumpServerBastionListSchema.parse(value);
 }
 
 export function parseCachedJumpServerAsset(value: unknown): CachedJumpServerAsset {

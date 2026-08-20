@@ -44,7 +44,8 @@ function asset(id = 'terminal-asset'): CachedJumpServerAsset {
     zoneName: 'Production',
     nodePath: ['Production'],
     protocolNames: ['ssh'],
-    raw: {}
+    raw: {},
+    bastionId: 'b1'
   };
 }
 
@@ -59,7 +60,8 @@ function mysqlAsset(id = 'mysql-asset'): CachedJumpServerAsset {
     zoneName: 'Production',
     nodePath: ['Production'],
     protocolNames: ['mysql'],
-    raw: {}
+    raw: {},
+    bastionId: 'b1'
   };
 }
 

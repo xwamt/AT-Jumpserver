@@ -138,16 +138,16 @@ beforeEach(() => {
   });
   jumpServerClientMock.listAssetNodes.mockImplementation(async () => {
     jumpServerClientMock.calls.push('nodes');
-    return [{ id: 'node-default', name: 'DEFAULT', path: ['DEFAULT'], assetIds: ['asset-1'], raw: {} }];
+    return [{ id: 'node-default', name: 'DEFAULT', path: ['DEFAULT'], assetIds: ['asset-1'], bastionId: 'b1', raw: {} }];
   });
   jumpServerClientMock.listAssets.mockImplementation(async () => {
     jumpServerClientMock.calls.push('assets');
-    return [{ id: 'asset-1', name: 'gateway02', address: '11.0.139.162', platform: 'Linux', category: 'host', type: 'server', zoneName: 'DEFAULT', nodePath: ['DEFAULT'], protocolNames: ['ssh'], raw: {} }];
+    return [{ id: 'asset-1', name: 'gateway02', address: '11.0.139.162', platform: 'Linux', category: 'host', type: 'server', zoneName: 'DEFAULT', nodePath: ['DEFAULT'], protocolNames: ['ssh'], bastionId: 'b1', raw: {} }];
   });
   jumpServerClientMock.listAllAssets.mockImplementation(async () => {
     jumpServerClientMock.calls.push('assets');
     return {
-      assets: [{ id: 'asset-1', name: 'gateway02', address: '11.0.139.162', platform: 'Linux', category: 'host', type: 'server', zoneName: 'DEFAULT', nodePath: ['DEFAULT'], protocolNames: ['ssh'], raw: {} }],
+      assets: [{ id: 'asset-1', name: 'gateway02', address: '11.0.139.162', platform: 'Linux', category: 'host', type: 'server', zoneName: 'DEFAULT', nodePath: ['DEFAULT'], protocolNames: ['ssh'], bastionId: 'b1', raw: {} }],
       total: 1,
       truncated: false
     };
@@ -336,7 +336,7 @@ describe('extension command wiring', () => {
         zoneName: '',
         nodePath: [],
         protocolNames: ['ssh'],
-        raw: {}
+        bastionId: 'b1', raw: {}
       }
     };
 
@@ -361,7 +361,7 @@ describe('extension command wiring', () => {
         zoneName: '',
         nodePath: [],
         protocolNames: ['ssh'],
-        raw: {}
+        bastionId: 'b1', raw: {}
       }
     });
     const registry = terminalPanelMock.open.mock.calls[0]?.[3];
@@ -390,7 +390,7 @@ describe('extension command wiring', () => {
         zoneName: '',
         nodePath: [],
         protocolNames: ['ssh'],
-        raw: {}
+        bastionId: 'b1', raw: {}
       }
     });
     const registry = terminalPanelMock.open.mock.calls[0]?.[3];
@@ -468,7 +468,7 @@ describe('extension command wiring', () => {
         zoneName: 'DEFAULT',
         nodePath: ['DEFAULT'],
         protocolNames: ['ssh'],
-        raw: {}
+        bastionId: 'b1', raw: {}
       })),
       total: 640,
       truncated: false
@@ -610,7 +610,7 @@ describe('extension command wiring', () => {
         zoneName: '',
         nodePath: [],
         protocolNames: ['mysql'],
-        raw: {}
+        bastionId: 'b1', raw: {}
       }
     };
 
@@ -635,7 +635,7 @@ describe('extension command wiring', () => {
         zoneName: '',
         nodePath: [],
         protocolNames: [],
-        raw: {}
+        bastionId: 'b1', raw: {}
       }
     };
 
@@ -660,7 +660,7 @@ describe('extension command wiring', () => {
         zoneName: '',
         nodePath: [],
         protocolNames: ['redis'],
-        raw: {}
+        bastionId: 'b1', raw: {}
       }
     };
 
@@ -685,7 +685,7 @@ describe('extension command wiring', () => {
         zoneName: '',
         nodePath: [],
         protocolNames: [],
-        raw: {}
+        bastionId: 'b1', raw: {}
       }
     };
 

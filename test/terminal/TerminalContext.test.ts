@@ -15,7 +15,8 @@ function context(terminalId: string, assetId: string, connected = false): Active
       zoneName: '',
       nodePath: [],
       protocolNames: ['ssh'],
-      raw: {}
+      raw: {},
+      bastionId: 'b1'
     },
     connected,
     write: vi.fn()
@@ -105,6 +106,7 @@ function asset(overrides: Partial<CachedJumpServerAsset>): CachedJumpServerAsset
     nodePath: [],
     protocolNames: [],
     raw: {},
-    ...overrides
+    ...overrides,
+    bastionId: overrides.bastionId ?? 'b1'
   };
 }

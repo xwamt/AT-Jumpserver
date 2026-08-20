@@ -272,6 +272,7 @@ export function normalizeJumpServerAsset(item: Record<string, any>): CachedJumpS
   return {
     id: String(item.id || ''),
     name: String(item.name || item.address || item.id || ''),
+    bastionId: '',
     address: String(item.address || ''),
     platform: typeof platform === 'object' && platform ? String(platform.name || '') : String(platform || ''),
     category: typeof category === 'object' && category ? String(category.value || '') : String(category || ''),
@@ -1308,6 +1309,7 @@ function flatAssetTreeNodes(items: unknown[]): CachedJumpServerNode[] {
       return {
         id: nestedStringField(record, ['meta.data.id']) || key || path.join('/'),
         name: path.at(-1) || treeNodeLabel(record),
+        bastionId: '',
         path,
         assetIds: key ? assetsByParentKey.get(key) ?? [] : [],
         raw: record
@@ -1366,6 +1368,7 @@ function walkAssetTreeNode(node: unknown, parentPath: string[], nodes: CachedJum
     nodes.push({
       id: stringField(record, ['id', 'key']) || currentPath.join('/'),
       name: label,
+      bastionId: '',
       path: currentPath,
       assetIds,
       raw: record

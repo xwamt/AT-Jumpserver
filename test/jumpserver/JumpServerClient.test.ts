@@ -451,8 +451,8 @@ describe('JumpServerClient node tree reuse', () => {
   it('derives asset paths from nodes the caller already fetched', () => {
     expect(
       assetPathsFromNodes([
-        { id: 'n1', name: 'PROD', path: ['DEFAULT', 'PROD'], assetIds: ['asset-1', 'asset-2'], raw: {} },
-        { id: 'n2', name: 'UAT', path: ['DEFAULT', 'UAT'], assetIds: ['asset-3'], raw: {} }
+        { id: 'n1', name: 'PROD', bastionId: 'b1', path: ['DEFAULT', 'PROD'], assetIds: ['asset-1', 'asset-2'], raw: {} },
+        { id: 'n2', name: 'UAT', bastionId: 'b1', path: ['DEFAULT', 'UAT'], assetIds: ['asset-3'], raw: {} }
       ])
     ).toEqual(new Map([
       ['asset-1', ['DEFAULT', 'PROD']],

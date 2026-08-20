@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
-  parseCachedJumpServerNode,
+  bastionDisplayName,
   parseCachedJumpServerAsset,
+  parseCachedJumpServerNode,
+  parseJumpServerBastion,
+  parseJumpServerBastionList,
   parseJumpServerSettings,
   sanitizeCachedAssetRaw
 } from '../../src/config/schema';
@@ -49,11 +52,50 @@ describe('JumpServer config schema', () => {
     expect(() => parseJumpServerSettings({ baseUrl: 'https://jms.example.com', username: ' ', updatedAt: 1 })).toThrow();
   });
 
+  it('parses a bastion and fills an empty name from the baseUrl hostname', () => {
+    const input = {
+      id: '11111111-1111-1111-1111-111111111111',
+      name: '  ',
+      baseUrl: 'https://jms.prod.example.com/',
+      orgId: '',
+      username: 'alan',
+      verifyTls: true,
+      updatedAt: 1
+    };
+    expect(parseJumpServerBastion(input)).toMatchObject({
+      id: '11111111-1111-1111-1111-111111111111',
+      name: 'jms.prod.example.com',
+      baseUrl: 'https://jms.prod.example.com'
+    });
+    expect(parseJumpServerBastionList([input])).toHaveLength(1);
+  });
+
+  it('keeps an explicit bastion display name', () => {
+    expect(bastionDisplayName(' 生产 ', 'https://jms.example.com')).toBe('生产');
+  });
+
+  it('requires bastionId on cached assets and nodes', () => {
+    expect(() => parseCachedJumpServerAsset({
+      id: 'asset-1',
+      name: 'web-1',
+      raw: {}
+    })).toThrow();
+    expect(
+      parseCachedJumpServerAsset({
+        id: 'asset-1',
+        name: 'web-1',
+        bastionId: 'b1',
+        raw: {}
+      })
+    ).toMatchObject({ bastionId: 'b1' });
+  });
+
   it('parses cached assets with grouping metadata', () => {
     expect(
       parseCachedJumpServerAsset({
         id: 'asset-1',
         name: 'web-1',
+        bastionId: 'b1',
         address: '10.0.0.10',
         platform: 'Linux',
         category: 'host',
@@ -66,6 +108,7 @@ describe('JumpServer config schema', () => {
     ).toMatchObject({
       id: 'asset-1',
       name: 'web-1',
+      bastionId: 'b1',
       nodePath: ['Production', 'Web'],
       protocolNames: ['ssh']
     });
@@ -76,6 +119,7 @@ describe('JumpServer config schema', () => {
       parseCachedJumpServerNode({
         id: 'node-middleware',
         name: 'Middleware',
+        bastionId: 'b1',
         path: ['DEFAULT', 'PROD', 'offline-prod', 'Middleware'],
         assetIds: ['asset-1'],
         raw: { id: 'node-middleware' }
@@ -83,6 +127,7 @@ describe('JumpServer config schema', () => {
     ).toEqual({
       id: 'node-middleware',
       name: 'Middleware',
+      bastionId: 'b1',
       path: ['DEFAULT', 'PROD', 'offline-prod', 'Middleware'],
       assetIds: ['asset-1'],
       raw: { id: 'node-middleware' }

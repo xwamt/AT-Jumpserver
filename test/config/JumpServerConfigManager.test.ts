@@ -57,7 +57,8 @@ function asset(overrides: Partial<CachedJumpServerAsset> = {}): CachedJumpServer
     nodePath: ['Production', 'Web'],
     protocolNames: ['ssh'],
     raw: {},
-    ...overrides
+    ...overrides,
+    bastionId: overrides.bastionId ?? 'b1'
   };
 }
 
@@ -68,7 +69,8 @@ function node(overrides: Partial<CachedJumpServerNode> = {}): CachedJumpServerNo
     path: ['Production', 'Web'],
     assetIds: ['asset-1'],
     raw: {},
-    ...overrides
+    ...overrides,
+    bastionId: overrides.bastionId ?? 'b1'
   };
 }
 

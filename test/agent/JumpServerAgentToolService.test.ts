@@ -520,6 +520,7 @@ function asset(overrides: Partial<CachedJumpServerAsset>): CachedJumpServerAsset
     nodePath: [],
     protocolNames: [],
     raw: {},
-    ...overrides
+    ...overrides,
+    bastionId: overrides.bastionId ?? 'b1'
   };
 }

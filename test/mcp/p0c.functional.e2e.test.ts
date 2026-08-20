@@ -49,7 +49,8 @@ describe('P0c functional e2e smoke', () => {
         zoneName: 'default',
         nodePath: ['Default'],
         protocolNames: ['ssh'],
-        raw: {}
+        raw: {},
+        bastionId: 'b1'
       },
       connected: true,
       write

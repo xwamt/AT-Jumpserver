@@ -31,7 +31,8 @@ function asset(id = 'idle-asset'): CachedJumpServerAsset {
     zoneName: 'Production',
     nodePath: ['Production'],
     protocolNames: ['ssh'],
-    raw: {}
+    raw: {},
+    bastionId: 'b1'
   };
 }
 

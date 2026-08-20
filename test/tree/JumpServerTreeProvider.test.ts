@@ -3,11 +3,11 @@ import { JumpServerTreeProvider } from '../../src/tree/JumpServerTreeProvider';
 import { AssetTreeItem, GroupTreeItem, getAssetOpenKind } from '../../src/tree/TreeItems';
 
 const assets = [
-  { id: 'asset-1', name: 'web-1', address: '10.0.0.10', platform: 'Linux', category: 'host', type: 'server', zoneName: 'zone-a', nodePath: ['Production', 'Web'], protocolNames: ['ssh'], raw: {} },
-  { id: 'asset-2', name: 'db-1', address: '10.0.0.11', platform: 'Linux', category: 'host', type: 'server', zoneName: 'zone-a', nodePath: ['Production', 'DB'], protocolNames: ['ssh'], raw: {} },
-  { id: 'asset-5', name: 'gateway-1', address: '10.0.0.12', platform: 'Linux', category: 'host', type: 'server', zoneName: 'Gateway', nodePath: ['Production', 'Network', 'Gateway'], protocolNames: ['ssh'], raw: {} },
-  { id: 'asset-3', name: 'ops-1', address: '', platform: 'Linux', category: 'host', type: 'server', zoneName: 'Ops', nodePath: [], protocolNames: ['ssh'], raw: {} },
-  { id: 'asset-4', name: 'misc-1', address: '', platform: '', category: 'host', type: 'server', zoneName: '', nodePath: [], protocolNames: ['ssh'], raw: {} }
+  { id: 'asset-1', name: 'web-1', address: '10.0.0.10', platform: 'Linux', category: 'host', type: 'server', zoneName: 'zone-a', nodePath: ['Production', 'Web'], protocolNames: ['ssh'], bastionId: 'b1', raw: {} },
+  { id: 'asset-2', name: 'db-1', address: '10.0.0.11', platform: 'Linux', category: 'host', type: 'server', zoneName: 'zone-a', nodePath: ['Production', 'DB'], protocolNames: ['ssh'], bastionId: 'b1', raw: {} },
+  { id: 'asset-5', name: 'gateway-1', address: '10.0.0.12', platform: 'Linux', category: 'host', type: 'server', zoneName: 'Gateway', nodePath: ['Production', 'Network', 'Gateway'], protocolNames: ['ssh'], bastionId: 'b1', raw: {} },
+  { id: 'asset-3', name: 'ops-1', address: '', platform: 'Linux', category: 'host', type: 'server', zoneName: 'Ops', nodePath: [], protocolNames: ['ssh'], bastionId: 'b1', raw: {} },
+  { id: 'asset-4', name: 'misc-1', address: '', platform: '', category: 'host', type: 'server', zoneName: '', nodePath: [], protocolNames: ['ssh'], bastionId: 'b1', raw: {} }
 ];
 
 describe('JumpServerTreeProvider', () => {
@@ -67,7 +67,7 @@ describe('JumpServerTreeProvider', () => {
       zoneName: '',
       nodePath: [],
       protocolNames: [],
-      raw: {}
+      bastionId: 'b1', raw: {}
     });
     const redis = new AssetTreeItem({
       id: 'redis-1',
@@ -79,7 +79,7 @@ describe('JumpServerTreeProvider', () => {
       zoneName: '',
       nodePath: [],
       protocolNames: [],
-      raw: {}
+      bastionId: 'b1', raw: {}
     });
     const postgresql = new AssetTreeItem({
       id: 'pg-1',
@@ -91,7 +91,7 @@ describe('JumpServerTreeProvider', () => {
       zoneName: '',
       nodePath: [],
       protocolNames: [],
-      raw: {}
+      bastionId: 'b1', raw: {}
     });
 
     expect(getAssetOpenKind(mysql.asset)).toBe('mysql');
@@ -117,7 +117,7 @@ describe('JumpServerTreeProvider', () => {
       zoneName: '',
       nodePath: [],
       protocolNames: ['ssh'],
-      raw: {}
+      bastionId: 'b1', raw: {}
     });
 
     expect(getAssetOpenKind(mysql.asset)).toBe('mysql');
@@ -127,13 +127,13 @@ describe('JumpServerTreeProvider', () => {
   it('renders JumpServer node tree first, then attaches synced assets to matching nodes', async () => {
     const provider = new JumpServerTreeProvider({
       listCachedAssetNodes: async () => [
-        { id: 'node-default', name: 'DEFAULT', path: ['DEFAULT'], assetIds: [], raw: {} },
-        { id: 'node-prod', name: 'PROD', path: ['DEFAULT', 'PROD'], assetIds: [], raw: {} },
-        { id: 'node-offline-prod', name: 'offline-prod', path: ['DEFAULT', 'PROD', 'offline-prod'], assetIds: [], raw: {} },
-        { id: 'node-middleware', name: 'Middleware', path: ['DEFAULT', 'PROD', 'offline-prod', 'Middleware'], assetIds: ['asset-1'], raw: {} }
+        { id: 'node-default', name: 'DEFAULT', path: ['DEFAULT'], assetIds: [], bastionId: 'b1', raw: {} },
+        { id: 'node-prod', name: 'PROD', path: ['DEFAULT', 'PROD'], assetIds: [], bastionId: 'b1', raw: {} },
+        { id: 'node-offline-prod', name: 'offline-prod', path: ['DEFAULT', 'PROD', 'offline-prod'], assetIds: [], bastionId: 'b1', raw: {} },
+        { id: 'node-middleware', name: 'Middleware', path: ['DEFAULT', 'PROD', 'offline-prod', 'Middleware'], assetIds: ['asset-1'], bastionId: 'b1', raw: {} }
       ],
       listCachedAssets: async () => [
-        { id: 'asset-1', name: 'gateway02', address: '11.0.139.162', platform: 'Linux', category: 'host', type: 'server', zoneName: 'Middleware', nodePath: ['Middleware'], protocolNames: ['ssh'], raw: {} }
+        { id: 'asset-1', name: 'gateway02', address: '11.0.139.162', platform: 'Linux', category: 'host', type: 'server', zoneName: 'Middleware', nodePath: ['Middleware'], protocolNames: ['ssh'], bastionId: 'b1', raw: {} }
       ]
     });
 
@@ -154,12 +154,12 @@ describe('JumpServerTreeProvider', () => {
   it('uses synced asset nodePath to restore hierarchy when cached JumpServer nodes are flat', async () => {
     const provider = new JumpServerTreeProvider({
       listCachedAssetNodes: async () => [
-        { id: 'node-default', name: 'DEFAULT', path: ['DEFAULT'], assetIds: [], raw: {} },
-        { id: 'node-prod', name: 'PROD', path: ['PROD'], assetIds: [], raw: {} },
-        { id: 'node-service', name: 'service', path: ['service'], assetIds: ['asset-1'], raw: {} }
+        { id: 'node-default', name: 'DEFAULT', path: ['DEFAULT'], assetIds: [], bastionId: 'b1', raw: {} },
+        { id: 'node-prod', name: 'PROD', path: ['PROD'], assetIds: [], bastionId: 'b1', raw: {} },
+        { id: 'node-service', name: 'service', path: ['service'], assetIds: ['asset-1'], bastionId: 'b1', raw: {} }
       ],
       listCachedAssets: async () => [
-        { id: 'asset-1', name: 'gateway02', address: '11.0.139.162', platform: 'Linux', category: 'host', type: 'server', zoneName: 'service', nodePath: ['DEFAULT', 'PROD', 'service'], protocolNames: ['ssh'], raw: {} }
+        { id: 'asset-1', name: 'gateway02', address: '11.0.139.162', platform: 'Linux', category: 'host', type: 'server', zoneName: 'service', nodePath: ['DEFAULT', 'PROD', 'service'], protocolNames: ['ssh'], bastionId: 'b1', raw: {} }
       ]
     });
 

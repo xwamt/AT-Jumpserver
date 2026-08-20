@@ -17,7 +17,8 @@ function asset(overrides: Partial<CachedJumpServerAsset> = {}): CachedJumpServer
     nodePath: [],
     protocolNames: ['ssh', 'sftp'],
     raw: {},
-    ...overrides
+    ...overrides,
+    bastionId: overrides.bastionId ?? 'b1'
   };
 }
 
