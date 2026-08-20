@@ -387,6 +387,55 @@ describe('JumpServerClient full asset pagination', () => {
     expect(inventory.total).toBe(100_000);
     expect(inventory.truncated).toBe(true);
   });
+
+  it('follows a DRF next link rewritten onto the configured origin', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ token: 'bearer-1' }))
+      .mockResolvedValueOnce(jsonResponse({
+        count: 2,
+        next: 'https://internal.example.com/api/v1/perms/users/self/assets/?all=1&display=1&limit=1&offset=1',
+        results: [{ id: 'asset-0', name: 'a' }]
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        count: 2,
+        next: null,
+        results: [{ id: 'asset-1', name: 'b' }]
+      }));
+    const client = new JumpServerClient(settings, fetchMock);
+
+    const inventory = await client.listAllAssets({ pageSize: 1, treePaths: new Map() });
+
+    expect(inventory.assets.map((asset) => asset.id)).toEqual(['asset-0', 'asset-1']);
+    const called = fetchMock.mock.calls.map((call) => String(call[0]));
+    expect(called.some((url) => url.startsWith('https://jumpserver.example.com/api/v1/perms/users/self/assets/') && url.includes('offset=1'))).toBe(true);
+    expect(called.every((url) => !url.includes('internal.example.com'))).toBe(true);
+  });
+
+  it('stops when JumpServer repeats the same list page', async () => {
+    const page = [{ id: 'asset-0', name: 'a' }];
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ token: 'bearer-1' }))
+      .mockImplementation(async () => jsonResponse(page));
+    const client = new JumpServerClient(settings, fetchMock);
+
+    const inventory = await client.listAllAssets({ pageSize: 1, maxAssets: 50, treePaths: new Map() });
+
+    expect(inventory.assets).toHaveLength(1);
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('/self/assets/')).length).toBeLessThan(5);
+  });
+
+  it('retries a throttled asset page using the JumpServer wait hint', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ token: 'bearer-1' }))
+      .mockResolvedValueOnce(jsonResponse({ detail: 'Expected available in 0 second' }, { status: 429 }))
+      .mockResolvedValueOnce(jsonResponse({ results: [{ id: 'asset-0', name: 'a' }], count: 1 }));
+    const client = new JumpServerClient(settings, fetchMock, { sleep: async () => undefined });
+
+    const inventory = await client.listAllAssets({ pageSize: 200, treePaths: new Map() });
+
+    expect(inventory.assets).toHaveLength(1);
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('/self/assets/')).length).toBe(2);
+  });
 });
 
 describe('JumpServerClient node tree reuse', () => {
@@ -564,7 +613,7 @@ describe('JumpServerClient REST flow', () => {
       method: 'POST',
       body: JSON.stringify({ username: 'alan', password: 'secret' })
     }));
-    expect(fetchMock).toHaveBeenNthCalledWith(2, 'https://jumpserver.example.com/api/v1/perms/users/self/assets/?limit=200&offset=0', expect.objectContaining({
+    expect(fetchMock).toHaveBeenNthCalledWith(2, 'https://jumpserver.example.com/api/v1/perms/users/self/assets/?all=1&display=1&limit=200&offset=0', expect.objectContaining({
       headers: expect.objectContaining({
         Authorization: 'Bearer bearer-1',
         Accept: 'application/json',

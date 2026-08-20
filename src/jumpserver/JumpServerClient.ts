@@ -2,7 +2,9 @@ import type { CachedJumpServerAsset, CachedJumpServerNode } from '../config/sche
 import type { JumpServerAccountRef, JumpServerConnectionProtocol, JumpServerEndpoint, JumpServerSettingsWithPassword } from './types';
 import { log } from '../utils/logger';
 import { apiErrorMessageFromPayload, classifyRestFailure, JumpServerApiError } from './apiError';
+import { buildSelfAssetListPath, pageSignature, rewritePaginationRef, throttleWaitMs } from './pagination';
 import { createJumpServerFetch, type FetchLike } from './restTransport';
+import { buildOrigin } from './urls';
 import WebSocket from 'ws';
 /**
  * `ping`/`terminate`/`bufferedAmount` are here for the session heartbeat and
@@ -20,6 +22,7 @@ interface ListPage {
   data?: unknown[];
   count?: number;
   total?: number;
+  next?: string | null;
 }
 
 type AssetPathMap = Map<string, string[]>;
@@ -42,6 +45,8 @@ export const ASSET_PAGE_SIZE = 200;
 export const MAX_SYNCED_ASSETS = 10_000;
 /** Parallel page fetches. Enough to hide latency, gentle enough for a bastion. */
 export const ASSET_PAGE_CONCURRENCY = 4;
+/** Initial listing try plus two retries after HTTP 429. */
+const LISTING_RETRY_LIMIT = 3;
 
 export interface JumpServerTimeouts {
   /** Auth, connection tokens, endpoints, KoKo warmup: single lookups. */
@@ -56,6 +61,7 @@ export interface JumpServerTimeouts {
 export type JumpServerTimeoutBudget = 'request' | 'listing';
 
 export { classifyRestFailure, JumpServerApiError } from './apiError';
+export { buildOrigin } from './urls';
 
 export function rfc1123Date(now = new Date()): string {
   return now.toUTCString().replace(/UTC$/, 'GMT');
@@ -107,11 +113,6 @@ export const DEFAULT_SFTP_CONNECT_OPTIONS = {
   token_reusable: false,
   disableautohash: false
 } as const;
-
-export function buildOrigin(baseUrl: string): string {
-  const parsed = new URL(baseUrl);
-  return `${parsed.protocol}//${parsed.host}`;
-}
 
 export interface JumpServerCookie {
   name: string;
@@ -488,14 +489,17 @@ export class JumpServerClient {
   private cookies: JumpServerCookie[] = [];
   private readonly fetchImpl: FetchLike;
   private readonly timeouts: JumpServerTimeouts;
+  private readonly sleep: (ms: number) => Promise<void>;
 
   constructor(
     private readonly settings: JumpServerSettingsWithPassword,
     fetchImpl?: FetchLike,
-    timeouts: Partial<JumpServerTimeouts> = {}
+    options: Partial<JumpServerTimeouts> & { sleep?: (ms: number) => Promise<void> } = {}
   ) {
+    const { sleep, ...timeouts } = options;
     this.fetchImpl = fetchImpl ?? createJumpServerFetch({ verifyTls: settings.verifyTls });
     this.timeouts = { ...DEFAULT_JUMPSERVER_TIMEOUTS, ...timeouts };
+    this.sleep = sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   }
 
   async ensureAuthToken(): Promise<string> {
@@ -560,15 +564,40 @@ export class JumpServerClient {
     ]);
     const records = [...first.records];
     let pages = 1;
+    const seen = new Set<string>([pageSignature(first.records)]);
 
-    if (first.total === undefined) {
+    if (typeof first.next === 'string' && first.next.length > 0) {
+      let nextRef: string | null = first.next;
+      while (nextRef && records.length < maxAssets) {
+        const page = await this.fetchAssetPageFromPath(rewritePaginationRef(this.settings.baseUrl, nextRef));
+        pages += 1;
+        if (page.records.length === 0) {
+          break;
+        }
+        const signature = pageSignature(page.records);
+        if (seen.has(signature)) {
+          break;
+        }
+        seen.add(signature);
+        records.push(...page.records);
+        nextRef = typeof page.next === 'string' && page.next.length > 0 ? page.next : null;
+      }
+    } else if (first.total === undefined) {
       // A bare array carries no count to plan against, so walk forward until a
       // page comes back short. The cap is the only other stop condition.
       let lastPageSize = first.records.length;
       for (let offset = pageSize; lastPageSize === pageSize && records.length < maxAssets; offset += pageSize) {
         const page = await this.fetchAssetPage(pageSize, offset);
-        records.push(...page.records);
         pages += 1;
+        if (page.records.length === 0) {
+          break;
+        }
+        const signature = pageSignature(page.records);
+        if (seen.has(signature)) {
+          break;
+        }
+        seen.add(signature);
+        records.push(...page.records);
         lastPageSize = page.records.length;
       }
     } else {
@@ -577,14 +606,25 @@ export class JumpServerClient {
       for (let offset = pageSize; offset < wanted; offset += pageSize) {
         offsets.push(offset);
       }
-      for (let index = 0; index < offsets.length; index += concurrency) {
+      let stop = false;
+      for (let index = 0; index < offsets.length && !stop; index += concurrency) {
         const batch = await Promise.all(
           offsets.slice(index, index + concurrency).map((offset) => this.fetchAssetPage(pageSize, offset))
         );
         for (const page of batch) {
+          pages += 1;
+          if (page.records.length === 0) {
+            stop = true;
+            break;
+          }
+          const signature = pageSignature(page.records);
+          if (seen.has(signature)) {
+            stop = true;
+            break;
+          }
+          seen.add(signature);
           records.push(...page.records);
         }
-        pages += batch.length;
       }
     }
 
@@ -791,15 +831,36 @@ export class JumpServerClient {
     return headers;
   }
 
-  private async fetchAssetPage(limit: number, offset: number): Promise<{ records: unknown[]; total?: number }> {
+  private async fetchAssetPage(limit: number, offset: number): Promise<{
+    records: unknown[];
+    total?: number;
+    next?: string | null;
+  }> {
+    return this.fetchAssetPageFromPath(buildSelfAssetListPath(limit, offset));
+  }
+
+  private async fetchAssetPageFromPath(pathOrUrl: string): Promise<{
+    records: unknown[];
+    total?: number;
+    next?: string | null;
+  }> {
     await this.ensureAuthToken();
-    const response = await this.authenticatedRequest(
-      `/api/v1/perms/users/self/assets/?limit=${limit}&offset=${offset}`,
-      {},
-      'listing'
-    );
-    const body = await response.json() as ListPage | unknown[];
-    return { records: listPageRecords(body), total: listPageTotal(body) };
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= LISTING_RETRY_LIMIT; attempt += 1) {
+      try {
+        const response = await this.authenticatedRequest(pathOrUrl, {}, 'listing');
+        const body = await response.json() as ListPage | unknown[];
+        return { records: listPageRecords(body), total: listPageTotal(body), next: listPageNext(body) };
+      } catch (error) {
+        lastError = error;
+        if (attempt < LISTING_RETRY_LIMIT && error instanceof JumpServerApiError && error.reason === 'throttled') {
+          await this.sleep(throttleWaitMs(error.message, error.details));
+          continue;
+        }
+        throw error;
+      }
+    }
+    throw lastError;
   }
 
   private toAssets(records: unknown[], treePaths: AssetPathMap): CachedJumpServerAsset[] {
@@ -964,6 +1025,19 @@ function listPageTotal(body: ListPage | unknown[]): number | undefined {
     if (Number.isInteger(candidate) && (candidate as number) >= 0) {
       return candidate;
     }
+  }
+  return undefined;
+}
+
+function listPageNext(body: ListPage | unknown[]): string | null | undefined {
+  if (Array.isArray(body)) {
+    return undefined;
+  }
+  if (typeof body.next === 'string' && body.next.length > 0) {
+    return body.next;
+  }
+  if (body.next === null) {
+    return null;
   }
   return undefined;
 }
