@@ -1181,8 +1181,58 @@ describe('JumpServerClient REST flow', () => {
     );
   });
 
+  it('retries auth as form-urlencoded when JSON does not return a token', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ detail: 'Unsupported media type' }, { status: 415 }))
+      .mockResolvedValueOnce(jsonResponse({ token: 'bearer-form' }))
+      .mockResolvedValueOnce(jsonResponse({ id: 'user-1' }));
+    const client = new JumpServerClient({
+      baseUrl: 'https://jumpserver.example.com',
+      orgId: '',
+      username: 'alan',
+      password: 'secret',
+      verifyTls: true
+    }, fetchMock);
+
+    await client.getUserProfile();
+
+    expect(fetchMock.mock.calls[0][1]).toEqual(expect.objectContaining({
+      method: 'POST',
+      headers: expect.objectContaining({ 'content-type': 'application/json' })
+    }));
+    expect(fetchMock.mock.calls[1][0]).toBe('https://jumpserver.example.com/api/v1/authentication/auth/');
+    expect(fetchMock.mock.calls[1][1]).toEqual(expect.objectContaining({
+      method: 'POST',
+      headers: expect.objectContaining({ 'content-type': 'application/x-www-form-urlencoded' }),
+      body: 'username=alan&password=secret'
+    }));
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('/authentication/auth/'))).toHaveLength(2);
+  });
+
+  it('does not send form auth when JSON already returned a token', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ token: 'bearer-json' }))
+      .mockResolvedValueOnce(jsonResponse({ id: 'user-1' }));
+    const client = new JumpServerClient({
+      baseUrl: 'https://jumpserver.example.com',
+      orgId: '',
+      username: 'alan',
+      password: 'secret',
+      verifyTls: true
+    }, fetchMock);
+
+    await client.getUserProfile();
+
+    const authCalls = fetchMock.mock.calls.filter(([url]) => String(url).includes('/authentication/auth/'));
+    expect(authCalls).toHaveLength(1);
+    expect(authCalls[0][1]).toEqual(expect.objectContaining({
+      headers: expect.objectContaining({ 'content-type': 'application/json' })
+    }));
+  });
+
   it('surfaces the API detail when authentication fails', async () => {
     const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ detail: 'Unable to log in with provided credentials.' }, { status: 400 }))
       .mockResolvedValueOnce(jsonResponse({ detail: 'Unable to log in with provided credentials.' }, { status: 400 }));
     const client = new JumpServerClient({
       baseUrl: 'https://jumpserver.example.com',

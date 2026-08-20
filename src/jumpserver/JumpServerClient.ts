@@ -529,23 +529,42 @@ export class JumpServerClient {
     if (this.authToken) {
       return this.authToken;
     }
-    const response = await this.request('/api/v1/authentication/auth/', {
+    const jsonResponse = await this.request('/api/v1/authentication/auth/', {
       method: 'POST',
       headers: { 'content-type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify({ username: this.settings.username, password: this.settings.password })
     }, false);
-    if (!response.ok) {
-      await this.requireOkResponse(response, '/api/v1/authentication/auth/', 'POST');
+    if (jsonResponse.ok) {
+      const jsonBody = await jsonResponse.json() as { token?: unknown };
+      if (jsonBody.token) {
+        this.authToken = String(jsonBody.token);
+        return this.authToken;
+      }
     }
-    const body = await response.json() as { token?: unknown };
+    const form = new URLSearchParams({
+      username: this.settings.username,
+      password: this.settings.password
+    });
+    const formResponse = await this.request('/api/v1/authentication/auth/', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded',
+        Accept: 'application/json'
+      },
+      body: form.toString()
+    }, false);
+    if (!formResponse.ok) {
+      await this.requireOkResponse(formResponse, '/api/v1/authentication/auth/', 'POST');
+    }
+    const body = await formResponse.json() as { token?: unknown };
     if (!body.token) {
       throw new JumpServerApiError(
         apiErrorMessageFromPayload(body, 'JumpServer auth response did not include token.'),
         {
-          statusCode: response.status,
+          statusCode: formResponse.status,
           method: 'POST',
           path: logRoute(resolveJumpServerUrl(this.settings.baseUrl, '/api/v1/authentication/auth/')),
-          reason: classifyRestFailure(response.status),
+          reason: classifyRestFailure(formResponse.status),
           details: body
         }
       );
