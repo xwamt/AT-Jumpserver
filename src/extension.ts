@@ -3,6 +3,7 @@ import { JumpServerAgentToolService } from './agent/JumpServerAgentToolService';
 import { JumpServerConfigManager } from './config/JumpServerConfigManager';
 import type { CachedJumpServerAsset } from './config/schema';
 import { assetPathsFromNodes, JumpServerClient } from './jumpserver/JumpServerClient';
+import { resolveOrgContext } from './jumpserver/orgContext';
 import { BridgeServer } from './mcp/BridgeServer';
 import { syncPackagedHub } from './mcp/hubSync';
 import {
@@ -171,15 +172,26 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('jumpserverManager.validate', async () => {
       await runCommand(async () => {
         const client = await createClient(configManager);
+        await client.healthCheck();
         await client.ensureAuthToken();
         // Verifying an account should not drag the whole node tree along.
         await client.getUserProfile();
-        showTimedNotification(t('JumpServer account verified.'));
+        const org = await ensureOrgContext(configManager, client);
+        if (!org) {
+          return;
+        }
+        client.setOrgId(org.id);
+        showTimedNotification(t('JumpServer account verified. Organization: {org}.', { org: org.name }));
       });
     }),
     vscode.commands.registerCommand('jumpserverManager.refresh', async () => {
       await runCommand(async () => {
         const client = await createClient(configManager);
+        const org = await ensureOrgContext(configManager, client);
+        if (!org) {
+          return;
+        }
+        client.setOrgId(org.id);
         const nodes = await client.listAssetNodes();
         await configManager.saveCachedAssetNodes(nodes);
         treeProvider.refresh();
@@ -411,6 +423,42 @@ export function activate(context: vscode.ExtensionContext): void {
 export function deactivate(): void {
   extensionCleanup?.dispose();
   TerminalPanel.disconnectAll();
+}
+
+async function ensureOrgContext(
+  configManager: JumpServerConfigManager,
+  client: JumpServerClient
+): Promise<{ id: string; name: string } | undefined> {
+  const settings = await configManager.requireSettings();
+  const accessible = await client.listAccessibleOrgs();
+  const context = resolveOrgContext({ savedOrgId: settings.orgId, accessibleOrgs: accessible });
+  if (settings.orgId && !context.selectedOrgAccessible) {
+    showTimedNotification(
+      t('Saved JumpServer organization {org} is no longer accessible.', { org: settings.orgId })
+    );
+  }
+  if (context.effectiveOrg && context.effectiveOrg.source === 'reserved_auto_select') {
+    await configManager.saveSettings({ ...settings, orgId: context.effectiveOrg.id, updatedAt: Date.now() });
+    return context.effectiveOrg;
+  }
+  if (context.effectiveOrg && !context.selectionRequired) {
+    return context.effectiveOrg;
+  }
+  const picked = await vscode.window.showQuickPick(
+    context.candidateOrgs.map((org) => ({
+      label: org.name || org.id,
+      description: org.id,
+      orgId: org.id,
+      name: org.name || org.id
+    })),
+    { title: t('Select the JumpServer organization to query.'), ignoreFocusOut: true }
+  );
+  if (!picked) {
+    showTimedNotification(t('Organization selection was cancelled.'), 'error');
+    return undefined;
+  }
+  await configManager.saveSettings({ ...settings, orgId: picked.orgId, updatedAt: Date.now() });
+  return { id: picked.orgId, name: picked.name };
 }
 
 async function createClient(configManager: JumpServerConfigManager): Promise<JumpServerClient> {

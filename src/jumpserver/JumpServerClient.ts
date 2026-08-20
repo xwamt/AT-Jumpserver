@@ -491,6 +491,7 @@ export class JumpServerClient {
   private readonly fetchImpl: FetchLike;
   private readonly timeouts: JumpServerTimeouts;
   private readonly sleep: (ms: number) => Promise<void>;
+  private orgId: string;
 
   constructor(
     private readonly settings: JumpServerSettingsWithPassword,
@@ -501,6 +502,11 @@ export class JumpServerClient {
     this.fetchImpl = fetchImpl ?? createJumpServerFetch({ verifyTls: settings.verifyTls });
     this.timeouts = { ...DEFAULT_JUMPSERVER_TIMEOUTS, ...timeouts };
     this.sleep = sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    this.orgId = settings.orgId;
+  }
+
+  setOrgId(orgId: string): void {
+    this.orgId = orgId;
   }
 
   async ensureAuthToken(): Promise<string> {
@@ -875,8 +881,8 @@ export class JumpServerClient {
       Accept: 'application/json',
       Date: rfc1123Date()
     };
-    if (this.settings.orgId) {
-      headers['X-JMS-ORG'] = this.settings.orgId;
+    if (this.orgId) {
+      headers['X-JMS-ORG'] = this.orgId;
     }
     return headers;
   }

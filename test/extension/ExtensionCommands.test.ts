@@ -14,7 +14,11 @@ const notificationsMock = vi.hoisted(() => ({
 const jumpServerClientMock = vi.hoisted(() => ({
   calls: [] as string[],
   ensureAuthToken: vi.fn(),
+  healthCheck: vi.fn(),
   getUserProfile: vi.fn(),
+  listAccessibleOrgs: vi.fn(),
+  getCurrentOrg: vi.fn(),
+  setOrgId: vi.fn(),
   listAssetNodes: vi.fn(),
   listAssets: vi.fn(),
   listAllAssets: vi.fn(),
@@ -91,11 +95,11 @@ vi.mock('../../src/mcp/McpConfigInstaller', () => ({
 import { activate, deactivate } from '../../src/extension';
 
 
-function contextWithSettings(): vscode.ExtensionContext {
+function contextWithSettings(orgId = ''): vscode.ExtensionContext {
   const data = new Map<string, unknown>([
     ['jumpserverManager.settings', {
       baseUrl: 'https://jumpserver.example.com',
-      orgId: '',
+      orgId,
       username: 'alan',
       verifyTls: true,
       updatedAt: 1
@@ -123,7 +127,15 @@ beforeEach(() => {
   vi.clearAllMocks();
   jumpServerClientMock.calls.length = 0;
   jumpServerClientMock.ensureAuthToken.mockResolvedValue('token-1');
+  jumpServerClientMock.healthCheck.mockResolvedValue({ skipped: true });
   jumpServerClientMock.getUserProfile.mockResolvedValue({ id: 'user-1', username: 'alan' });
+  jumpServerClientMock.listAccessibleOrgs.mockResolvedValue([
+    { id: '00000000-0000-0000-0000-000000000002', name: 'Default' }
+  ]);
+  jumpServerClientMock.getCurrentOrg.mockResolvedValue({
+    id: '00000000-0000-0000-0000-000000000002',
+    name: 'Default'
+  });
   jumpServerClientMock.listAssetNodes.mockImplementation(async () => {
     jumpServerClientMock.calls.push('nodes');
     return [{ id: 'node-default', name: 'DEFAULT', path: ['DEFAULT'], assetIds: ['asset-1'], raw: {} }];
@@ -180,7 +192,11 @@ beforeEach(() => {
   }));
   jumpServerClientMock.JumpServerClient.mockImplementation(() => ({
     ensureAuthToken: jumpServerClientMock.ensureAuthToken,
+    healthCheck: jumpServerClientMock.healthCheck,
     getUserProfile: jumpServerClientMock.getUserProfile,
+    listAccessibleOrgs: jumpServerClientMock.listAccessibleOrgs,
+    getCurrentOrg: jumpServerClientMock.getCurrentOrg,
+    setOrgId: jumpServerClientMock.setOrgId,
     listAssetNodes: jumpServerClientMock.listAssetNodes,
     listAssets: jumpServerClientMock.listAssets,
     listAllAssets: jumpServerClientMock.listAllAssets,
@@ -482,11 +498,95 @@ describe('extension command wiring', () => {
 
     await validate();
 
-    expect(jumpServerClientMock.ensureAuthToken).toHaveBeenCalledTimes(1);
+    expect(jumpServerClientMock.healthCheck).toHaveBeenCalledTimes(1);
     expect(jumpServerClientMock.getUserProfile).toHaveBeenCalledTimes(1);
+    expect(jumpServerClientMock.listAccessibleOrgs).toHaveBeenCalledTimes(1);
     expect(jumpServerClientMock.listAssetNodes).not.toHaveBeenCalled();
     expect(jumpServerClientMock.listAssets).not.toHaveBeenCalled();
-    expect(notificationsMock.showTimedNotification).toHaveBeenCalledWith('JumpServer account verified.');
+    expect(notificationsMock.showTimedNotification).toHaveBeenCalledWith(
+      'JumpServer account verified. Organization: Default.'
+    );
+  });
+
+  it('asks the user to pick an organization when several are visible and none is saved', async () => {
+    const context = contextWithSettings();
+    jumpServerClientMock.listAccessibleOrgs.mockResolvedValueOnce([
+      { id: '00000000-0000-0000-0000-000000000002', name: 'Default' },
+      { id: '11111111-1111-1111-1111-111111111111', name: 'Prod' }
+    ]);
+    vi.mocked(vscode.window.showQuickPick).mockResolvedValueOnce({
+      label: 'Prod',
+      description: '11111111-1111-1111-1111-111111111111',
+      orgId: '11111111-1111-1111-1111-111111111111',
+      name: 'Prod'
+    } as never);
+
+    activate(context);
+    await registeredCommand('jumpserverManager.validate')();
+
+    expect(vscode.window.showQuickPick).toHaveBeenCalled();
+    expect(context.globalState.update).toHaveBeenCalledWith(
+      'jumpserverManager.settings',
+      expect.objectContaining({ orgId: '11111111-1111-1111-1111-111111111111' })
+    );
+    expect(jumpServerClientMock.setOrgId).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
+  });
+
+  it('stops validate when organization selection is cancelled', async () => {
+    jumpServerClientMock.listAccessibleOrgs.mockResolvedValueOnce([
+      { id: '00000000-0000-0000-0000-000000000002', name: 'Default' },
+      { id: '11111111-1111-1111-1111-111111111111', name: 'Prod' }
+    ]);
+    vi.mocked(vscode.window.showQuickPick).mockResolvedValueOnce(undefined);
+
+    activate(contextWithSettings());
+    await registeredCommand('jumpserverManager.validate')();
+
+    expect(notificationsMock.showTimedNotification).toHaveBeenCalledWith(
+      'Organization selection was cancelled.',
+      'error'
+    );
+    expect(jumpServerClientMock.listAssetNodes).not.toHaveBeenCalled();
+  });
+
+  it('does not list assets when organization selection is cancelled on refresh', async () => {
+    jumpServerClientMock.listAccessibleOrgs.mockResolvedValueOnce([
+      { id: '00000000-0000-0000-0000-000000000002', name: 'Default' },
+      { id: '11111111-1111-1111-1111-111111111111', name: 'Prod' }
+    ]);
+    vi.mocked(vscode.window.showQuickPick).mockResolvedValueOnce(undefined);
+
+    activate(contextWithSettings());
+    await registeredCommand('jumpserverManager.refresh')();
+
+    expect(notificationsMock.showTimedNotification).toHaveBeenCalledWith(
+      'Organization selection was cancelled.',
+      'error'
+    );
+    expect(jumpServerClientMock.listAssetNodes).not.toHaveBeenCalled();
+    expect(jumpServerClientMock.listAllAssets).not.toHaveBeenCalled();
+  });
+
+  it('warns when the saved organization is no longer accessible then asks again', async () => {
+    const context = contextWithSettings('gone-org');
+    jumpServerClientMock.listAccessibleOrgs.mockResolvedValueOnce([
+      { id: '00000000-0000-0000-0000-000000000002', name: 'Default' },
+      { id: '11111111-1111-1111-1111-111111111111', name: 'Prod' }
+    ]);
+    vi.mocked(vscode.window.showQuickPick).mockResolvedValueOnce({
+      label: 'Prod',
+      description: '11111111-1111-1111-1111-111111111111',
+      orgId: '11111111-1111-1111-1111-111111111111',
+      name: 'Prod'
+    } as never);
+
+    activate(context);
+    await registeredCommand('jumpserverManager.validate')();
+
+    expect(notificationsMock.showTimedNotification).toHaveBeenCalledWith(
+      'Saved JumpServer organization gone-org is no longer accessible.'
+    );
+    expect(jumpServerClientMock.setOrgId).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
   });
 
   it('opens the unified terminal panel for MySQL assets', async () => {

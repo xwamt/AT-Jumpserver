@@ -748,6 +748,24 @@ describe('JumpServerClient REST flow', () => {
     }));
   });
 
+  it('sends the updated X-JMS-ORG after setOrgId', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ token: 'bearer-1' }))
+      .mockResolvedValueOnce(jsonResponse({ id: 'user-1' }));
+    const client = new JumpServerClient({
+      baseUrl: 'https://jumpserver.example.com',
+      orgId: '',
+      username: 'alan',
+      password: 'secret',
+      verifyTls: true
+    }, fetchMock);
+    client.setOrgId('org-2');
+    await client.getUserProfile();
+    expect(fetchMock).toHaveBeenNthCalledWith(2, expect.any(String), expect.objectContaining({
+      headers: expect.objectContaining({ 'X-JMS-ORG': 'org-2' })
+    }));
+  });
+
   it('merges full JumpServer directory paths from the user asset tree endpoint', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(jsonResponse({ token: 'bearer-1' }))
