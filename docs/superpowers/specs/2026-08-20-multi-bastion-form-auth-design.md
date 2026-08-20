@@ -1,7 +1,7 @@
 # Multi-bastion + form-auth fallback Design
 
 **Date:** 2026-08-20  
-**Status:** Draft — waiting for user review before the implementation plan  
+**Status:** Approved — implementation plan: `docs/superpowers/plans/2026-08-20-multi-bastion-form-auth.md`  
 **Prerequisite:** REST alignment on `feat/jumpserver-rest-alignment` (401 vs 403, org QuickPick, DRF `next`, `all=1&display=1`, 429 backoff, `GET /api/health/`). Those behaviors stay; this spec does not re-implement them.
 
 ---
