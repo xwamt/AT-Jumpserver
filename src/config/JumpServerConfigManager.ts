@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import {
   bastionDisplayName,
+  parseCachedJumpServerAsset,
   parseCachedJumpServerAssets,
+  parseCachedJumpServerNode,
   parseCachedJumpServerNodes,
   parseJumpServerBastion,
   parseJumpServerBastionList,
@@ -41,6 +43,21 @@ function stampBastionId(rows: unknown, bastionId: string): unknown[] {
     }
     return { ...(row as Record<string, unknown>), bastionId };
   });
+}
+
+function parseCachedRows<T>(rows: unknown, parseRow: (value: unknown) => T): T[] {
+  if (!Array.isArray(rows)) {
+    return [];
+  }
+  const parsed: T[] = [];
+  for (const row of rows) {
+    try {
+      parsed.push(parseRow(row));
+    } catch {
+      // Spec: drop rows that fail schema so one corrupt cache entry cannot block the tree.
+    }
+  }
+  return parsed;
 }
 
 export class JumpServerConfigManager {
@@ -185,7 +202,7 @@ export class JumpServerConfigManager {
 
   async listCachedAssets(bastionId?: string): Promise<CachedJumpServerAsset[]> {
     await this.migrateIfNeeded();
-    const assets = parseCachedJumpServerAssets(this.globalState.get<unknown[]>(ASSETS_KEY, []));
+    const assets = parseCachedRows(this.globalState.get<unknown[]>(ASSETS_KEY, []), parseCachedJumpServerAsset);
     return bastionId ? assets.filter((asset) => asset.bastionId === bastionId) : assets;
   }
 
@@ -202,7 +219,7 @@ export class JumpServerConfigManager {
 
   async listCachedAssetNodes(bastionId?: string): Promise<CachedJumpServerNode[]> {
     await this.migrateIfNeeded();
-    const nodes = parseCachedJumpServerNodes(this.globalState.get<unknown[]>(NODES_KEY, []));
+    const nodes = parseCachedRows(this.globalState.get<unknown[]>(NODES_KEY, []), parseCachedJumpServerNode);
     return bastionId ? nodes.filter((node) => node.bastionId === bastionId) : nodes;
   }
 
@@ -252,18 +269,23 @@ export class JumpServerConfigManager {
       verifyTls: settings.verifyTls,
       updatedAt: settings.updatedAt
     });
-    await this.globalState.update(BASTIONS_KEY, [bastion]);
+    const assets = parseCachedRows(
+      stampBastionId(this.globalState.get<unknown>(ASSETS_KEY, []), id),
+      parseCachedJumpServerAsset
+    );
+    const nodes = parseCachedRows(
+      stampBastionId(this.globalState.get<unknown>(NODES_KEY, []), id),
+      parseCachedJumpServerNode
+    );
 
+    await this.globalState.update(BASTIONS_KEY, [bastion]);
     const password = await this.secrets.get(PASSWORD_KEY);
     if (password !== undefined) {
       await this.secrets.store(passwordKey(id), password);
       await this.secrets.delete(PASSWORD_KEY);
     }
-
-    const stampedAssets = stampBastionId(this.globalState.get<unknown>(ASSETS_KEY, []), id);
-    await this.globalState.update(ASSETS_KEY, parseCachedJumpServerAssets(stampedAssets));
-    const stampedNodes = stampBastionId(this.globalState.get<unknown>(NODES_KEY, []), id);
-    await this.globalState.update(NODES_KEY, parseCachedJumpServerNodes(stampedNodes));
+    await this.globalState.update(ASSETS_KEY, assets);
+    await this.globalState.update(NODES_KEY, nodes);
     await this.globalState.update(SETTINGS_KEY, undefined);
   }
 }

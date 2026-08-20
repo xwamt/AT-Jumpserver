@@ -334,4 +334,65 @@ describe('JumpServerConfigManager', () => {
     expect(await manager.listBastions()).toEqual([]);
     expect(globalState.data.get('jumpserverManager.bastions')).toEqual([]);
   });
+
+  it('drops invalid cache rows during migration and still deletes legacy settings', async () => {
+    const globalState = new MemoryMemento();
+    const secrets = new MemorySecretStore();
+    const id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+    await globalState.update('jumpserverManager.settings', settings());
+    await secrets.store('jumpserverManager.password', 'super-secret');
+    await globalState.update('jumpserverManager.cachedAssets', [
+      legacyAsset(),
+      { not: 'an asset' }
+    ]);
+    await globalState.update('jumpserverManager.cachedAssetNodes', [
+      {
+        id: 'node-web',
+        name: 'Web',
+        path: ['Production', 'Web'],
+        assetIds: ['asset-1'],
+        raw: {}
+      },
+      { id: '' }
+    ]);
+    const manager = new JumpServerConfigManager(globalState, secrets, {
+      idFactory: () => id
+    });
+
+    await manager.listBastions();
+
+    expect(await manager.listCachedAssets(id)).toEqual([
+      expect.objectContaining({ id: 'asset-1', bastionId: id })
+    ]);
+    expect(await manager.listCachedAssetNodes(id)).toEqual([
+      expect.objectContaining({ id: 'node-web', bastionId: id })
+    ]);
+    expect(globalState.data.has('jumpserverManager.settings')).toBe(false);
+    expect(await secrets.get('jumpserverManager.password')).toBeUndefined();
+    await expect(manager.listCachedAssets()).resolves.toEqual([
+      expect.objectContaining({ id: 'asset-1', bastionId: id })
+    ]);
+  });
+
+  it('drops corrupt cached rows when listing after bastions already exist', async () => {
+    const globalState = new MemoryMemento();
+    const existing = bastion();
+    await globalState.update('jumpserverManager.bastions', [existing]);
+    await globalState.update('jumpserverManager.cachedAssets', [
+      asset({ id: 'asset-1', bastionId: existing.id }),
+      { bad: true }
+    ]);
+    await globalState.update('jumpserverManager.cachedAssetNodes', [
+      node({ id: 'node-web', bastionId: existing.id }),
+      { id: '' }
+    ]);
+    const manager = new JumpServerConfigManager(globalState, new MemorySecretStore());
+
+    expect(await manager.listCachedAssets()).toEqual([
+      expect.objectContaining({ id: 'asset-1', bastionId: existing.id })
+    ]);
+    expect(await manager.listCachedAssetNodes()).toEqual([
+      expect.objectContaining({ id: 'node-web', bastionId: existing.id })
+    ]);
+  });
 });
