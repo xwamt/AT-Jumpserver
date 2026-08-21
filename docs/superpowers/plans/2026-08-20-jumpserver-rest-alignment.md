@@ -78,7 +78,7 @@ export const RESERVED_INTERNAL_ORG_ID = '00000000-0000-0000-0000-000000000004';
 - Modify: `src/jumpserver/JumpServerClient.ts` (`classifyRestFailure` currently ~62–79)
 - Modify: `test/jumpserver/JumpServerClientLogging.test.ts`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Create `test/jumpserver/apiError.test.ts`:
 
@@ -135,13 +135,13 @@ expect(classifyRestFailure(403)).toBe('forbidden');
 
 Import `classifyRestFailure` from `../../src/jumpserver/apiError` (or keep a re-export from `JumpServerClient` — pick one import site and use it in both tests).
 
-- [ ] **Step 2: Run tests to verify RED**
+- [x] **Step 2: Run tests to verify RED**
 
 Run: `npm test -- test/jumpserver/apiError.test.ts test/jumpserver/JumpServerClientLogging.test.ts`
 
 Expected: FAIL because `src/jumpserver/apiError.ts` does not exist, and logging still expects `auth-rejected` for 403.
 
-- [ ] **Step 3: Implement `apiError.ts` and switch classification**
+- [x] **Step 3: Implement `apiError.ts` and switch classification**
 
 `src/jumpserver/apiError.ts`:
 
@@ -233,13 +233,13 @@ export { classifyRestFailure, JumpServerApiError } from './apiError';
 
 Keep the existing comment that `"HTTP 502" in a log line tells a user nothing` above the re-export, or move that comment onto `apiError.ts`.
 
-- [ ] **Step 4: Run tests to verify GREEN**
+- [x] **Step 4: Run tests to verify GREEN**
 
 Run: `npm test -- test/jumpserver/apiError.test.ts test/jumpserver/JumpServerClientLogging.test.ts`
 
 Expected: PASS. Existing logging test that throws `/HTTP 503/` still passes because `JumpServerApiError` includes that substring — **do not change `requireOkResponse` in this task**.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/jumpserver/apiError.ts src/jumpserver/JumpServerClient.ts \
@@ -260,7 +260,7 @@ EOF
 - Modify: `test/jumpserver/JumpServerClient.test.ts`
 - Modify: `test/jumpserver/JumpServerClientLogging.test.ts` if the thrown message gains a `detail` suffix (keep `/HTTP 503/` matching)
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Add to `describe('JumpServerClient REST flow')` in `test/jumpserver/JumpServerClient.test.ts`:
 
@@ -320,13 +320,13 @@ expect(String(error)).toMatch(/You do not have permission to perform this action
 expect((error as JumpServerApiError).reason).toBe('forbidden');
 ```
 
-- [ ] **Step 2: Run the focused test and verify RED**
+- [x] **Step 2: Run the focused test and verify RED**
 
 Run: `npm test -- test/jumpserver/JumpServerClient.test.ts`
 
 Expected: FAIL — current `requireOkResponse` throws `JumpServer request failed with HTTP 403.` with no detail, and no `Date` header.
 
-- [ ] **Step 3: Implement header + error decode**
+- [x] **Step 3: Implement header + error decode**
 
 Add a helper in `JumpServerClient.ts` (or `apiError.ts`):
 
@@ -370,13 +370,13 @@ Update every `return this.requireOkResponse(...)` to `return await this.requireO
 
 Do the same for failed auth in `ensureAuthToken` when `!response.ok` or missing `token` (use `apiErrorMessageFromPayload`).
 
-- [ ] **Step 4: Run tests to verify GREEN**
+- [x] **Step 4: Run tests to verify GREEN**
 
 Run: `npm test -- test/jumpserver/JumpServerClient.test.ts test/jumpserver/JumpServerClientLogging.test.ts`
 
 Expected: PASS. Logging still contains `warn REST server-error (HTTP 503): /api/v1/perms/users/self/assets/asset-1/`. Thrown error may now also include `nope` from the 503 fixture — that is fine.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/jumpserver/JumpServerClient.ts src/jumpserver/apiError.ts \
@@ -396,7 +396,7 @@ EOF
 - Modify: `src/jumpserver/JumpServerClient.ts` (`isUnauthorizedResponse` ~920–922, `authenticatedRequest` ~836–850)
 - Modify: `test/jumpserver/JumpServerClient.test.ts` (existing 401 refresh test ~829)
 
-- [ ] **Step 1: Write the failing 403 test**
+- [x] **Step 1: Write the failing 403 test**
 
 Next to the existing `'refreshes an expired Bearer token once when a REST request returns unauthorized'` test:
 
@@ -418,13 +418,13 @@ it('does not treat HTTP 403 as an expired Bearer token', async () => {
 });
 ```
 
-- [ ] **Step 2: Run the focused test and verify RED**
+- [x] **Step 2: Run the focused test and verify RED**
 
 Run: `npm test -- test/jumpserver/JumpServerClient.test.ts`
 
 Expected: FAIL — `isUnauthorizedResponse` treats 403 as refresh, so a third auth POST happens.
 
-- [ ] **Step 3: Change unauthorized detection**
+- [x] **Step 3: Change unauthorized detection**
 
 ```ts
 function isUnauthorizedResponse(response: Response): boolean {
@@ -434,13 +434,13 @@ function isUnauthorizedResponse(response: Response): boolean {
 
 Do not refresh on 403.
 
-- [ ] **Step 4: Run tests to verify GREEN**
+- [x] **Step 4: Run tests to verify GREEN**
 
 Run: `npm test -- test/jumpserver/JumpServerClient.test.ts`
 
 Expected: PASS. The existing 401 refresh test still logs in twice.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/jumpserver/JumpServerClient.ts test/jumpserver/JumpServerClient.test.ts
@@ -459,7 +459,7 @@ EOF
 - Create: `src/jumpserver/pagination.ts`
 - Create: `test/jumpserver/pagination.test.ts`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```ts
 import { createHash } from 'node:crypto';
@@ -521,13 +521,13 @@ describe('throttleWaitMs', () => {
 
 `pageSignature` in production should `JSON.stringify(records, Object.keys(...))` only if needed. Official skills use `json.dumps(..., sort_keys=True)`. In Node, stringify does not sort keys. For tests, pass already-sorted plain objects as above so `JSON.stringify(records)` is deterministic. Document that the loop detector only needs stability for identical arrays, not canonicalization across key order.
 
-- [ ] **Step 2: Run test to verify RED**
+- [x] **Step 2: Run test to verify RED**
 
 Run: `npm test -- test/jumpserver/pagination.test.ts`
 
 Expected: FAIL — module missing.
 
-- [ ] **Step 3: Implement `pagination.ts`**
+- [x] **Step 3: Implement `pagination.ts`**
 
 ```ts
 import { createHash } from 'node:crypto';
@@ -607,13 +607,13 @@ export { buildOrigin } from './urls';
 
 Remove the original `buildOrigin` function from `JumpServerClient.ts`. Keep `resolveJumpServerUrl` in the client file **or** move it to `urls.ts` too if that is less churn — existing tests import it from `JumpServerClient`. Re-export whichever file owns it.
 
-- [ ] **Step 4: Run tests to verify GREEN**
+- [x] **Step 4: Run tests to verify GREEN**
 
 Run: `npm test -- test/jumpserver/pagination.test.ts test/jumpserver/JumpServerClient.test.ts`
 
 Expected: PASS. URL helper move must not break `resolveJumpServerUrl` tests.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/jumpserver/pagination.ts src/jumpserver/urls.ts src/jumpserver/JumpServerClient.ts \
@@ -633,7 +633,7 @@ EOF
 - Modify: `src/jumpserver/JumpServerClient.ts` (`fetchAssetPage`, `listAllAssets`, `listAssets`)
 - Modify: `test/jumpserver/JumpServerClient.test.ts` (paged URL assertions)
 
-- [ ] **Step 1: Update existing URL assertions (they will go RED)**
+- [x] **Step 1: Update existing URL assertions (they will go RED)**
 
 Every expected asset list URL of the form:
 
@@ -738,13 +738,13 @@ Loop detection: if a page's `pageSignature(records)` was already seen, stop pagi
 
 `LISTING_RETRY_LIMIT = 3` (initial try + 2 retries).
 
-- [ ] **Step 2: Run tests to verify RED**
+- [x] **Step 2: Run tests to verify RED**
 
 Run: `npm test -- test/jumpserver/JumpServerClient.test.ts`
 
 Expected: FAIL on old query strings and missing `next` follow.
 
-- [ ] **Step 3: Implement listing**
+- [x] **Step 3: Implement listing**
 
 `fetchAssetPage` uses `buildSelfAssetListPath`. On `JumpServerApiError` with `reason === 'throttled'`, sleep `throttleWaitMs(error.message, error.details)` and retry.
 
@@ -757,13 +757,13 @@ Expected: FAIL on old query strings and missing `next` follow.
 
 `listAssets` (single page) must use the same path builder so one-page callers also send `all=1&display=1`.
 
-- [ ] **Step 4: Run tests to verify GREEN**
+- [x] **Step 4: Run tests to verify GREEN**
 
 Run: `npm test -- test/jumpserver/JumpServerClient.test.ts test/jumpserver/JumpServerClientLogging.test.ts`
 
 Expected: PASS. Logging page-count test still walks 3 pages of size 2.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/jumpserver/JumpServerClient.ts test/jumpserver/JumpServerClient.test.ts
@@ -785,7 +785,7 @@ EOF
 - Modify: `src/jumpserver/JumpServerClient.ts`
 - Modify: `test/jumpserver/JumpServerClient.test.ts`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 `test/jumpserver/orgContext.test.ts`:
 
@@ -887,13 +887,13 @@ If org list is a bare array, return it. Normalize each item to `{ id: string, na
 
 `healthCheck` uses `request('/api/health/', ..., false)` so 404 is not thrown; do **not** send Bearer if the token is empty (health runs before login). Skip cookies-only is fine.
 
-- [ ] **Step 2: Run tests to verify RED**
+- [x] **Step 2: Run tests to verify RED**
 
 Run: `npm test -- test/jumpserver/orgContext.test.ts test/jumpserver/JumpServerClient.test.ts`
 
 Expected: FAIL — new modules/methods missing.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `src/jumpserver/orgs.ts`:
 
@@ -978,13 +978,13 @@ export function resolveOrgContext(input: {
 
 Implement `healthCheck`, `listAccessibleOrgs`, `getCurrentOrg` on `JumpServerClient`.
 
-- [ ] **Step 4: Run tests to verify GREEN**
+- [x] **Step 4: Run tests to verify GREEN**
 
 Run: `npm test -- test/jumpserver/orgContext.test.ts test/jumpserver/JumpServerClient.test.ts`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/jumpserver/orgs.ts src/jumpserver/orgContext.ts src/jumpserver/JumpServerClient.ts \
@@ -1015,7 +1015,7 @@ New English source strings (must be added to the zh-cn bundle or `test/i18n/nls.
 | `Organization selection was cancelled.` | `已取消组织选择。` |
 | `Saved JumpServer organization {org} is no longer accessible.` | `已保存的 JumpServer 组织 {org} 当前不可访问。` |
 
-- [ ] **Step 1: Add `showQuickPick` to the VS Code fixture and write failing command tests**
+- [x] **Step 1: Add `showQuickPick` to the VS Code fixture and write failing command tests**
 
 In `test-fixtures/vscode.ts` `window` object, add:
 
@@ -1106,13 +1106,13 @@ it('stops validate when organization selection is cancelled', async () => {
 
 Refresh must call the same org helper **before** `listAssetNodes` / `listAllAssets`. Add one refresh test: cancelled QuickPick does not list assets.
 
-- [ ] **Step 2: Run tests to verify RED**
+- [x] **Step 2: Run tests to verify RED**
 
 Run: `npm test -- test/extension/ExtensionCommands.test.ts test/i18n/nls.test.ts`
 
 Expected: FAIL — validate still shows `JumpServer account verified.` and `showQuickPick` is undefined.
 
-- [ ] **Step 3: Implement `ensureOrgContext` in `extension.ts`**
+- [x] **Step 3: Implement `ensureOrgContext` in `extension.ts`**
 
 Add a helper in `src/extension.ts` (keep it in this file; do not add a fourth org module):
 
@@ -1201,7 +1201,7 @@ const nodes = await client.listAssetNodes();
 
 If saved org is inaccessible, QuickPick still runs (`selectionRequired: true`). Optionally prepend the toast `Saved JumpServer organization {org} is no longer accessible.` before QuickPick when `settings.orgId` is set and `!context.selectedOrgAccessible`. Include that toast so the string is not dead.
 
-- [ ] **Step 4: Add l10n entries and run GREEN**
+- [x] **Step 4: Add l10n entries and run GREEN**
 
 Add the four English keys to `l10n/bundle.l10n.zh-cn.json`.
 
@@ -1211,7 +1211,7 @@ Run: `npm test -- test/extension/ExtensionCommands.test.ts test/i18n/nls.test.ts
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/extension.ts src/jumpserver/JumpServerClient.ts test-fixtures/vscode.ts \
@@ -1231,7 +1231,7 @@ EOF
 **Files:**
 - Modify: `README.md` (Setup steps 3–5)
 
-- [ ] **Step 1: Update Setup copy**
+- [x] **Step 1: Update Setup copy**
 
 Replace the org sentence in Setup:
 
@@ -1252,13 +1252,13 @@ Renumber the following steps. Mention that an empty org plus multiple organizati
 
 Keep the "Not Supported" bullet for access key / private token / SSO.
 
-- [ ] **Step 2: Run the full test suite**
+- [x] **Step 2: Run the full test suite**
 
 Run: `npm test`
 
 Expected: PASS, 0 failures. If the count in `CHANGELOG.md` / `docs/releases/0.1.8.md` still says "424 tests", **do not** edit those historical release notes. Only README in this task.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add README.md

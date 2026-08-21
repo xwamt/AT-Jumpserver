@@ -36,6 +36,12 @@ export class SftpTreeProvider implements vscode.TreeDataProvider<SftpTreeNode> {
       return element ? [] : [new SftpPlaceholderTreeItem(t('Open files from a JumpServer asset'))];
     }
 
+    if (state.kind === 'pending') {
+      return element ? [] : [
+        new SftpPlaceholderTreeItem(t('Files for {name} connect on first refresh', { name: state.asset.name }))
+      ];
+    }
+
     if (state.kind === 'disconnected') {
       return element ? [] : state.entries.map((entry) => this.toTreeItem(entry, true));
     }

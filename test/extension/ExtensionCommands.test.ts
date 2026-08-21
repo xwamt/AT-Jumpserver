@@ -27,6 +27,7 @@ const jumpServerClientMock = vi.hoisted(() => ({
   listAssetNodes: vi.fn(),
   listAssets: vi.fn(),
   listAllAssets: vi.fn(),
+  getAssetDetail: vi.fn(),
   openKokoSftpWebSocket: vi.fn(),
   JumpServerClient: vi.fn()
 }));
@@ -104,6 +105,7 @@ vi.mock('../../src/mcp/McpConfigInstaller', () => ({
 import { activate, deactivate } from '../../src/extension';
 import type { CachedJumpServerAsset, JumpServerBastion } from '../../src/config/schema';
 import { BastionTreeItem } from '../../src/tree/BastionTreeItem';
+import { AssetTreeItem } from '../../src/tree/TreeItems';
 
 const PROD_BASTION_ID = '11111111-1111-1111-1111-111111111111';
 const TEST_BASTION_ID = '22222222-2222-2222-2222-222222222222';
@@ -293,6 +295,7 @@ beforeEach(() => {
     listAssetNodes: jumpServerClientMock.listAssetNodes,
     listAssets: jumpServerClientMock.listAssets,
     listAllAssets: jumpServerClientMock.listAllAssets,
+    getAssetDetail: jumpServerClientMock.getAssetDetail,
     openKokoSftpWebSocket: jumpServerClientMock.openKokoSftpWebSocket
   }));
   mcpLifecycleMock.syncPackagedHub.mockClear();
@@ -428,6 +431,41 @@ describe('extension command wiring', () => {
 
     expect(terminalPanelMock.open).toHaveBeenCalledWith(context, item.asset, expect.any(Object), expect.any(Object));
     expect(sftpManagerMock.openAsset).toHaveBeenCalledWith(item.asset, expect.any(String));
+  });
+
+  it('prefetches asset detail when an asset is selected in the tree', async () => {
+    jumpServerClientMock.getAssetDetail.mockResolvedValue({ id: 'server-1' });
+    activate(contextWithBastions([prodBastion()]));
+    const assetsView = vi.mocked(vscode.window.createTreeView).mock.results[0]?.value as {
+      onDidChangeSelection: ReturnType<typeof vi.fn>;
+    };
+    const handler = assetsView.onDidChangeSelection.mock.calls[0]?.[0] as
+      | ((event: { selection: unknown[] }) => void)
+      | undefined;
+    expect(handler).toEqual(expect.any(Function));
+
+    handler?.({ selection: [new AssetTreeItem(sshAsset())] });
+    await vi.waitFor(() => {
+      expect(jumpServerClientMock.getAssetDetail).toHaveBeenCalledWith('server-1');
+    });
+    expect(notificationsMock.showTimedNotification).not.toHaveBeenCalled();
+  });
+
+  it('does not toast when asset detail prefetch fails', async () => {
+    jumpServerClientMock.getAssetDetail.mockRejectedValue(new Error('offline'));
+    activate(contextWithBastions([prodBastion()]));
+    const assetsView = vi.mocked(vscode.window.createTreeView).mock.results[0]?.value as {
+      onDidChangeSelection: ReturnType<typeof vi.fn>;
+    };
+    const handler = assetsView.onDidChangeSelection.mock.calls[0]?.[0] as
+      | ((event: { selection: unknown[] }) => void)
+      | undefined;
+
+    handler?.({ selection: [new AssetTreeItem(sshAsset())] });
+    await vi.waitFor(() => {
+      expect(jumpServerClientMock.getAssetDetail).toHaveBeenCalledWith('server-1');
+    });
+    expect(notificationsMock.showTimedNotification).not.toHaveBeenCalled();
   });
 
   it('switches the SFTP file tree when the active terminal changes', async () => {
@@ -829,5 +867,74 @@ describe('extension command wiring', () => {
     expect(jumpServerClientMock.JumpServerClient).toHaveBeenCalledTimes(2);
     expect(jumpServerClientMock.JumpServerClient.mock.calls[0][0].baseUrl).toBe('https://prod.example.com');
     expect(jumpServerClientMock.JumpServerClient.mock.calls[1][0].baseUrl).toBe('https://test.example.com');
+  });
+
+  it('reuses one JumpServer client across connections to the same bastion', async () => {
+    activate(contextWithBastions([prodBastion()]));
+    const connectCommand = registeredCommand('jumpserverManager.connect');
+
+    await connectCommand({ asset: sshAsset({ id: 'host-a', name: 'host-a' }) });
+    await connectCommand({ asset: sshAsset({ id: 'host-b', name: 'host-b' }) });
+
+    expect(jumpServerClientMock.JumpServerClient).toHaveBeenCalledTimes(1);
+  });
+
+  it('rebuilds the client when the stored password changes', async () => {
+    const passwords = { [PROD_BASTION_ID]: 'secret' };
+    activate(contextWithBastions([prodBastion()], passwords));
+    const connectCommand = registeredCommand('jumpserverManager.connect');
+
+    await connectCommand({ asset: sshAsset({ id: 'host-a', name: 'host-a' }) });
+    passwords[PROD_BASTION_ID] = 'rotated';
+    await connectCommand({ asset: sshAsset({ id: 'host-b', name: 'host-b' }) });
+
+    expect(jumpServerClientMock.JumpServerClient).toHaveBeenCalledTimes(2);
+  });
+
+  it('forgets the cached client when the bastion is deleted', async () => {
+    const context = contextWithBastions([prodBastion()]);
+    vi.mocked(vscode.window.showWarningMessage).mockResolvedValueOnce('Delete' as never);
+    activate(context);
+    const connectCommand = registeredCommand('jumpserverManager.connect');
+
+    await connectCommand({ asset: sshAsset() });
+    await registeredCommand('jumpserverManager.removeBastion')();
+    await context.globalState.update('jumpserverManager.bastions', [prodBastion()]);
+    await connectCommand({ asset: sshAsset() });
+
+    expect(jumpServerClientMock.JumpServerClient).toHaveBeenCalledTimes(2);
+  });
+
+  it('shares the bastion client with the SFTP session factory', async () => {
+    let createSession: ((asset: CachedJumpServerAsset) => Promise<unknown>) | undefined;
+    sftpManagerMock.JumpServerSftpManager.mockImplementation((options: {
+      createSession?: (asset: CachedJumpServerAsset) => Promise<unknown>;
+    }) => {
+      createSession = options.createSession;
+      return {
+        openAsset: sftpManagerMock.openAsset,
+        listDirectory: sftpManagerMock.listDirectory,
+        getState: sftpManagerMock.getState,
+        changeToParentDirectory: sftpManagerMock.changeToParentDirectory,
+        changeDirectory: sftpManagerMock.changeDirectory,
+        mkdir: sftpManagerMock.mkdir,
+        uploadFile: sftpManagerMock.uploadFile,
+        downloadFile: sftpManagerMock.downloadFile,
+        deleteEntry: sftpManagerMock.deleteEntry,
+        getActiveConnectionKey: sftpManagerMock.getActiveConnectionKey,
+        rename: sftpManagerMock.rename,
+        readFile: sftpManagerMock.readFile,
+        stat: sftpManagerMock.stat,
+        selectTerminal: sftpManagerMock.selectTerminal,
+        removeTerminal: sftpManagerMock.removeTerminal,
+        dispose: sftpManagerMock.dispose
+      };
+    });
+    activate(contextWithBastions([prodBastion()]));
+
+    await registeredCommand('jumpserverManager.connect')({ asset: sshAsset() });
+    await createSession?.(sshAsset());
+
+    expect(jumpServerClientMock.JumpServerClient).toHaveBeenCalledTimes(1);
   });
 });

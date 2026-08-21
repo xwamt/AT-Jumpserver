@@ -16,6 +16,16 @@ describe('SftpTreeProvider', () => {
     expect(children[0].label).toBe('Open files from a JumpServer asset');
   });
 
+  it('shows a pending placeholder without listing the remote root', async () => {
+    const provider = new SftpTreeProvider({
+      getState: () => ({ kind: 'pending', asset: { name: 'web-1' } as never }),
+      listDirectory: async () => { throw new Error('must not list'); }
+    });
+    const children = await provider.getChildren();
+    expect(children[0]).toBeInstanceOf(SftpPlaceholderTreeItem);
+    expect(children[0].label).toBe('Files for web-1 connect on first refresh');
+  });
+
   it('renders active root entries with a parent entry', async () => {
     const provider = new SftpTreeProvider({
       getState: () => ({ kind: 'active', rootPath: '/home/root', asset: {} as never }),

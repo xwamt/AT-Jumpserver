@@ -66,7 +66,10 @@ export class Uri {
 }
 
 export const window = {
-  createTreeView: vi.fn(),
+  createTreeView: vi.fn(() => ({
+    onDidChangeSelection: vi.fn(() => ({ dispose: vi.fn() })),
+    dispose: vi.fn()
+  })),
   createOutputChannel: vi.fn(() => ({
     name: 'AT JumpServer Terminal',
     trace: vi.fn(),

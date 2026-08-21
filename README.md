@@ -39,7 +39,7 @@ AT JumpServer Terminal is a VS Code / Cursor extension for opening browser-style
 4. Run `JumpServer: Validate Account` and pick the bastion if more than one is saved. If the account can see more than one organization, pick one; the Default organization is saved automatically only on a reserved single-org deployment. An empty org ID with more than one organization prompts on Validate and Refresh rather than silently mixing inventories.
 5. Run `JumpServer: Refresh Assets` to refresh every bastion, or right-click a bastion root to refresh only that one.
 6. Click an SSH, MySQL, or Redis asset to connect in a terminal.
-7. Connect to an SSH asset, then use the Files view for the terminal-backed SFTP session.
+7. Connect to an SSH asset, then use Files and Refresh to open the SFTP session.
 8. Optional: run `Install/Repair AT Series MCP Config` to expose JumpServer tools to MCP-capable agents.
 
 ## AT Series MCP (split-out hub)

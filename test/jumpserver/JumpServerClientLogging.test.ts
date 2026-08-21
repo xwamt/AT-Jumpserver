@@ -102,6 +102,22 @@ describe('JumpServerClient logging', () => {
     expect(lines).toContain('info asset sync walked 3 page(s): 5 of 5 asset(s)');
   });
 
+  it('logs REST bearer reuse after the first login', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (String(url).includes('/authentication/auth/')) {
+        return jsonResponse({ token: 'bearer-1' });
+      }
+      return jsonResponse({ id: 'user-1' });
+    });
+    const client = new JumpServerClient(settings, fetchMock);
+
+    await client.getUserProfile();
+    await client.getUserProfile();
+
+    expect(lines).toContain('info REST bearer login');
+    expect(lines).toContain('info REST bearer reused');
+  });
+
   it('never writes a connection token into the channel, even from a failing URL', async () => {
     const client = new JumpServerClient(settings, () => hang(), { requestMs: 10 });
 

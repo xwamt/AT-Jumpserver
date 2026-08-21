@@ -3,6 +3,7 @@ import { JumpServerAgentToolService } from './agent/JumpServerAgentToolService';
 import { JumpServerConfigManager } from './config/JumpServerConfigManager';
 import type { CachedJumpServerAsset, JumpServerBastion } from './config/schema';
 import { assetPathsFromNodes, JumpServerClient } from './jumpserver/JumpServerClient';
+import { JumpServerClientPool } from './jumpserver/JumpServerClientPool';
 import { resolveOrgContext } from './jumpserver/orgContext';
 import { BridgeServer } from './mcp/BridgeServer';
 import { syncPackagedHub } from './mcp/hubSync';
@@ -31,6 +32,7 @@ import { TerminalPanel } from './webview/TerminalPanel';
 import { t } from './i18n/t';
 
 let extensionCleanup: { dispose(): void } | undefined;
+let clientPool: JumpServerClientPool | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
   // A WebSocket terminal, a chunked SFTP transport, a local HTTP bridge and a
@@ -41,6 +43,8 @@ export function activate(context: vscode.ExtensionContext): void {
   setLogSink(logChannel);
   context.subscriptions.push(logChannel, { dispose: () => setLogSink(undefined) });
 
+  clientPool?.dropAll();
+  clientPool = new JumpServerClientPool();
   const configManager = new JumpServerConfigManager(context.globalState, context.secrets);
   const terminalContext = new TerminalContextRegistry();
   const treeProvider = new JumpServerTreeProvider(configManager);
@@ -135,8 +139,10 @@ export function activate(context: vscode.ExtensionContext): void {
       sftpEditManager.dispose();
       void bridgeServer.dispose();
       TerminalPanel.disconnectAll();
+      clientPool?.dropAll();
       if (extensionCleanup === cleanup) {
         extensionCleanup = undefined;
+        clientPool = undefined;
       }
     }
   };
@@ -153,10 +159,19 @@ export function activate(context: vscode.ExtensionContext): void {
     })
   );
 
+  const assetsView = vscode.window.createTreeView('jumpserverManager.assets', {
+    treeDataProvider: treeProvider,
+    showCollapseAll: true
+  });
+
   context.subscriptions.push(
-    vscode.window.createTreeView('jumpserverManager.assets', {
-      treeDataProvider: treeProvider,
-      showCollapseAll: true
+    assetsView,
+    assetsView.onDidChangeSelection((event) => {
+      const item = event.selection[0];
+      if (!(item instanceof AssetTreeItem)) {
+        return;
+      }
+      void prefetchAssetDetail(configManager, item.asset);
     }),
     vscode.window.createTreeView('jumpserverManager.sftpFiles', {
       treeDataProvider: sftpTreeProvider,
@@ -225,6 +240,7 @@ export function activate(context: vscode.ExtensionContext): void {
           return;
         }
         await configManager.deleteBastion(bastion.id);
+        clientPool?.drop(bastion.id);
         for (const terminalId of TerminalPanel.disposeSessionsForBastion(bastion.id)) {
           sftpManager.removeTerminal(terminalId);
         }
@@ -637,10 +653,26 @@ async function ensureOrgContext(
   return { id: picked.orgId, name: picked.name };
 }
 
+async function prefetchAssetDetail(
+  configManager: JumpServerConfigManager,
+  asset: CachedJumpServerAsset
+): Promise<void> {
+  try {
+    const client = await createClient(configManager, asset.bastionId);
+    await client.getAssetDetail(asset.id);
+  } catch (error) {
+    log.debug(`asset detail prefetch failed: ${errorMessage(error)}`);
+  }
+}
+
 async function createClient(configManager: JumpServerConfigManager, bastionId: string): Promise<JumpServerClient> {
   const bastion = await configManager.requireBastion(bastionId);
   const password = await configManager.requirePassword(bastionId);
-  return new JumpServerClient({
+  // Terminal and SFTP both come through here; a shared pool is what lets them
+  // skip a second REST + KoKo login on the same bastion.
+  const pool = clientPool ?? new JumpServerClientPool();
+  clientPool = pool;
+  return pool.acquire(bastionId, {
     baseUrl: bastion.baseUrl,
     orgId: bastion.orgId,
     username: bastion.username,

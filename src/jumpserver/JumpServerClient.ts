@@ -245,6 +245,13 @@ export function parseCsrfMiddlewareToken(html: string): string {
   return match[1];
 }
 
+export function isKokoLoginRedirect(location: string | null): boolean {
+  if (!location) {
+    return false;
+  }
+  return /\/(?:core\/)?auth\/login(?:\/|\?|$)/i.test(location);
+}
+
 function normalizeJumpServerOrgs(records: unknown[]): JumpServerOrg[] {
   const orgs: JumpServerOrg[] = [];
   for (const item of records) {
@@ -504,6 +511,10 @@ async function withDeadline<T>(
 
 export class JumpServerClient {
   private authToken = '';
+  private authInflight: Promise<string> | undefined;
+  private warmupInflight: Promise<void> | undefined;
+  private assetDetails = new Map<string, Record<string, any>>();
+  private smartEndpoint: JumpServerEndpoint | undefined;
   private cookies: JumpServerCookie[] = [];
   private readonly fetchImpl: FetchLike;
   private readonly timeouts: JumpServerTimeouts;
@@ -528,8 +539,20 @@ export class JumpServerClient {
 
   async ensureAuthToken(): Promise<string> {
     if (this.authToken) {
+      log.info('REST bearer reused');
       return this.authToken;
     }
+    if (this.authInflight) {
+      return this.authInflight;
+    }
+    this.authInflight = this.loginRestBearer().finally(() => {
+      this.authInflight = undefined;
+    });
+    return this.authInflight;
+  }
+
+  private async loginRestBearer(): Promise<string> {
+    log.info('REST bearer login');
     const jsonResponse = await this.request('/api/v1/authentication/auth/', {
       method: 'POST',
       headers: { 'content-type': 'application/json', Accept: 'application/json' },
@@ -758,9 +781,16 @@ export class JumpServerClient {
   }
 
   async getAssetDetail(assetId: string): Promise<Record<string, any>> {
+    const cached = this.assetDetails.get(assetId);
+    if (cached) {
+      log.info(`asset detail reused for ${assetId}`);
+      return cached;
+    }
     await this.ensureAuthToken();
     const response = await this.authenticatedRequest(`/api/v1/perms/users/self/assets/${encodeURIComponent(assetId)}/`);
-    return await response.json() as Record<string, any>;
+    const detail = await response.json() as Record<string, any>;
+    this.assetDetails.set(assetId, detail);
+    return detail;
   }
 
   async createConnectionToken(input: { assetId: string; account: JumpServerAccountRef; protocol: JumpServerConnectionProtocol }): Promise<{ id: string }> {
@@ -780,21 +810,49 @@ export class JumpServerClient {
   }
 
   async getSmartEndpoint(tokenId: string): Promise<JumpServerEndpoint> {
+    if (this.smartEndpoint) {
+      log.info('KoKo endpoint reused');
+      return this.smartEndpoint;
+    }
     await this.ensureAuthToken();
-    const response = await this.authenticatedRequest(`/api/v1/terminal/endpoints/smart/?protocol=https&token=${encodeURIComponent(tokenId)}`);
-    return await response.json() as JumpServerEndpoint;
+    const response = await this.authenticatedRequest(
+      `/api/v1/terminal/endpoints/smart/?protocol=https&token=${encodeURIComponent(tokenId)}`
+    );
+    this.smartEndpoint = await response.json() as JumpServerEndpoint;
+    return this.smartEndpoint;
   }
 
   async warmupKokoConnectPage(tokenId: string, timestamp = Date.now()): Promise<void> {
+    if (this.warmupInflight) {
+      await this.warmupInflight;
+      const again = await this.tryWarmupKokoConnectPage(tokenId, timestamp);
+      if (again) {
+        return;
+      }
+    }
+    this.warmupInflight = this.runWarmup(tokenId, timestamp).finally(() => {
+      this.warmupInflight = undefined;
+    });
+    await this.warmupInflight;
+  }
+
+  private hasWebSessionCookie(): boolean {
+    return this.cookies.some((cookie) => cookie.name === 'sessionid');
+  }
+
+  private async runWarmup(tokenId: string, timestamp: number): Promise<void> {
+    const started = Date.now();
     const authenticated = await this.tryWarmupKokoConnectPage(tokenId, timestamp);
     if (authenticated) {
+      log.info(`KoKo warmup ok in ${Date.now() - started}ms`);
       return;
     }
-    this.cookies = [];
+    this.cookies = this.cookies.filter((cookie) => cookie.name !== 'sessionid');
     const retried = await this.tryWarmupKokoConnectPage(tokenId, timestamp);
     if (!retried) {
       throw new Error('KoKo web session is not authenticated.');
     }
+    log.info(`KoKo warmup login in ${Date.now() - started}ms`);
   }
 
   private async tryWarmupKokoConnectPage(tokenId: string, timestamp: number): Promise<boolean> {
@@ -806,13 +864,18 @@ export class JumpServerClient {
       redirect: 'manual'
     }, false);
     if (initialConnectResponse.ok) {
+      log.info('KoKo warmup skipped (already authenticated)');
       return true;
     }
     if (![301, 302, 303, 307, 308].includes(initialConnectResponse.status)) {
       throw new Error(`KoKo connect warmup failed with HTTP ${initialConnectResponse.status}.`);
     }
 
-    const loginPath = initialConnectResponse.headers.get('location') || '/core/auth/login/?next=/koko/connect/';
+    const redirectLocation = initialConnectResponse.headers.get('location');
+    if (!isKokoLoginRedirect(redirectLocation)) {
+      return true;
+    }
+    const loginPath = redirectLocation || '/core/auth/login/?next=/koko/connect/';
     const loginPage = await this.request(loginPath, {
       headers: { Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' }
     }, false);
@@ -868,19 +931,9 @@ export class JumpServerClient {
     rows: number;
     webSocketFactory?: WebSocketFactory;
   }): Promise<KokoWebSocket> {
-    await this.warmupKokoConnectPage(input.tokenId);
-    const url = buildKokoWsUrl(this.settings.baseUrl, input.endpoint, input.tokenId);
-    const factory = input.webSocketFactory ?? this.timedWebSocketFactory();
-    return factory(url, {
-      origin: buildOrigin(this.settings.baseUrl),
-      headers: {
-        Cookie: this.cookieHeader(),
-        'Cache-Control': 'no-cache',
-        Pragma: 'no-cache',
-        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-        'User-Agent': 'AT JumpServer Terminal'
-      },
-      rejectUnauthorized: this.settings.verifyTls
+    return this.openKokoSocket({
+      kind: 'terminal',
+      ...input
     });
   }
 
@@ -890,20 +943,48 @@ export class JumpServerClient {
     timestamp?: number;
     webSocketFactory?: WebSocketFactory;
   }): Promise<KokoWebSocket> {
-    await this.warmupKokoConnectPage(input.tokenId);
-    const url = buildKokoSftpWsUrl(this.settings.baseUrl, input.endpoint, input.tokenId, input.timestamp);
-    const factory = input.webSocketFactory ?? this.timedWebSocketFactory();
-    return factory(url, {
-      origin: buildOrigin(this.settings.baseUrl),
-      headers: {
-        Cookie: this.cookieHeader(),
-        'Cache-Control': 'no-cache',
-        Pragma: 'no-cache',
-        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-        'User-Agent': 'AT JumpServer SFTP'
-      },
-      rejectUnauthorized: this.settings.verifyTls
+    return this.openKokoSocket({
+      kind: 'sftp',
+      ...input
     });
+  }
+
+  private async openKokoSocket(input: {
+    kind: 'terminal' | 'sftp';
+    endpoint: JumpServerEndpoint;
+    tokenId: string;
+    cols?: number;
+    rows?: number;
+    timestamp?: number;
+    webSocketFactory?: WebSocketFactory;
+  }): Promise<KokoWebSocket> {
+    const open = () => {
+      const url = input.kind === 'sftp'
+        ? buildKokoSftpWsUrl(this.settings.baseUrl, input.endpoint, input.tokenId, input.timestamp)
+        : buildKokoWsUrl(this.settings.baseUrl, input.endpoint, input.tokenId);
+      const factory = input.webSocketFactory ?? this.timedWebSocketFactory();
+      return factory(url, {
+        origin: buildOrigin(this.settings.baseUrl),
+        headers: {
+          Cookie: this.cookieHeader(),
+          'Cache-Control': 'no-cache',
+          Pragma: 'no-cache',
+          'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+          'User-Agent': input.kind === 'sftp' ? 'AT JumpServer SFTP' : 'AT JumpServer Terminal'
+        },
+        rejectUnauthorized: this.settings.verifyTls
+      });
+    };
+    if (this.hasWebSessionCookie()) {
+      try {
+        log.info(`KoKo ${input.kind} websocket with cached session`);
+        return await open();
+      } catch {
+        log.info(`KoKo ${input.kind} websocket handshake failed; warming up`);
+      }
+    }
+    await this.warmupKokoConnectPage(input.tokenId);
+    return open();
   }
 
   cookieHeader(): string {
@@ -1092,6 +1173,8 @@ export class JumpServerClient {
 
   private resetRestAuth(): void {
     this.authToken = '';
+    this.assetDetails.clear();
+    this.smartEndpoint = undefined;
   }
 
   private async request(

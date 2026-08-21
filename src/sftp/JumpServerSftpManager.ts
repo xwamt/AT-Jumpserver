@@ -24,6 +24,7 @@ export interface JumpServerSftpSessionLike {
 
 export type JumpServerSftpTreeState =
   | { kind: 'none' }
+  | { kind: 'pending'; asset: CachedJumpServerAsset }
   | { kind: 'active'; asset: CachedJumpServerAsset; rootPath: string }
   | { kind: 'disconnected'; asset: CachedJumpServerAsset; rootPath: string; entries: JumpServerSftpEntry[] };
 
@@ -56,7 +57,6 @@ export class JumpServerSftpManager {
       this.connections.set(terminalId, { asset, session: undefined, rootPath: undefined, snapshot: undefined });
     }
     this.activeTerminalId = terminalId;
-    await this.ensureRoot();
   }
 
   closeActive(): void {
@@ -109,6 +109,9 @@ export class JumpServerSftpManager {
     }
     if (active.snapshot) {
       return { kind: 'disconnected', asset: active.asset, ...active.snapshot };
+    }
+    if (active.asset) {
+      return { kind: 'pending', asset: active.asset };
     }
     return { kind: 'none' };
   }

@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { JumpServerSession } from '../../src/jumpserver/JumpServerSession';
+import { setLogSink } from '../../src/utils/logger';
 
 class FakeSocket extends EventEmitter {
   sent: string[] = [];
@@ -47,6 +48,10 @@ describe('JumpServerSession', () => {
     events = { output: vi.fn(), status: vi.fn(), error: vi.fn() };
   });
 
+  afterEach(() => {
+    setLogSink(undefined);
+  });
+
   it('creates token, opens KoKo socket, and initializes terminal after CONNECT', async () => {
     const fakeClient = client(socket);
     const session = new JumpServerSession({
@@ -70,6 +75,27 @@ describe('JumpServerSession', () => {
       data: JSON.stringify({ cols: 80, rows: 24, code: '' })
     }));
     expect(events.status).toHaveBeenCalledWith('Connected');
+  });
+
+  it('logs how long a KoKo terminal connect took', async () => {
+    const lines: string[] = [];
+    setLogSink({
+      trace: (m) => lines.push(m),
+      debug: (m) => lines.push(m),
+      info: (m) => lines.push(m),
+      warn: (m) => lines.push(m),
+      error: (m) => lines.push(m)
+    });
+    const session = new JumpServerSession({
+      asset: { id: 'asset-1', name: 'web-1' },
+      connectionKind: 'ssh',
+      client: client(socket),
+      events
+    });
+
+    await session.connect();
+
+    expect(lines.some((line) => /KoKo terminal connect for web-1 finished in \d+ms/.test(line))).toBe(true);
   });
 
 

@@ -62,8 +62,25 @@ describe('JumpServerSftpManager', () => {
 
     await manager.openAsset(asset());
 
-    expect(fakeSession.connect).toHaveBeenCalledTimes(1);
+    expect(fakeSession.connect).not.toHaveBeenCalled();
     expect(await manager.ensureRoot()).toBe('/home/root');
+    expect(fakeSession.connect).toHaveBeenCalledTimes(1);
+  });
+
+  it('binds an asset without opening the SFTP session', async () => {
+    const fakeSession = session();
+    const createSession = vi.fn(() => fakeSession);
+    const manager = new JumpServerSftpManager({ createSession });
+    await manager.openAsset(asset());
+
+    expect(createSession).not.toHaveBeenCalled();
+    expect(manager.getState()).toEqual({
+      kind: 'pending',
+      asset: expect.objectContaining({ id: 'asset-1' })
+    });
+    await manager.listDirectory();
+    expect(createSession).toHaveBeenCalledTimes(1);
+    expect(fakeSession.connect).toHaveBeenCalledTimes(1);
   });
 
   it('routes mutations to the active session', async () => {
@@ -106,7 +123,9 @@ describe('JumpServerSftpManager', () => {
     });
 
     await manager.openAsset(asset({ id: 'asset-1', name: 'web-1' }), 'terminal-1');
+    await manager.listDirectory();
     await manager.openAsset(asset({ id: 'asset-2', name: 'web-2' }), 'terminal-2');
+    await manager.listDirectory();
     manager.selectTerminal('terminal-1');
 
     expect(firstSession.dispose).not.toHaveBeenCalled();
@@ -128,7 +147,9 @@ describe('JumpServerSftpManager', () => {
     });
 
     await manager.openAsset(asset({ id: 'asset-1' }), 'terminal-1');
+    await manager.listDirectory();
     await manager.openAsset(asset({ id: 'asset-2' }), 'terminal-2');
+    await manager.listDirectory();
     manager.removeTerminal('terminal-2');
     manager.selectTerminal('terminal-1');
 

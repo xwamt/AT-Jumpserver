@@ -19,6 +19,13 @@ function placeholdersOf(text: string): string[] {
 const english = readJson<Record<string, string>>('package.nls.json');
 const chinese = readJson<Record<string, string>>('package.nls.zh-cn.json');
 const bundle = readJson<Record<string, string>>('l10n/bundle.l10n.zh-cn.json');
+/**
+ * Microsoft's language pack and some VS Code forks (Antigravity, etc.) report
+ * `vscode.env.language` as `zh-hans` or `zh`, not `zh-cn`. The host loads
+ * `package.nls.${language}.json` and `bundle.l10n.${language}.json` with no
+ * fallback, so a zh-cn-only ship shows English while the workbench is Chinese.
+ */
+const CHINESE_LOCALE_ALIASES = ['zh-hans', 'zh'] as const;
 
 describe('package.nls files', () => {
   it('declares exactly the same keys in both languages', () => {
@@ -56,6 +63,15 @@ describe('l10n runtime bundle', () => {
   it('translates every entry into something other than an empty string', () => {
     for (const [source, translation] of Object.entries(bundle)) {
       expect(translation.trim(), source).not.toBe('');
+    }
+  });
+
+  it('ships zh-hans and zh copies identical to zh-cn so fork locales still translate', () => {
+    for (const locale of CHINESE_LOCALE_ALIASES) {
+      const nlsAlias = readJson<Record<string, string>>(`package.nls.${locale}.json`);
+      const bundleAlias = readJson<Record<string, string>>(`l10n/bundle.l10n.${locale}.json`);
+      expect(nlsAlias, `package.nls.${locale}.json`).toEqual(chinese);
+      expect(bundleAlias, `l10n/bundle.l10n.${locale}.json`).toEqual(bundle);
     }
   });
 });

@@ -77,6 +77,7 @@ export class JumpServerSession {
   }) {}
 
   async connect(): Promise<void> {
+    const started = Date.now();
     this.input.events.status('Loading asset');
     const detail = await this.input.client.getAssetDetail(this.input.asset.id);
     const protocol = connectionKindProtocol(this.input.connectionKind);
@@ -102,6 +103,7 @@ export class JumpServerSession {
       rows: this.rows
     });
     this.bindSocket(this.socket);
+    log.info(`KoKo terminal connect for ${this.input.asset.name} finished in ${Date.now() - started}ms`);
   }
 
   /**

@@ -60,6 +60,7 @@
   "Connect": "连接",
   "Go Up": "返回上一级",
   "Open files from a JumpServer asset": "从 JumpServer 资产打开文件",
+  "Files for {name} connect on first refresh": "文件（{name}）将在首次刷新时连接",
   "JumpServer configuration was not saved: the form sent no values.": "JumpServer 配置未保存：表单未提交任何内容。",
   "JumpServer configuration was not saved. {message}": "JumpServer 配置未保存。{message}",
   "JumpServer configuration saved.": "JumpServer 配置已保存。",

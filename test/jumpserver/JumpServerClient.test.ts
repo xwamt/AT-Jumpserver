@@ -25,6 +25,7 @@ import {
   extractAssetTreeNodes,
   JumpServerApiError,
   JumpServerClient,
+  isKokoLoginRedirect,
   normalizeJumpServerAsset,
   parseCsrfMiddlewareToken,
   resolveFirstUsableAccount
@@ -56,6 +57,13 @@ describe('JumpServerClient pure helpers', () => {
 
   it('parses csrfmiddlewaretoken from JumpServer login HTML', () => {
     expect(parseCsrfMiddlewareToken('<input name="csrfmiddlewaretoken" value="csrf-1">')).toBe('csrf-1');
+  });
+
+  it('treats only login paths as KoKo login redirects', () => {
+    expect(isKokoLoginRedirect('/core/auth/login/?next=/koko/connect/')).toBe(true);
+    expect(isKokoLoginRedirect('/auth/login/')).toBe(true);
+    expect(isKokoLoginRedirect('/koko/elfinder/?token=token-1')).toBe(false);
+    expect(isKokoLoginRedirect(null)).toBe(false);
   });
 
   it('normalizes JumpServer assets like Ahell', () => {
@@ -941,6 +949,29 @@ describe('JumpServerClient REST flow', () => {
     expect(fetchMock).toHaveBeenNthCalledWith(2, 'https://jumpserver.example.com/api/v1/perms/users/self/assets/asset-1/', expect.any(Object));
   });
 
+  it('reuses asset detail already fetched for the same asset id', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ token: 'bearer-1' }))
+      .mockResolvedValueOnce(jsonResponse({
+        id: 'asset-1',
+        permed_accounts: [{ id: 'account-1', username: 'root', has_secret: true }],
+        permed_protocols: [{ name: 'ssh' }]
+      }));
+    const client = new JumpServerClient({
+      baseUrl: 'https://jumpserver.example.com',
+      orgId: '',
+      username: 'alan',
+      password: 'secret',
+      verifyTls: true
+    }, fetchMock);
+
+    const first = await client.getAssetDetail('asset-1');
+    const second = await client.getAssetDetail('asset-1');
+
+    expect(second).toBe(first);
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('/self/assets/asset-1/'))).toHaveLength(1);
+  });
+
   it('creates connection token and smart endpoint requests', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(jsonResponse({ token: 'bearer-1' }))
@@ -968,6 +999,26 @@ describe('JumpServerClient REST flow', () => {
       body: expect.stringContaining('"connect_method":"web_cli"')
     }));
     expect(fetchMock).toHaveBeenNthCalledWith(3, 'https://jumpserver.example.com/api/v1/terminal/endpoints/smart/?protocol=https&token=token-1', expect.any(Object));
+  });
+
+  it('reuses the smart endpoint host after the first lookup', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ token: 'bearer-1' }))
+      .mockResolvedValueOnce(jsonResponse({ host: 'koko.example.com', https_port: 443 }))
+      .mockResolvedValueOnce(jsonResponse({ id: 'token-2' }));
+    const client = new JumpServerClient({
+      baseUrl: 'https://jumpserver.example.com',
+      orgId: '',
+      username: 'alan',
+      password: 'secret',
+      verifyTls: true
+    }, fetchMock);
+
+    const first = await client.getSmartEndpoint('token-1');
+    const second = await client.getSmartEndpoint('token-2');
+
+    expect(second).toEqual(first);
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('/terminal/endpoints/smart/'))).toHaveLength(1);
   });
 
   it('creates MySQL db_client connection tokens', async () => {
@@ -1027,6 +1078,61 @@ describe('JumpServerClient REST flow', () => {
         Cookie: 'csrftoken=abc; sessionid=session-1'
       })
     }));
+  });
+
+  it('treats a non-login KoKo redirect as an authenticated warmup', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('', {
+        status: 302,
+        headers: { location: '/koko/elfinder/?token=token-1' }
+      }));
+    const client = new JumpServerClient({
+      baseUrl: 'https://jumpserver.example.com',
+      orgId: '',
+      username: 'alan',
+      password: 'secret',
+      verifyTls: true
+    }, fetchMock);
+
+    await client.warmupKokoConnectPage('token-1', 1000);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls.some(([, init]) => init && (init as RequestInit).method === 'POST')).toBe(false);
+  });
+
+  it('runs one KoKo form login when two warmups start together', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('', {
+        status: 302,
+        headers: { location: '/core/auth/login/?next=/koko/connect/' }
+      }))
+      .mockResolvedValueOnce(textResponse('<input name="csrfmiddlewaretoken" value="csrf-1">', {
+        headers: { 'set-cookie': 'csrftoken=abc; Path=/' }
+      }))
+      .mockResolvedValueOnce(new Response('', {
+        status: 302,
+        headers: { location: '/ui/', 'set-cookie': 'sessionid=session-1; Path=/' }
+      }))
+      .mockResolvedValueOnce(textResponse('ok'))
+      .mockResolvedValueOnce(jsonResponse({ id: 'user-1' }))
+      .mockResolvedValue(textResponse('<html>koko</html>'));
+    const client = new JumpServerClient({
+      baseUrl: 'https://jumpserver.example.com',
+      orgId: '',
+      username: 'alan',
+      password: 'secret',
+      verifyTls: true
+    }, fetchMock);
+
+    await Promise.all([
+      client.warmupKokoConnectPage('token-a', 1000),
+      client.warmupKokoConnectPage('token-b', 1001)
+    ]);
+
+    const loginPosts = fetchMock.mock.calls.filter(([, init]) =>
+      Boolean(init && (init as RequestInit).method === 'POST')
+    );
+    expect(loginPosts).toHaveLength(1);
   });
 
   it('retries KoKo warmup once with a fresh web session when the connect page redirects to login', async () => {
@@ -1135,6 +1241,89 @@ describe('JumpServerClient REST flow', () => {
     }));
   });
 
+  it('opens the KoKo terminal socket without HTML warmup when a session cookie exists', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('', {
+        status: 302,
+        headers: { location: '/core/auth/login/?next=/koko/connect/' }
+      }))
+      .mockResolvedValueOnce(textResponse('<input name="csrfmiddlewaretoken" value="csrf-1">', {
+        headers: { 'set-cookie': 'csrftoken=abc; Path=/' }
+      }))
+      .mockResolvedValueOnce(new Response('', {
+        status: 302,
+        headers: { location: '/ui/', 'set-cookie': 'sessionid=session-1; Path=/' }
+      }))
+      .mockResolvedValueOnce(textResponse('ok'))
+      .mockResolvedValueOnce(jsonResponse({ id: 'user-1' }))
+      .mockResolvedValueOnce(textResponse('<html>koko</html>'));
+    const socket = { send: vi.fn(), close: vi.fn(), on: vi.fn(), ping: vi.fn(), terminate: vi.fn(), bufferedAmount: 0 };
+    const webSocketFactory = vi.fn(async () => socket);
+    const client = new JumpServerClient({
+      baseUrl: 'https://jumpserver.example.com',
+      orgId: '',
+      username: 'alan',
+      password: 'secret',
+      verifyTls: true
+    }, fetchMock);
+
+    await client.warmupKokoConnectPage('token-1', 1000);
+    fetchMock.mockClear();
+    await client.openKokoWebSocket({
+      endpoint: { host: 'koko.example.com', https_port: 443 },
+      tokenId: 'token-2',
+      cols: 80,
+      rows: 24,
+      webSocketFactory
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(webSocketFactory).toHaveBeenCalledTimes(1);
+  });
+
+  it('warms up and retries when the cached-cookie handshake fails', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('', {
+        status: 302,
+        headers: { location: '/core/auth/login/?next=/koko/connect/' }
+      }))
+      .mockResolvedValueOnce(textResponse('<input name="csrfmiddlewaretoken" value="csrf-1">', {
+        headers: { 'set-cookie': 'csrftoken=abc; Path=/' }
+      }))
+      .mockResolvedValueOnce(new Response('', {
+        status: 302,
+        headers: { location: '/ui/', 'set-cookie': 'sessionid=session-1; Path=/' }
+      }))
+      .mockResolvedValueOnce(textResponse('ok'))
+      .mockResolvedValueOnce(jsonResponse({ id: 'user-1' }))
+      .mockResolvedValueOnce(textResponse('<html>koko</html>'))
+      .mockResolvedValue(textResponse('<html>koko</html>'));
+    const socket = { send: vi.fn(), close: vi.fn(), on: vi.fn(), ping: vi.fn(), terminate: vi.fn(), bufferedAmount: 0 };
+    const webSocketFactory = vi.fn()
+      .mockRejectedValueOnce(new Error('handshake failed'))
+      .mockResolvedValue(socket);
+    const client = new JumpServerClient({
+      baseUrl: 'https://jumpserver.example.com',
+      orgId: '',
+      username: 'alan',
+      password: 'secret',
+      verifyTls: true
+    }, fetchMock);
+
+    await client.warmupKokoConnectPage('token-1', 1000);
+    fetchMock.mockClear();
+    await client.openKokoWebSocket({
+      endpoint: { host: 'koko.example.com', https_port: 443 },
+      tokenId: 'token-2',
+      cols: 80,
+      rows: 24,
+      webSocketFactory
+    });
+
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/koko/connect/'))).toBe(true);
+    expect(webSocketFactory).toHaveBeenCalledTimes(2);
+  });
+
   it('surfaces the JumpServer detail field instead of a bare status', async () => {
     const fetchMock = vi.fn(async (url: string) => {
       if (url.includes('/authentication/auth/')) {
@@ -1228,6 +1417,30 @@ describe('JumpServerClient REST flow', () => {
     expect(authCalls[0][1]).toEqual(expect.objectContaining({
       headers: expect.objectContaining({ 'content-type': 'application/json' })
     }));
+  });
+
+  it('runs one REST login when two callers find an empty token', async () => {
+    let authStarts = 0;
+    const fetchMock = vi.fn(async (url: string) => {
+      if (String(url).includes('/authentication/auth/')) {
+        authStarts += 1;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return jsonResponse({ token: 'bearer-1' });
+      }
+      return jsonResponse({ id: 'user-1' });
+    });
+    const client = new JumpServerClient({
+      baseUrl: 'https://jumpserver.example.com',
+      orgId: '',
+      username: 'alan',
+      password: 'secret',
+      verifyTls: true
+    }, fetchMock);
+
+    await Promise.all([client.getUserProfile(), client.getUserProfile()]);
+
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('/authentication/auth/'))).toHaveLength(1);
+    expect(authStarts).toBe(1);
   });
 
   it('surfaces the API detail when authentication fails', async () => {
