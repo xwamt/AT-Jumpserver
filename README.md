@@ -2,17 +2,18 @@
 
 AT JumpServer Terminal is a VS Code / Cursor extension for opening browser-style JumpServer SSH, MySQL, and Redis terminal sessions from the editor.
 
-**Current version: 0.1.8**
+**Current version: 0.1.9**
 
 ## Supported In This Version
 
 - Username and password login to JumpServer
 - Multiple JumpServer bastions in one asset tree
+- Reused REST Bearer token and KoKo web session for later connects on the same bastion
 - Listing the current user's permitted assets
 - SSH protocol assets
 - MySQL protocol assets through JumpServer `db_client`
 - Redis protocol assets through JumpServer `db_client`
-- SFTP file tree for permitted assets
+- SFTP file tree bound on SSH connect and opened on first Files refresh
 - SFTP upload, download, new folder, rename, delete, copy path, and directory navigation through JumpServer KoKo
 - SFTP preview for small text files
 - SFTP edit sessions with first-save sync confirmation and conflict prompts
@@ -94,6 +95,8 @@ npm run build
 - Configure a real JumpServer account.
 - Refresh assets and verify node or zone grouping.
 - Connect to an SSH asset.
+- Connect a second SSH asset on the same bastion and confirm the Output channel logs `REST bearer reused` rather than a second login.
+- After SSH connect, confirm Files shows a pending placeholder until Refresh.
 - Run `whoami`, `pwd`, and `ls`.
 - Connect to a MySQL asset.
 - Run `select 1;` at the MySQL prompt.

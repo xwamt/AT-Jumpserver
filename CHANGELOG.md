@@ -4,6 +4,38 @@
 
 ---
 
+## [v0.1.9] - 2026-08-21
+
+**多堡垒管理与连接加速发布！🚀**
+
+本版本支持在同一资产树中管理多台 JumpServer，并对齐 REST 登录、组织与分页行为。同一堡垒上的后续连接复用 Bearer 与 KoKo 会话；SSH 连接只绑定 Files 视图，首次刷新才打开 SFTP。
+
+### 🌟 核心特性与功能亮点
+
+#### 1. 多 JumpServer 堡垒
+- **独立配置与校验**：新增、编辑、删除、刷新与校验均可针对单台堡垒，资产树按堡垒根节点分组。
+- **显示名与组织**：配置表单可保存显示名；校验/刷新前选择组织，空 org 不再静默混合同一账号下的多组织资产。
+- **MCP 资产归属**：MCP 资产列表带 `bastionId`，Agent 工具按堡垒创建客户端。
+
+#### 2. JumpServer REST 对齐
+- **密码登录回退**：JSON 认证未返回 token 时改用 `application/x-www-form-urlencoded` 再试一次。
+- **401 与 403 分流**：仅 HTTP 401 刷新 Bearer；403 视为无权限，不再当作过期登录。
+- **分页与节流**：跟随资产/组织列表的 `next` 与 count/offset，429 时按 JumpServer 提示等待后重试。
+- **错误体与 Date**：解析 API `detail`，REST 请求带 RFC 1123 `Date` 头。
+
+#### 3. 连接加速与延迟 SFTP
+- **堡垒客户端池**：同一 `bastionId` 复用 `JumpServerClient`（Bearer + Cookie），密码变更才重建。
+- **登录串行化**：并行 connect 只跑一次 REST Bearer 与一次 KoKo 表单登录；非登录页 302 视为已认证。
+- **预取与缓存**：树选中预取资产详情；KoKo smart endpoint 的 host/port 按客户端缓存。
+- **会话 Cookie 优先 WebSocket**：已有 `sessionid` 时先开终端/SFTP 套接字，握手失败再 HTML warmup。
+- **SSH 不再自动开 SFTP**：Files 显示待连接占位，工具栏 Refresh 才建立 SFTP 会话。
+
+#### 4. 质量与本地化
+- **中文语言别名**：`zh-hans` / `zh` 与 `zh-cn` 语言包保持一致，Antigravity 等 fork 不再回落到英文。
+- **连接步骤日志**：Output 通道记录 client 创建/复用、Bearer login/reused、warmup 与终端连接耗时（不含 token URL）。
+
+---
+
 ## [v0.1.8] - 2026-08-18
 
 **VS Code 官方标准国际化 (l10n) 与中英文双语支持发布！🌐**
