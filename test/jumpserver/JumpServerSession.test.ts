@@ -6,6 +6,7 @@ import { setLogSink } from '../../src/utils/logger';
 class FakeSocket extends EventEmitter {
   sent: string[] = [];
   closed = false;
+  terminated = false;
   /** A socket that always claims an empty queue, so send backpressure never engages here. */
   readonly bufferedAmount = 0;
 
@@ -23,19 +24,48 @@ class FakeSocket extends EventEmitter {
 
   terminate(): void {
     this.closed = true;
+    this.terminated = true;
   }
+}
+
+function assetDetail(protocolName = 'ssh') {
+  return {
+    id: 'asset-1',
+    permed_accounts: [{ id: 'account-1', alias: 'account-alias-1', username: 'root', has_secret: true }],
+    permed_protocols: [{ name: protocolName }]
+  };
 }
 
 function client(socket: FakeSocket, protocolName = 'ssh') {
   return {
-    getAssetDetail: vi.fn().mockResolvedValue({
-      id: 'asset-1',
-      permed_accounts: [{ id: 'account-1', alias: 'account-alias-1', username: 'root', has_secret: true }],
-      permed_protocols: [{ name: protocolName }]
-    }),
+    getAssetDetail: vi.fn().mockResolvedValue(assetDetail(protocolName)),
     createConnectionToken: vi.fn().mockResolvedValue({ id: 'token-1' }),
     getSmartEndpoint: vi.fn().mockResolvedValue({ host: 'koko.example.com', https_port: 443 }),
     openKokoWebSocket: vi.fn().mockResolvedValue(socket)
+  };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+function recordingSink() {
+  const lines: string[] = [];
+  return {
+    lines,
+    sink: {
+      trace: (m: string) => lines.push(m),
+      debug: (m: string) => lines.push(m),
+      info: (m: string) => lines.push(m),
+      warn: (m: string) => lines.push(m),
+      error: (m: string) => lines.push(m)
+    }
   };
 }
 
@@ -78,14 +108,8 @@ describe('JumpServerSession', () => {
   });
 
   it('logs how long a KoKo terminal connect took', async () => {
-    const lines: string[] = [];
-    setLogSink({
-      trace: (m) => lines.push(m),
-      debug: (m) => lines.push(m),
-      info: (m) => lines.push(m),
-      warn: (m) => lines.push(m),
-      error: (m) => lines.push(m)
-    });
+    const { lines, sink } = recordingSink();
+    setLogSink(sink);
     const session = new JumpServerSession({
       asset: { id: 'asset-1', name: 'web-1' },
       connectionKind: 'ssh',
@@ -96,6 +120,49 @@ describe('JumpServerSession', () => {
     await session.connect();
 
     expect(lines.some((line) => /KoKo terminal connect for web-1 finished in \d+ms/.test(line))).toBe(true);
+    expect(lines.some((line) =>
+      /^connect timings: detail=\d+ms tokenPost=\d+ms endpoint=\d+ms warmup=\d+ms ws=\d+ms total=\d+ms$/.test(line)
+    )).toBe(true);
+    // The timings line is purely durations: nothing from the connect - token
+    // ids, hosts, cookies - may leak into it.
+    const timingsLine = lines.find((line) => line.startsWith('connect timings:'));
+    expect(timingsLine).not.toContain('token-1');
+    expect(timingsLine).not.toContain('koko.example.com');
+  });
+
+  it('logs connect timings even when the connect throws', async () => {
+    const { lines, sink } = recordingSink();
+    setLogSink(sink);
+    const session = new JumpServerSession({
+      asset: { id: 'asset-1', name: 'web-1' },
+      connectionKind: 'ssh',
+      client: client(socket, 'rdp'),
+      events
+    });
+
+    await expect(session.connect()).rejects.toThrow(/does not expose/);
+
+    expect(lines.some((line) =>
+      /^connect timings: detail=\d+ms tokenPost=\d+ms endpoint=\d+ms warmup=\d+ms ws=\d+ms total=\d+ms$/.test(line)
+    )).toBe(true);
+  });
+
+  it('splits the socket-open time into warmup and handshake using the client warmup clock', async () => {
+    const { lines, sink } = recordingSink();
+    setLogSink(sink);
+    const session = new JumpServerSession({
+      asset: { id: 'asset-1', name: 'web-1' },
+      connectionKind: 'ssh',
+      client: { ...client(socket), lastKokoWarmupMs: vi.fn(() => 5) },
+      events
+    });
+
+    await session.connect();
+
+    const timingsLine = lines.find((line) => line.startsWith('connect timings:'));
+    expect(timingsLine).toContain('warmup=5ms');
+    // ws is what remains of the open once warmup is subtracted, never negative.
+    expect(timingsLine).toMatch(/ws=\d+ms/);
   });
 
 
@@ -269,5 +336,207 @@ describe('JumpServerSession', () => {
     const session = new JumpServerSession({ asset: { id: 'asset-1', name: 'web-1' }, connectionKind: 'ssh', client: fakeClient, events });
 
     await expect(session.connect()).rejects.toThrow('Selected asset does not expose SSH protocol.');
+  });
+});
+
+describe('JumpServerSession parallel connect waterfall', () => {
+  let socket: FakeSocket;
+  let events: { output: ReturnType<typeof vi.fn>; status: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn> };
+
+  beforeEach(() => {
+    socket = new FakeSocket();
+    events = { output: vi.fn(), status: vi.fn(), error: vi.fn() };
+  });
+
+  afterEach(() => {
+    setLogSink(undefined);
+  });
+
+  it('kicks off the web session login before the asset detail resolves', async () => {
+    const detailDeferred = deferred<Record<string, any>>();
+    const fakeClient = {
+      ...client(socket),
+      getAssetDetail: vi.fn(() => detailDeferred.promise),
+      ensureWebSession: vi.fn().mockResolvedValue(undefined)
+    };
+    const session = new JumpServerSession({
+      asset: { id: 'asset-1', name: 'web-1' },
+      connectionKind: 'ssh',
+      client: fakeClient,
+      events
+    });
+
+    const connecting = session.connect();
+    // Called before the detail promise has settled: the two must overlap.
+    expect(fakeClient.ensureWebSession).toHaveBeenCalledTimes(1);
+    detailDeferred.resolve(assetDetail());
+    await connecting;
+
+    expect(fakeClient.openKokoWebSocket).toHaveBeenCalledTimes(1);
+  });
+
+  it('still connects when the parallel web session login fails', async () => {
+    const fakeClient = {
+      ...client(socket),
+      ensureWebSession: vi.fn().mockRejectedValue(new Error('login endpoint down'))
+    };
+    const session = new JumpServerSession({
+      asset: { id: 'asset-1', name: 'web-1' },
+      connectionKind: 'ssh',
+      client: fakeClient,
+      events
+    });
+
+    await session.connect();
+
+    expect(fakeClient.openKokoWebSocket).toHaveBeenCalledTimes(1);
+    expect(events.error).not.toHaveBeenCalled();
+  });
+
+  it('starts the asset-id endpoint lookup without waiting for the token', async () => {
+    const tokenDeferred = deferred<{ id: string }>();
+    const fakeClient = {
+      ...client(socket),
+      createConnectionToken: vi.fn(() => tokenDeferred.promise),
+      getSmartEndpointForAsset: vi.fn().mockResolvedValue({ host: 'koko.example.com', https_port: 443 })
+    };
+    const session = new JumpServerSession({
+      asset: { id: 'asset-1', name: 'web-1' },
+      connectionKind: 'ssh',
+      client: fakeClient,
+      events
+    });
+
+    const connecting = session.connect();
+    // The endpoint lookup must begin while the token POST is still pending.
+    await vi.waitFor(() => expect(fakeClient.getSmartEndpointForAsset).toHaveBeenCalledWith('asset-1'));
+    expect(fakeClient.openKokoWebSocket).not.toHaveBeenCalled();
+    tokenDeferred.resolve({ id: 'token-1' });
+    await connecting;
+
+    expect(fakeClient.getSmartEndpoint).not.toHaveBeenCalled();
+    expect(fakeClient.openKokoWebSocket).toHaveBeenCalledWith(expect.objectContaining({
+      tokenId: 'token-1',
+      endpoint: { host: 'koko.example.com', https_port: 443 }
+    }));
+  });
+
+  it('falls back to the token endpoint when the asset-id lookup fails', async () => {
+    const fakeClient = {
+      ...client(socket),
+      getSmartEndpointForAsset: vi.fn().mockRejectedValue(new Error('HTTP 400'))
+    };
+    const session = new JumpServerSession({
+      asset: { id: 'asset-1', name: 'web-1' },
+      connectionKind: 'ssh',
+      client: fakeClient,
+      events
+    });
+
+    await session.connect();
+
+    expect(fakeClient.getSmartEndpointForAsset).toHaveBeenCalledWith('asset-1');
+    expect(fakeClient.getSmartEndpoint).toHaveBeenCalledWith('token-1');
+    expect(fakeClient.openKokoWebSocket).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps working against clients that only expose the token endpoint', async () => {
+    const fakeClient = client(socket);
+    const session = new JumpServerSession({
+      asset: { id: 'asset-1', name: 'web-1' },
+      connectionKind: 'ssh',
+      client: fakeClient,
+      events
+    });
+
+    await session.connect();
+
+    expect(fakeClient.getSmartEndpoint).toHaveBeenCalledWith('token-1');
+    expect(fakeClient.openKokoWebSocket).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('JumpServerSession dispose during an in-flight connect', () => {
+  let socket: FakeSocket;
+  let events: { output: ReturnType<typeof vi.fn>; status: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn> };
+
+  beforeEach(() => {
+    socket = new FakeSocket();
+    events = { output: vi.fn(), status: vi.fn(), error: vi.fn() };
+  });
+
+  afterEach(() => {
+    setLogSink(undefined);
+  });
+
+  it('aborts a connect whose asset detail resolves after dispose', async () => {
+    const detailDeferred = deferred<Record<string, any>>();
+    const fakeClient = { ...client(socket), getAssetDetail: vi.fn(() => detailDeferred.promise) };
+    const session = new JumpServerSession({
+      asset: { id: 'asset-1', name: 'web-1' },
+      connectionKind: 'ssh',
+      client: fakeClient,
+      events
+    });
+
+    const connecting = session.connect();
+    session.dispose();
+    detailDeferred.resolve(assetDetail());
+    await connecting;
+
+    expect(fakeClient.createConnectionToken).not.toHaveBeenCalled();
+    expect(fakeClient.openKokoWebSocket).not.toHaveBeenCalled();
+    expect(session.isConnected()).toBe(false);
+  });
+
+  it('does not open a socket when dispose lands while the token is pending', async () => {
+    const tokenDeferred = deferred<{ id: string }>();
+    const fakeClient = { ...client(socket), createConnectionToken: vi.fn(() => tokenDeferred.promise) };
+    const session = new JumpServerSession({
+      asset: { id: 'asset-1', name: 'web-1' },
+      connectionKind: 'ssh',
+      client: fakeClient,
+      events
+    });
+
+    const connecting = session.connect();
+    await vi.waitFor(() => expect(fakeClient.createConnectionToken).toHaveBeenCalled());
+    session.dispose();
+    tokenDeferred.resolve({ id: 'token-1' });
+    await connecting;
+
+    expect(fakeClient.openKokoWebSocket).not.toHaveBeenCalled();
+    expect(session.isConnected()).toBe(false);
+  });
+
+  it('terminates a socket that arrives after dispose and leaves no heartbeat behind', async () => {
+    vi.useFakeTimers();
+    try {
+      const socketDeferred = deferred<FakeSocket>();
+      const fakeClient = { ...client(socket), openKokoWebSocket: vi.fn().mockReturnValue(socketDeferred.promise) };
+      const session = new JumpServerSession({
+        asset: { id: 'asset-1', name: 'web-1' },
+        connectionKind: 'ssh',
+        client: fakeClient,
+        events
+      });
+
+      const connecting = session.connect();
+      await vi.waitFor(() => expect(fakeClient.openKokoWebSocket).toHaveBeenCalled());
+      session.dispose();
+      socketDeferred.resolve(socket);
+      await connecting;
+
+      // The late socket is freed outright, never bound to the dead session.
+      expect(socket.closed).toBe(true);
+      expect(socket.terminated).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+      socket.emit('message', JSON.stringify({ id: 'connect-1', type: 'CONNECT', data: '{}' }));
+      expect(socket.sent).toEqual([]);
+      expect(events.status).not.toHaveBeenCalledWith('Connected');
+      expect(session.isConnected()).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

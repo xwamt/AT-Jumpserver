@@ -119,6 +119,53 @@ describe('JumpServerClientPool', () => {
     expect(() => pool.drop('bastion-1')).not.toThrow();
   });
 
+  it('peek returns the live client without ever building one', () => {
+    const { pool, constructed } = poolWithStubs();
+
+    expect(pool.peek('bastion-1')).toBeUndefined();
+    const client = pool.acquire('bastion-1', settings());
+
+    expect(pool.peek('bastion-1')).toBe(client);
+    expect(pool.peek('bastion-2')).toBeUndefined();
+    expect(constructed).toHaveLength(1);
+  });
+
+  it('passes the web-session store through to the factory for new clients', () => {
+    const factory = vi.fn(() => ({ setOrgId: vi.fn() } as unknown as JumpServerClient));
+    const pool = new JumpServerClientPool(factory);
+    const store = { load: async () => undefined, save: async () => undefined, clear: async () => undefined };
+
+    pool.acquire('bastion-1', settings(), { webSessionStore: store });
+
+    expect(factory).toHaveBeenCalledWith(expect.objectContaining({ baseUrl: 'https://jumpserver.example.com' }), {
+      webSessionStore: store
+    });
+  });
+
+  it('hands a late web-session store to an already-cached client', () => {
+    const attachWebSessionStore = vi.fn();
+    const pool = new JumpServerClientPool(() =>
+      ({ setOrgId: vi.fn(), attachWebSessionStore, dispose: vi.fn() } as unknown as JumpServerClient)
+    );
+    const store = { load: async () => undefined, save: async () => undefined, clear: async () => undefined };
+
+    // First acquired by a path with no SecretStorage in reach, then by one
+    // that has it: the cached client must still end up with the store.
+    pool.acquire('bastion-1', settings());
+    pool.acquire('bastion-1', settings(), { webSessionStore: store });
+
+    expect(attachWebSessionStore).toHaveBeenCalledWith(store);
+  });
+
+  it('tolerates cached test doubles without attachWebSessionStore', () => {
+    const { pool } = poolWithStubs();
+    const store = { load: async () => undefined, save: async () => undefined, clear: async () => undefined };
+
+    pool.acquire('bastion-1', settings());
+
+    expect(() => pool.acquire('bastion-1', settings(), { webSessionStore: store })).not.toThrow();
+  });
+
   it('logs whether acquire reused a client', () => {
     const lines: string[] = [];
     setLogSink({

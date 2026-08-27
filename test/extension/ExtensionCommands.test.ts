@@ -28,6 +28,7 @@ const jumpServerClientMock = vi.hoisted(() => ({
   listAssets: vi.fn(),
   listAllAssets: vi.fn(),
   getAssetDetail: vi.fn(),
+  ensureWebSession: vi.fn(),
   openKokoSftpWebSocket: vi.fn(),
   JumpServerClient: vi.fn()
 }));
@@ -219,6 +220,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   jumpServerClientMock.calls.length = 0;
   jumpServerClientMock.ensureAuthToken.mockResolvedValue('token-1');
+  jumpServerClientMock.ensureWebSession.mockResolvedValue(undefined);
   jumpServerClientMock.healthCheck.mockResolvedValue({ skipped: true });
   jumpServerClientMock.getUserProfile.mockResolvedValue({ id: 'user-1', username: 'alan' });
   jumpServerClientMock.listAccessibleOrgs.mockResolvedValue([
@@ -296,6 +298,7 @@ beforeEach(() => {
     listAssets: jumpServerClientMock.listAssets,
     listAllAssets: jumpServerClientMock.listAllAssets,
     getAssetDetail: jumpServerClientMock.getAssetDetail,
+    ensureWebSession: jumpServerClientMock.ensureWebSession,
     openKokoSftpWebSocket: jumpServerClientMock.openKokoSftpWebSocket
   }));
   mcpLifecycleMock.syncPackagedHub.mockClear();
@@ -433,11 +436,13 @@ describe('extension command wiring', () => {
     expect(sftpManagerMock.openAsset).toHaveBeenCalledWith(item.asset, expect.any(String));
   });
 
-  it('prefetches asset detail when an asset is selected in the tree', async () => {
+  it('prefetches asset detail and warms the web session once the bastion has a live client', async () => {
     vi.useFakeTimers();
     try {
       jumpServerClientMock.getAssetDetail.mockResolvedValue({ id: 'server-1' });
       activate(contextWithBastions([prodBastion()]));
+      // Prefetch never builds a client of its own; give the pool one first.
+      await registeredCommand('jumpserverManager.connect')({ asset: sshAsset() });
       const assetsView = vi.mocked(vscode.window.createTreeView).mock.results[0]?.value as {
         onDidChangeSelection: ReturnType<typeof vi.fn>;
       };
@@ -450,6 +455,31 @@ describe('extension command wiring', () => {
       expect(jumpServerClientMock.getAssetDetail).not.toHaveBeenCalled();
       await vi.runAllTimersAsync();
       expect(jumpServerClientMock.getAssetDetail).toHaveBeenCalledWith('server-1');
+      expect(jumpServerClientMock.ensureWebSession).toHaveBeenCalledTimes(1);
+      expect(notificationsMock.showTimedNotification).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('skips the prefetch entirely when the bastion has no live client yet', async () => {
+    vi.useFakeTimers();
+    try {
+      activate(contextWithBastions([prodBastion()]));
+      const assetsView = vi.mocked(vscode.window.createTreeView).mock.results[0]?.value as {
+        onDidChangeSelection: ReturnType<typeof vi.fn>;
+      };
+      const handler = assetsView.onDidChangeSelection.mock.calls[0]?.[0] as
+        | ((event: { selection: unknown[] }) => void)
+        | undefined;
+
+      handler?.({ selection: [new AssetTreeItem(sshAsset())] });
+      await vi.runAllTimersAsync();
+
+      // Browsing the tree must not pay a REST login just to warm a cache.
+      expect(jumpServerClientMock.JumpServerClient).not.toHaveBeenCalled();
+      expect(jumpServerClientMock.getAssetDetail).not.toHaveBeenCalled();
+      expect(jumpServerClientMock.ensureWebSession).not.toHaveBeenCalled();
       expect(notificationsMock.showTimedNotification).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
@@ -461,6 +491,7 @@ describe('extension command wiring', () => {
     try {
       jumpServerClientMock.getAssetDetail.mockResolvedValue({ id: 'server-2' });
       activate(contextWithBastions([prodBastion()]));
+      await registeredCommand('jumpserverManager.connect')({ asset: sshAsset() });
       const assetsView = vi.mocked(vscode.window.createTreeView).mock.results[0]?.value as {
         onDidChangeSelection: ReturnType<typeof vi.fn>;
       };
@@ -484,6 +515,7 @@ describe('extension command wiring', () => {
     try {
       jumpServerClientMock.getAssetDetail.mockRejectedValue(new Error('offline'));
       activate(contextWithBastions([prodBastion()]));
+      await registeredCommand('jumpserverManager.connect')({ asset: sshAsset() });
       const assetsView = vi.mocked(vscode.window.createTreeView).mock.results[0]?.value as {
         onDidChangeSelection: ReturnType<typeof vi.fn>;
       };

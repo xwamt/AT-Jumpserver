@@ -62,6 +62,25 @@ export interface JumpServerTimeouts {
 /** Which of the three budgets a call is spending. Also the label used in logs. */
 export type JumpServerTimeoutBudget = 'request' | 'listing';
 
+/**
+ * Where the KoKo web-session cookies (sessionid + csrftoken) survive a window
+ * reload. Injected rather than imported so this module never touches the
+ * vscode API: the extension hands in a SecretStorage-backed implementation,
+ * tests hand in an in-memory one.
+ */
+export interface JumpServerWebSessionStore {
+  load(): Promise<string | undefined>;
+  save(value: string): Promise<void>;
+  clear(): Promise<void>;
+}
+
+/**
+ * Ceiling on cached asset detail payloads. Details carry the full account and
+ * protocol listing per asset, and an unbounded map of them would grow with
+ * every asset a user ever hovered.
+ */
+export const ASSET_DETAIL_CACHE_LIMIT = 64;
+
 export { classifyRestFailure, JumpServerApiError } from './apiError';
 export { buildOrigin } from './urls';
 
@@ -175,6 +194,56 @@ export function cookiesForUrl(cookies: JumpServerCookie[], url: string): string 
 
 function domainMatches(host: string, cookie: JumpServerCookie): boolean {
   return cookie.hostOnly ? host === cookie.domain : host === cookie.domain || host.endsWith(`.${cookie.domain}`);
+}
+
+/**
+ * Deserializes a persisted web session defensively: only the two cookie names
+ * the KoKo handshake needs are accepted, and only when they still belong to
+ * this bastion's host - the store is keyed by bastion id, but the base URL can
+ * have been edited since the session was saved.
+ */
+function parseStoredWebSession(raw: string, baseUrl: string): JumpServerCookie[] {
+  let host: string;
+  try {
+    host = new URL(buildOrigin(baseUrl)).hostname.toLowerCase();
+  } catch {
+    return [];
+  }
+  let parsed: { cookies?: unknown };
+  try {
+    parsed = JSON.parse(raw) as { cookies?: unknown };
+  } catch {
+    return [];
+  }
+  if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.cookies)) {
+    return [];
+  }
+  const cookies: JumpServerCookie[] = [];
+  for (const item of parsed.cookies) {
+    if (!item || typeof item !== 'object') {
+      continue;
+    }
+    const record = item as Record<string, unknown>;
+    if (typeof record.name !== 'string' || typeof record.value !== 'string') {
+      continue;
+    }
+    if (record.name !== 'sessionid' && record.name !== 'csrftoken') {
+      continue;
+    }
+    const cookie: JumpServerCookie = {
+      name: record.name,
+      value: record.value,
+      domain: typeof record.domain === 'string' && record.domain ? record.domain.toLowerCase() : host,
+      hostOnly: record.hostOnly !== false,
+      path: typeof record.path === 'string' && record.path.startsWith('/') ? record.path : '/',
+      secure: record.secure === true
+    };
+    if (!domainMatches(host, cookie)) {
+      continue;
+    }
+    cookies.push(cookie);
+  }
+  return cookies;
 }
 
 function pathMatches(requestPath: string, cookiePath: string): boolean {
@@ -447,6 +516,41 @@ export function buildRedisConnectionTokenPayload(input: {
 }
 
 
+/**
+ * The REST keep-alive agent, but only when the KoKo endpoint resolves to the
+ * same https authority the REST calls use - that is when the WebSocket
+ * handshake can resume the already-warm TLS session. A different host or port
+ * must not borrow the agent: its pooled sockets carry the wrong SNI and would
+ * pin the handshake to the wrong peer. Plain-http endpoints get nothing
+ * either, since an https agent would try to speak TLS to them.
+ */
+export function kokoWsAgentForEndpoint(
+  baseUrl: string,
+  endpoint: JumpServerEndpoint,
+  agent: HttpsAgent | undefined
+): HttpsAgent | undefined {
+  if (!agent) {
+    return undefined;
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(baseUrl);
+  } catch {
+    return undefined;
+  }
+  if (parsed.protocol !== 'https:') {
+    return undefined;
+  }
+  const wsHost = (endpoint.host || parsed.hostname).toLowerCase();
+  if (wsHost !== parsed.hostname.toLowerCase()) {
+    return undefined;
+  }
+  // Mirrors buildKokoWsUrl: no https_port means the default wss port.
+  const basePort = parsed.port ? Number(parsed.port) : 443;
+  const wsPort = endpoint.https_port ?? 443;
+  return wsPort === basePort ? agent : undefined;
+}
+
 export async function defaultWebSocketFactory(
   url: string,
   options: WebSocket.ClientOptions,
@@ -524,13 +628,21 @@ export class JumpServerClient {
   private readonly timeouts: JumpServerTimeouts;
   private readonly sleep: (ms: number) => Promise<void>;
   private orgId: string;
+  private webSessionStore: JumpServerWebSessionStore | undefined;
+  private webSessionRestore: Promise<void> | undefined;
+  private webSessionInflight: Promise<void> | undefined;
+  /** Django warmup share of the most recent openKoko*WebSocket call. */
+  private lastWarmupMs = 0;
 
   constructor(
     private readonly settings: JumpServerSettingsWithPassword,
     fetchImpl?: FetchLike,
-    options: Partial<JumpServerTimeouts> & { sleep?: (ms: number) => Promise<void> } = {}
+    options: Partial<JumpServerTimeouts> & {
+      sleep?: (ms: number) => Promise<void>;
+      webSessionStore?: JumpServerWebSessionStore;
+    } = {}
   ) {
-    const { sleep, ...timeouts } = options;
+    const { sleep, webSessionStore, ...timeouts } = options;
     if (fetchImpl) {
       this.fetchImpl = fetchImpl;
     } else {
@@ -542,6 +654,22 @@ export class JumpServerClient {
     this.timeouts = { ...DEFAULT_JUMPSERVER_TIMEOUTS, ...timeouts };
     this.sleep = sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.orgId = settings.orgId;
+    if (webSessionStore) {
+      this.attachWebSessionStore(webSessionStore);
+    }
+  }
+
+  /**
+   * Late store attachment, for a pooled client first built by a code path
+   * that had no SecretStorage in reach (the asset refresh, for one). The
+   * first store wins; a client never swaps stores mid-life.
+   */
+  attachWebSessionStore(store: JumpServerWebSessionStore): void {
+    if (this.webSessionStore) {
+      return;
+    }
+    this.webSessionStore = store;
+    this.webSessionRestore = this.restoreWebSession().catch(() => undefined);
   }
 
   setOrgId(orgId: string): void {
@@ -826,7 +954,7 @@ export class JumpServerClient {
     this.detailInflight.set(assetId, fetching);
     try {
       const detail = await fetching;
-      this.assetDetails.set(assetId, detail);
+      this.cacheAssetDetail(assetId, detail);
       return detail;
     } finally {
       // A rejection is never cached: dropping the in-flight entry either way
@@ -839,6 +967,20 @@ export class JumpServerClient {
     await this.ensureAuthToken();
     const response = await this.authenticatedRequest(`/api/v1/perms/users/self/assets/${encodeURIComponent(assetId)}/`);
     return await response.json() as Record<string, any>;
+  }
+
+  private cacheAssetDetail(assetId: string, detail: Record<string, any>): void {
+    // Re-inserting moves the id to the back, so the Map's iteration order is
+    // least-recently-stored first and the first key is the eviction pick.
+    this.assetDetails.delete(assetId);
+    this.assetDetails.set(assetId, detail);
+    while (this.assetDetails.size > ASSET_DETAIL_CACHE_LIMIT) {
+      const oldest = this.assetDetails.keys().next().value as string | undefined;
+      if (oldest === undefined) {
+        break;
+      }
+      this.assetDetails.delete(oldest);
+    }
   }
 
   async createConnectionToken(input: { assetId: string; account: JumpServerAccountRef; protocol: JumpServerConnectionProtocol }): Promise<{ id: string }> {
@@ -870,6 +1012,25 @@ export class JumpServerClient {
     return this.smartEndpoint;
   }
 
+  /**
+   * Same lookup keyed by asset id instead of a connection token, which lets a
+   * connect resolve the endpoint while the token POST is still in flight. The
+   * two lookups share the per-client cache: the smart endpoint is a property
+   * of the deployment, not of the credential used to ask for it.
+   */
+  async getSmartEndpointForAsset(assetId: string): Promise<JumpServerEndpoint> {
+    if (this.smartEndpoint) {
+      log.info('KoKo endpoint reused');
+      return this.smartEndpoint;
+    }
+    await this.ensureAuthToken();
+    const response = await this.authenticatedRequest(
+      `/api/v1/terminal/endpoints/smart/?protocol=https&asset_id=${encodeURIComponent(assetId)}`
+    );
+    this.smartEndpoint = await response.json() as JumpServerEndpoint;
+    return this.smartEndpoint;
+  }
+
   async warmupKokoConnectPage(tokenId: string, timestamp = Date.now()): Promise<void> {
     if (this.warmupInflight) {
       await this.warmupInflight;
@@ -888,19 +1049,63 @@ export class JumpServerClient {
     return this.cookies.some((cookie) => cookie.name === 'sessionid');
   }
 
-  private async runWarmup(tokenId: string, timestamp: number): Promise<void> {
-    const started = Date.now();
-    const authenticated = await this.tryWarmupKokoConnectPage(tokenId, timestamp);
-    if (authenticated) {
-      log.info(`KoKo warmup ok in ${Date.now() - started}ms`);
+  hasWebSession(): boolean {
+    return this.hasWebSessionCookie();
+  }
+
+  /** Django warmup share of the most recent openKoko*WebSocket call, in ms. */
+  lastKokoWarmupMs(): number {
+    return this.lastWarmupMs;
+  }
+
+  /**
+   * Makes sure the Django web session KoKo authenticates with exists, without
+   * needing a connection token: the login form is posted with a tokenless
+   * `next`. This is what lets a connect overlap the slowest cold step - the
+   * form login - with the token and endpoint REST calls.
+   */
+  async ensureWebSession(): Promise<void> {
+    await this.webSessionRestore;
+    if (this.hasWebSessionCookie()) {
       return;
     }
-    this.cookies = this.cookies.filter((cookie) => cookie.name !== 'sessionid');
-    const retried = await this.tryWarmupKokoConnectPage(tokenId, timestamp);
-    if (!retried) {
-      throw new Error('KoKo web session is not authenticated.');
+    this.webSessionInflight ??= this.runWebSessionLogin().finally(() => {
+      this.webSessionInflight = undefined;
+    });
+    return this.webSessionInflight;
+  }
+
+  private async runWebSessionLogin(): Promise<void> {
+    const started = Date.now();
+    const authenticated = await this.loginWebForm('/core/auth/login/?next=/koko/connect/');
+    if (!authenticated) {
+      await this.clearStoredWebSession();
+      throw new Error('JumpServer web session login did not produce a session cookie.');
     }
-    log.info(`KoKo warmup login in ${Date.now() - started}ms`);
+    log.info(`KoKo web session login in ${Date.now() - started}ms`);
+    await this.persistWebSession();
+  }
+
+  private async runWarmup(tokenId: string, timestamp: number): Promise<void> {
+    const started = Date.now();
+    try {
+      const authenticated = await this.tryWarmupKokoConnectPage(tokenId, timestamp);
+      if (authenticated) {
+        log.info(`KoKo warmup ok in ${Date.now() - started}ms`);
+        await this.persistWebSession();
+        return;
+      }
+      await this.invalidateWebSession();
+      const retried = await this.tryWarmupKokoConnectPage(tokenId, timestamp);
+      if (!retried) {
+        await this.clearStoredWebSession();
+        throw new Error('KoKo web session is not authenticated.');
+      }
+      log.info(`KoKo warmup login in ${Date.now() - started}ms`);
+      await this.persistWebSession();
+    } finally {
+      this.lastWarmupMs = Date.now() - started;
+    }
   }
 
   private async tryWarmupKokoConnectPage(tokenId: string, timestamp: number): Promise<boolean> {
@@ -923,7 +1128,32 @@ export class JumpServerClient {
     if (!isKokoLoginRedirect(redirectLocation)) {
       return true;
     }
-    const loginPath = redirectLocation || '/core/auth/login/?next=/koko/connect/';
+    if (await this.loginWebForm(redirectLocation || '/core/auth/login/?next=/koko/connect/')) {
+      return true;
+    }
+
+    await this.request('/api/v1/users/profile/', { headers: { Accept: 'application/json' } }, false);
+    const connectResponse = await this.request(connectUrl, {
+      headers: {
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+      },
+      redirect: 'manual'
+    }, false);
+    if ([301, 302, 303, 307, 308].includes(connectResponse.status)) {
+      return false;
+    }
+    if (!connectResponse.ok) {
+      throw new Error(`KoKo connect warmup failed with HTTP ${connectResponse.status}.`);
+    }
+    return true;
+  }
+
+  /**
+   * The Django form login that warmup and ensureWebSession share: GET the
+   * login page for its csrf token, POST the credentials, then chase a few
+   * redirect hops. Returns whether a sessionid is now in the jar.
+   */
+  private async loginWebForm(loginPath: string): Promise<boolean> {
     const loginPage = await this.request(loginPath, {
       headers: { Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' }
     }, false);
@@ -948,9 +1178,8 @@ export class JumpServerClient {
     }, false);
 
     // The login POST usually carries the sessionid cookie itself; once it is
-    // in the jar the warmup is done, and following the post-login redirects,
-    // fetching the profile, and re-fetching the connect page are wasted round
-    // trips before the WebSocket handshake proves the session anyway.
+    // in the jar the login is done, and following the post-login redirects is
+    // a wasted round trip before the WebSocket handshake proves the session.
     if (this.hasWebSessionCookie()) {
       return true;
     }
@@ -966,21 +1195,65 @@ export class JumpServerClient {
       }
       location = redirectResponse.headers.get('location');
     }
+    return this.hasWebSessionCookie();
+  }
 
-    await this.request('/api/v1/users/profile/', { headers: { Accept: 'application/json' } }, false);
-    const connectResponse = await this.request(connectUrl, {
-      headers: {
-        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-      },
-      redirect: 'manual'
-    }, false);
-    if ([301, 302, 303, 307, 308].includes(connectResponse.status)) {
-      return false;
+  /** Drops the sessionid from the jar and the store: it is proven stale. */
+  private async invalidateWebSession(): Promise<void> {
+    this.cookies = this.cookies.filter((cookie) => cookie.name !== 'sessionid');
+    await this.clearStoredWebSession();
+  }
+
+  private async clearStoredWebSession(): Promise<void> {
+    if (!this.webSessionStore) {
+      return;
     }
-    if (!connectResponse.ok) {
-      throw new Error(`KoKo connect warmup failed with HTTP ${connectResponse.status}.`);
+    try {
+      await this.webSessionStore.clear();
+    } catch {
+      // A failed clear only costs one doomed restore in the next window.
     }
-    return true;
+  }
+
+  private async persistWebSession(): Promise<void> {
+    if (!this.webSessionStore) {
+      return;
+    }
+    // Only the two cookies the KoKo handshake needs go to disk. Never the
+    // password, never the Bearer token, never unrelated cookies.
+    const cookies = this.cookies.filter((cookie) => cookie.name === 'sessionid' || cookie.name === 'csrftoken');
+    if (!cookies.some((cookie) => cookie.name === 'sessionid')) {
+      return;
+    }
+    try {
+      await this.webSessionStore.save(JSON.stringify({ cookies }));
+    } catch {
+      // Persistence is an optimization; the in-memory jar still works.
+    }
+  }
+
+  private async restoreWebSession(): Promise<void> {
+    if (!this.webSessionStore) {
+      return;
+    }
+    const raw = await this.webSessionStore.load();
+    if (!raw) {
+      return;
+    }
+    const restored = parseStoredWebSession(raw, this.settings.baseUrl);
+    if (restored.length === 0) {
+      return;
+    }
+    for (const cookie of restored) {
+      const exists = this.cookies.some((candidate) =>
+        candidate.name === cookie.name && candidate.domain === cookie.domain && candidate.path === cookie.path
+      );
+      if (!exists) {
+        this.cookies.push(cookie);
+      }
+    }
+    // Cookie names only: the values are live session credentials.
+    log.info(`KoKo web session restored (${restored.map((cookie) => cookie.name).join(', ')})`);
   }
 
   async openKokoWebSocket(input: {
@@ -1017,6 +1290,12 @@ export class JumpServerClient {
     timestamp?: number;
     webSocketFactory?: WebSocketFactory;
   }): Promise<KokoWebSocket> {
+    // A restored or in-flight web session is about to make the cookie-first
+    // handshake below possible; starting a second form login instead would
+    // waste the one already running.
+    await this.webSessionRestore;
+    await this.webSessionInflight?.catch(() => undefined);
+    this.lastWarmupMs = 0;
     const open = () => {
       const url = input.kind === 'sftp'
         ? buildKokoSftpWsUrl(this.settings.baseUrl, input.endpoint, input.tokenId, input.timestamp)
@@ -1031,7 +1310,9 @@ export class JumpServerClient {
           'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
           'User-Agent': input.kind === 'sftp' ? 'AT JumpServer SFTP' : 'AT JumpServer Terminal'
         },
-        rejectUnauthorized: this.settings.verifyTls
+        rejectUnauthorized: this.settings.verifyTls,
+        // Same-authority handshakes resume the REST agent's warm TLS session.
+        agent: kokoWsAgentForEndpoint(this.settings.baseUrl, input.endpoint, this.agent)
       });
     };
     if (this.hasWebSessionCookie()) {

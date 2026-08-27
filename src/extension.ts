@@ -4,6 +4,7 @@ import { JumpServerConfigManager } from './config/JumpServerConfigManager';
 import type { CachedJumpServerAsset, JumpServerBastion } from './config/schema';
 import { assetPathsFromNodes, JumpServerClient } from './jumpserver/JumpServerClient';
 import { JumpServerClientPool } from './jumpserver/JumpServerClientPool';
+import { createWebSessionSecretStore } from './jumpserver/webSessionStore';
 import { resolveOrgContext } from './jumpserver/orgContext';
 import { BridgeServer } from './mcp/BridgeServer';
 import { syncPackagedHub } from './mcp/hubSync';
@@ -57,7 +58,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const sftpManager = new JumpServerSftpManager({
     createSession: async (asset) => new JumpServerSftpSession({
       asset,
-      client: await createClient(configManager, asset.bastionId)
+      client: await createClient(configManager, asset.bastionId, context.secrets)
     }),
     reporter: new VscodeTransferReporter()
   });
@@ -279,7 +280,7 @@ export function activate(context: vscode.ExtensionContext): void {
         if (!bastion) {
           return;
         }
-        const client = await createClient(configManager, bastion.id);
+        const client = await createClient(configManager, bastion.id, context.secrets);
         await client.healthCheck();
         await client.ensureAuthToken();
         // Verifying an account should not drag the whole node tree along.
@@ -317,7 +318,7 @@ export function activate(context: vscode.ExtensionContext): void {
           );
           return;
         }
-        const client = await createClient(configManager, item.asset.bastionId);
+        const client = await createClient(configManager, item.asset.bastionId, context.secrets);
         const terminal = TerminalPanel.open(context, item.asset, client, terminalContext);
         await tryOpenSftpFiles(sftpManager, sftpTreeProvider, item.asset, terminal.getTerminalId(), false);
       });
@@ -672,18 +673,31 @@ async function ensureOrgContext(
 }
 
 async function prefetchAssetDetail(
-  configManager: JumpServerConfigManager,
+  _configManager: JumpServerConfigManager,
   asset: CachedJumpServerAsset
 ): Promise<void> {
   try {
-    const client = await createClient(configManager, asset.bastionId);
-    await client.getAssetDetail(asset.id);
+    // Browsing the tree must never pay a REST or form login. Only a bastion
+    // somebody already connected to gets its detail and web session warmed.
+    const client = clientPool?.peek(asset.bastionId);
+    if (!client) {
+      return;
+    }
+    const warmups: Array<Promise<unknown>> = [client.getAssetDetail(asset.id)];
+    if (typeof client.ensureWebSession === 'function') {
+      warmups.push(client.ensureWebSession());
+    }
+    await Promise.all(warmups);
   } catch (error) {
     log.debug(`asset detail prefetch failed: ${errorMessage(error)}`);
   }
 }
 
-async function createClient(configManager: JumpServerConfigManager, bastionId: string): Promise<JumpServerClient> {
+async function createClient(
+  configManager: JumpServerConfigManager,
+  bastionId: string,
+  secrets?: vscode.SecretStorage
+): Promise<JumpServerClient> {
   const bastion = await configManager.requireBastion(bastionId);
   const password = await configManager.requirePassword(bastionId);
   // Terminal and SFTP both come through here; a shared pool is what lets them
@@ -696,7 +710,7 @@ async function createClient(configManager: JumpServerConfigManager, bastionId: s
     username: bastion.username,
     password,
     verifyTls: bastion.verifyTls
-  });
+  }, secrets ? { webSessionStore: createWebSessionSecretStore(secrets, bastionId) } : undefined);
 }
 
 async function runCommand(command: () => Promise<void>): Promise<void> {

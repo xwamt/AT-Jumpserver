@@ -41,6 +41,21 @@ export interface JumpServerSessionClient {
     protocol: JumpServerConnectionProtocol;
   }): Promise<{ id: string }>;
   getSmartEndpoint(tokenId: string): Promise<Record<string, any>>;
+  /**
+   * Endpoint lookup keyed by asset id, which the session can start while the
+   * connection token is still being minted. Optional so older clients and
+   * existing test doubles keep working; without it the session falls back to
+   * the serial token-based lookup above.
+   */
+  getSmartEndpointForAsset?(assetId: string): Promise<Record<string, any>>;
+  /**
+   * Django form login that produces the KoKo web-session cookies. It needs no
+   * connection token, so the session fires it in parallel with everything else.
+   */
+  ensureWebSession?(): Promise<void>;
+  hasWebSession?(): boolean;
+  /** How much of the last openKokoWebSocket call was Django warmup, in ms. */
+  lastKokoWarmupMs?(): number;
   openKokoWebSocket(input: {
     endpoint: Record<string, any>;
     tokenId: string;
@@ -68,6 +83,11 @@ export class JumpServerSession {
   private disconnectReported = false;
   private heartbeatTimer: ReturnType<typeof setInterval> | undefined;
   private pongTimer: ReturnType<typeof setTimeout> | undefined;
+  /**
+   * Set by dispose(). A connect() still awaiting a token or a handshake at
+   * that moment must not bind - or worse, leak - whatever arrives afterwards.
+   */
+  private disposed = false;
 
   constructor(private readonly input: {
     asset: JumpServerSessionAsset;
@@ -78,32 +98,100 @@ export class JumpServerSession {
 
   async connect(): Promise<void> {
     const started = Date.now();
-    this.input.events.status('Loading asset');
-    const detail = await this.input.client.getAssetDetail(this.input.asset.id);
-    const protocol = connectionKindProtocol(this.input.connectionKind);
-    const protocolNames = extractProtocolNames(detail).map((name) => name.toLowerCase());
-    if (!protocolNames.includes(protocol)) {
-      throw new Error(`Selected asset does not expose ${connectionKindLabel(this.input.connectionKind)} protocol.`);
+    const timings = { detail: 0, token: 0, endpoint: 0, ws: 0 };
+    let wsAttempted = false;
+    try {
+      this.input.events.status('Loading asset');
+      const client = this.input.client;
+      // The Django form login KoKo cookies come from needs no token and no
+      // asset detail, so it overlaps the whole REST leg below. A failure is
+      // ignored here: openKokoWebSocket still has its own warmup fallback.
+      if (typeof client.ensureWebSession === 'function') {
+        client.ensureWebSession().catch(() => undefined);
+      }
+      const detail = await step(() => client.getAssetDetail(this.input.asset.id), (ms) => {
+        timings.detail = ms;
+      });
+      if (this.disposed) {
+        return;
+      }
+      const protocol = connectionKindProtocol(this.input.connectionKind);
+      const protocolNames = extractProtocolNames(detail).map((name) => name.toLowerCase());
+      if (!protocolNames.includes(protocol)) {
+        throw new Error(`Selected asset does not expose ${connectionKindLabel(this.input.connectionKind)} protocol.`);
+      }
+      const account = resolveFirstUsableAccount(detail);
+
+      this.input.events.status('Creating connection token');
+      const tokenPromise = step(() => client.createConnectionToken({
+        assetId: this.input.asset.id,
+        account,
+        protocol
+      }), (ms) => {
+        timings.token = ms;
+      });
+      const endpointPromise = step(() => this.resolveEndpoint(tokenPromise), (ms) => {
+        timings.endpoint = ms;
+      });
+      // Whichever of the pair loses the race must not surface as an unhandled
+      // rejection while the other one is still being awaited.
+      endpointPromise.catch(() => undefined);
+      const token = await tokenPromise;
+      const endpoint = await endpointPromise;
+      if (this.disposed) {
+        return;
+      }
+
+      this.input.events.status('Opening KoKo terminal');
+      wsAttempted = true;
+      const socket = await step(() => client.openKokoWebSocket({
+        endpoint,
+        tokenId: token.id,
+        cols: this.cols,
+        rows: this.rows
+      }), (ms) => {
+        timings.ws = ms;
+      });
+      if (this.disposed) {
+        // The panel closed while the handshake was in flight. Unbound, this
+        // socket would otherwise sit open against KoKo forever.
+        discardSocket(socket);
+        return;
+      }
+      this.socket = socket;
+      this.bindSocket(socket);
+      log.info(`KoKo terminal connect for ${this.input.asset.name} finished in ${Date.now() - started}ms`);
+    } finally {
+      const warmup = wsAttempted && typeof this.input.client.lastKokoWarmupMs === 'function'
+        ? this.input.client.lastKokoWarmupMs()
+        : 0;
+      // Durations only. Token ids, URLs and cookies must never reach the log.
+      // The field is `tokenPost`, not `token`: the log redactor masks every
+      // `token=<value>` pair, and it would eat the duration along with it.
+      log.info(
+        `connect timings: detail=${timings.detail}ms tokenPost=${timings.token}ms endpoint=${timings.endpoint}ms ` +
+          `warmup=${warmup}ms ws=${Math.max(0, timings.ws - warmup)}ms total=${Date.now() - started}ms`
+      );
     }
-    const account = resolveFirstUsableAccount(detail);
+  }
 
-    this.input.events.status('Creating connection token');
-    const token = await this.input.client.createConnectionToken({
-      assetId: this.input.asset.id,
-      account,
-      protocol
-    });
-    const endpoint = await this.input.client.getSmartEndpoint(token.id);
-
-    this.input.events.status('Opening KoKo terminal');
-    this.socket = await this.input.client.openKokoWebSocket({
-      endpoint,
-      tokenId: token.id,
-      cols: this.cols,
-      rows: this.rows
-    });
-    this.bindSocket(this.socket);
-    log.info(`KoKo terminal connect for ${this.input.asset.name} finished in ${Date.now() - started}ms`);
+  /**
+   * The smart endpoint keyed by asset id when the client supports it, so the
+   * lookup runs while the token POST is still in flight; the token-based
+   * lookup remains both the fallback for a 4xx (older cores do not accept
+   * `asset_id`) and the only path for clients that predate the new method.
+   */
+  private async resolveEndpoint(tokenPromise: Promise<{ id: string }>): Promise<Record<string, any>> {
+    const client = this.input.client;
+    if (typeof client.getSmartEndpointForAsset === 'function') {
+      try {
+        return await client.getSmartEndpointForAsset(this.input.asset.id);
+      } catch {
+        log.info('KoKo smart endpoint by asset id failed; falling back to the token-based lookup');
+      }
+    }
+    const token = await tokenPromise;
+    return client.getSmartEndpoint(token.id);
   }
 
   /**
@@ -145,6 +233,7 @@ export class JumpServerSession {
   }
 
   dispose(): void {
+    this.disposed = true;
     this.stopHeartbeat();
     this.markUnavailable('the session was closed locally');
     this.socket?.close();
@@ -191,6 +280,9 @@ export class JumpServerSession {
 
   private startHeartbeat(): void {
     this.stopHeartbeat();
+    if (this.disposed) {
+      return;
+    }
     this.heartbeatTimer = unrefTimer(setInterval(() => this.sendHeartbeat(), HEARTBEAT_INTERVAL_MS));
   }
 
@@ -290,6 +382,32 @@ export class JumpServerSession {
 function unrefTimer<T>(timer: T): T {
   (timer as unknown as { unref?: () => void }).unref?.();
   return timer;
+}
+
+/** Runs one connect step and records how long it took, success or failure. */
+async function step<T>(run: () => Promise<T>, record: (ms: number) => void): Promise<T> {
+  const startedAt = Date.now();
+  try {
+    return await run();
+  } finally {
+    record(Date.now() - startedAt);
+  }
+}
+
+/**
+ * Frees a socket that arrived after its session was disposed. `close()` alone
+ * would wait for a close frame from a peer nobody will read; `terminate()` is
+ * what actually releases it, and the error sink keeps a late transport failure
+ * from crashing the host for want of a listener.
+ */
+function discardSocket(socket: KokoWebSocket): void {
+  socket.on('error', () => undefined);
+  try {
+    socket.close();
+  } catch {
+    // A socket still in CONNECTING may refuse close(); terminate() below.
+  }
+  socket.terminate();
 }
 
 function formatSocketCloseStatus(code?: number, reason?: Buffer | string): string {
