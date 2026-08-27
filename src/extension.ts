@@ -86,7 +86,9 @@ export function activate(context: vscode.ExtensionContext): void {
   });
   const sftpTreeProvider = new SftpTreeProvider({
     getState: () => sftpManager.getState(),
-    listDirectory: (path) => sftpManager.listDirectory(path)
+    // Manager's second argument is connectionKey; the tree never binds a
+    // specific terminal here, so options must be passed in the third slot.
+    listDirectory: (path, options) => sftpManager.listDirectory(path, undefined, options)
   });
   const sftpPreviewStore = new SftpPreviewDocumentStore();
   const sftpEditStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
@@ -318,7 +320,7 @@ export function activate(context: vscode.ExtensionContext): void {
         if (!bastion) {
           return;
         }
-        const result = await refreshBastion(configManager, treeProvider, bastion.id);
+        const result = await refreshBastion(configManager, treeProvider, bastion.id, context.secrets);
         notifyRefreshSummary([bastion], [{ status: 'fulfilled', value: result }]);
         if (!result.cancelled) {
           // A working bastion now exists; late-start MCP for windows that
@@ -353,7 +355,7 @@ export function activate(context: vscode.ExtensionContext): void {
           throw new Error('JumpServer is not configured.');
         }
         const results = await Promise.allSettled(
-          bastions.map((bastion) => refreshBastion(configManager, treeProvider, bastion.id))
+          bastions.map((bastion) => refreshBastion(configManager, treeProvider, bastion.id, context.secrets))
         );
         notifyRefreshSummary(bastions, results);
         if (results.some((result) => result.status === 'fulfilled' && !result.value.cancelled)) {
@@ -394,7 +396,7 @@ export function activate(context: vscode.ExtensionContext): void {
         if (!await ensureSftpAssetOpen(sftpManager)) {
           return;
         }
-        await sftpManager.listDirectory();
+        await sftpManager.refreshDirectory();
         sftpTreeProvider.refresh();
       });
     }),
@@ -440,11 +442,12 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
       await runCommand(async () => {
-        await ensurePreviewEditAllowed(sftpManager, item);
+        const allowed = await ensurePreviewEditAllowed(sftpManager, item);
         await openRemotePreviewFile({
           storageUri: context.globalStorageUri ?? context.extensionUri,
           remotePath: item.entry.path,
           previewStore: sftpPreviewStore,
+          initialContent: allowed.sample,
           downloadFile: (remotePath, localPath) => sftpManager.downloadFile(remotePath, localPath, false),
           openUri: async (uri, options) => {
             await vscode.commands.executeCommand('vscode.open', uri, options);
@@ -457,8 +460,8 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
       await runCommand(async () => {
-        await ensurePreviewEditAllowed(sftpManager, item);
-        await sftpEditManager.openRemoteFile(item.entry.path);
+        const allowed = await ensurePreviewEditAllowed(sftpManager, item);
+        await sftpEditManager.openRemoteFile(item.entry.path, { initialContent: allowed.sample });
       });
     }),
     vscode.commands.registerCommand('jumpserverManager.sftp.delete', async (item?: SftpDirectoryTreeItem | SftpFileTreeItem) => {
@@ -626,10 +629,11 @@ function bastionIdFromArg(item?: BastionCommandArg): string | undefined {
 async function refreshBastion(
   configManager: JumpServerConfigManager,
   treeProvider: JumpServerTreeProvider,
-  bastionId: string
+  bastionId: string,
+  secrets?: vscode.SecretStorage
 ): Promise<BastionRefreshResult> {
   const bastion = await configManager.requireBastion(bastionId);
-  const client = await createClient(configManager, bastionId);
+  const client = await createClient(configManager, bastionId, secrets);
   const org = await ensureOrgContext(configManager, client, bastion);
   if (!org) {
     return { cancelled: true };
@@ -828,7 +832,7 @@ async function ensureSftpAssetOpen(manager: JumpServerSftpManager): Promise<bool
 async function ensurePreviewEditAllowed(
   manager: JumpServerSftpManager,
   item: SftpFileTreeItem
-): Promise<void> {
+): Promise<{ size: number; sample: Buffer }> {
   if (!await ensureSftpAssetOpen(manager)) {
     throw new Error(t('Open files from a JumpServer asset first.'));
   }
@@ -838,6 +842,7 @@ async function ensurePreviewEditAllowed(
   assertTextFileEditable({ remotePath: item.entry.path, size: stat.size });
   const sample = await manager.readFile(item.entry.path, Math.min(DEFAULT_SFTP_EDIT_MAX_BYTES, Math.max(stat.size, 1)));
   assertTextFileEditable({ remotePath: item.entry.path, size: stat.size, sample });
+  return { size: stat.size, sample };
 }
 
 function getSftpTargetDirectory(

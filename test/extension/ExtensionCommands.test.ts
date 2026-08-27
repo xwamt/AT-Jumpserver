@@ -37,6 +37,7 @@ const sftpManagerMock = vi.hoisted(() => ({
   JumpServerSftpManager: vi.fn(),
   openAsset: vi.fn(),
   listDirectory: vi.fn(),
+  refreshDirectory: vi.fn(),
   getState: vi.fn(),
   changeToParentDirectory: vi.fn(),
   changeDirectory: vi.fn(),
@@ -259,6 +260,7 @@ beforeEach(() => {
     sftpManagerMock.getState.mockReturnValue({ kind: 'active', asset, rootPath: '/' });
   });
   sftpManagerMock.listDirectory.mockResolvedValue([]);
+  sftpManagerMock.refreshDirectory.mockResolvedValue([]);
   sftpManagerMock.getState.mockReturnValue({ kind: 'none' });
   sftpManagerMock.changeToParentDirectory.mockResolvedValue('/');
   sftpManagerMock.changeDirectory.mockResolvedValue('/');
@@ -273,6 +275,7 @@ beforeEach(() => {
   sftpManagerMock.JumpServerSftpManager.mockImplementation(() => ({
     openAsset: sftpManagerMock.openAsset,
     listDirectory: sftpManagerMock.listDirectory,
+    refreshDirectory: sftpManagerMock.refreshDirectory,
     getState: sftpManagerMock.getState,
     changeToParentDirectory: sftpManagerMock.changeToParentDirectory,
     changeDirectory: sftpManagerMock.changeDirectory,
@@ -1044,6 +1047,7 @@ describe('extension command wiring', () => {
       return {
         openAsset: sftpManagerMock.openAsset,
         listDirectory: sftpManagerMock.listDirectory,
+        refreshDirectory: sftpManagerMock.refreshDirectory,
         getState: sftpManagerMock.getState,
         changeToParentDirectory: sftpManagerMock.changeToParentDirectory,
         changeDirectory: sftpManagerMock.changeDirectory,

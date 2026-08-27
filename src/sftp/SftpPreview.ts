@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, rm } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, extname } from 'node:path';
 import * as vscode from 'vscode';
 import { remoteBasename } from './RemotePath';
@@ -56,6 +56,8 @@ export async function openRemotePreviewFile(options: {
   storageUri: vscode.Uri;
   remotePath: string;
   previewStore: SftpPreviewDocumentStore;
+  /** When the edit/preview guard already fetched the whole file, skip a second download. */
+  initialContent?: Buffer;
   downloadFile(remotePath: string, localPath: string): Promise<void>;
   openUri(uri: vscode.Uri, options?: vscode.TextDocumentShowOptions): Promise<void>;
 }): Promise<vscode.Uri> {
@@ -67,7 +69,11 @@ export async function openRemotePreviewFile(options: {
     safePreviewDocumentName(options.remotePath)
   );
   await mkdir(dirname(localPreviewUri.fsPath), { recursive: true });
-  await options.downloadFile(options.remotePath, localPreviewUri.fsPath);
+  if (options.initialContent) {
+    await writeFile(localPreviewUri.fsPath, options.initialContent);
+  } else {
+    await options.downloadFile(options.remotePath, localPreviewUri.fsPath);
+  }
   const readonlyUri = options.previewStore.createReadonlyUri(options.remotePath, localPreviewUri.fsPath);
   await options.openUri(readonlyUri, { preview: false });
   return readonlyUri;

@@ -53,4 +53,25 @@ describe('SftpPreviewDocumentStore', () => {
     expect(downloadFile).toHaveBeenCalledWith('/tmp/readme', expect.stringContaining('readme.txt'));
     expect(openUri).toHaveBeenCalledWith(uri, { preview: false });
   });
+
+  it('reuses already-fetched content instead of downloading again', async () => {
+    const storagePath = join(process.cwd(), '.tmp-preview-reuse');
+    cleanupPaths.push(storagePath);
+    const storageUri = vscode.Uri.file(storagePath);
+    const store = new SftpPreviewDocumentStore();
+    const downloadFile = vi.fn();
+    const openUri = vi.fn();
+
+    const uri = await openRemotePreviewFile({
+      storageUri,
+      remotePath: '/tmp/readme',
+      previewStore: store,
+      initialContent: Buffer.from('already fetched'),
+      downloadFile,
+      openUri
+    });
+
+    expect(downloadFile).not.toHaveBeenCalled();
+    await expect(store.provideTextDocumentContent(uri)).resolves.toBe('already fetched');
+  });
 });
