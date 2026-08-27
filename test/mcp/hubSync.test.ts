@@ -63,6 +63,104 @@ describe('syncPackagedHubAt', () => {
     expect(syncPackagedHub).toBeTypeOf('function');
   });
 
+  /**
+   * Sets up a home + bundle pair whose sidecars agree on version and sha, but
+   * whose on-disk hub.js bytes differ from the packaged ones at equal length.
+   * Only the full election (which re-reads and re-hashes the installed file)
+   * can tell them apart, so whichever content survives reveals which path ran.
+   */
+  async function seedMatchingMetadata() {
+    const packaged = 'module.exports = { copy: "packaged" };\n';
+    const onDisk = 'module.exports = { copy: "on-disk!" };\n';
+    expect(onDisk).toHaveLength(packaged.length);
+    const bundlePath = join(bundleDir, 'hub.js');
+    const packagedSha = createHash('sha256').update(packaged, 'utf8').digest('hex');
+    await writeFile(bundlePath, packaged, 'utf8');
+    await writeFile(
+      join(bundleDir, 'hub-version.json'),
+      JSON.stringify({ version: '0.1.8', protocolVersion: 1, bundleSha256: packagedSha }),
+      'utf8'
+    );
+    await mkdir(join(home, '.at-series', 'mcp'), { recursive: true });
+    await writeFile(hubJsPath(home), onDisk, 'utf8');
+    await writeFile(
+      hubVersionPath(home),
+      JSON.stringify({
+        version: '0.1.8',
+        protocolVersion: 1,
+        writtenByPluginId: AT_JUMPSERVER_PLUGIN_ID,
+        writtenByPluginVersion: '0.1.8',
+        writtenAt: 1,
+        bundleSha256: packagedSha
+      }),
+      'utf8'
+    );
+    return { bundlePath, packaged, onDisk };
+  }
+
+  it('short-circuits without reading or hashing when sidecar metadata matches', async () => {
+    const { bundlePath, onDisk } = await seedMatchingMetadata();
+
+    const result = await syncPackagedHubAt(
+      bundlePath,
+      { hubVersion: '0.1.8', pluginVersion: '0.1.8' },
+      home
+    );
+
+    expect(result).toEqual({ updated: false, activeVersion: '0.1.8' });
+    // The full election would have re-hashed the installed file, noticed the
+    // divergent bytes, and repaired them; the short-circuit never read them.
+    await expect(readFile(hubJsPath(home), 'utf8')).resolves.toBe(onDisk);
+  });
+
+  it('force runs the full election even when metadata matches', async () => {
+    const { bundlePath, packaged } = await seedMatchingMetadata();
+
+    const result = await syncPackagedHubAt(
+      bundlePath,
+      { hubVersion: '0.1.8', pluginVersion: '0.1.8' },
+      home,
+      { force: true }
+    );
+
+    expect(result).toEqual({ updated: true, activeVersion: '0.1.8' });
+    await expect(readFile(hubJsPath(home), 'utf8')).resolves.toBe(packaged);
+  });
+
+  it('falls through to the full election when the installed hub.js size differs', async () => {
+    const { bundlePath, packaged } = await seedMatchingMetadata();
+    await writeFile(hubJsPath(home), 'truncated', 'utf8');
+
+    const result = await syncPackagedHubAt(
+      bundlePath,
+      { hubVersion: '0.1.8', pluginVersion: '0.1.8' },
+      home
+    );
+
+    expect(result).toEqual({ updated: true, activeVersion: '0.1.8' });
+    await expect(readFile(hubJsPath(home), 'utf8')).resolves.toBe(packaged);
+  });
+
+  it('falls through to the full election when the sidecar lacks bundleSha256', async () => {
+    const { bundlePath, packaged } = await seedMatchingMetadata();
+    await writeFile(
+      join(bundleDir, 'hub-version.json'),
+      JSON.stringify({ version: '0.1.8', protocolVersion: 1 }),
+      'utf8'
+    );
+
+    const result = await syncPackagedHubAt(
+      bundlePath,
+      { hubVersion: '0.1.8', pluginVersion: '0.1.8' },
+      home
+    );
+
+    // Election ran: the on-disk metadata claims the packaged sha but the
+    // installed bytes hash differently, so the bundle is repaired.
+    expect(result).toEqual({ updated: true, activeVersion: '0.1.8' });
+    await expect(readFile(hubJsPath(home), 'utf8')).resolves.toBe(packaged);
+  });
+
   it('skips overwrite when active hub semver is newer', async () => {
     const activeContent = 'active-newer';
     await mkdir(join(home, '.at-series', 'mcp'), { recursive: true });

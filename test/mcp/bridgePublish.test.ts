@@ -1,9 +1,14 @@
-import { access, mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { access, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { FsBridgePublisher } from '@at-series/mcp-hub';
-import { BridgeServer } from '../../src/mcp/BridgeServer';
+import {
+  BRIDGE_HEARTBEAT_FORCE_WRITE_INTERVAL_MS,
+  BridgeServer,
+  gcStaleBridgeRecords
+} from '../../src/mcp/BridgeServer';
 import { AT_JUMPSERVER_PLUGIN_ID } from '../../src/mcp/toolCatalog';
 
 const tempRoots: string[] = [];
@@ -100,6 +105,52 @@ describe('BridgeServer FsBridgePublisher', () => {
     await expect(access(recordPath)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  it('skips heartbeat writes while connectedTargets is unchanged', async () => {
+    vi.useFakeTimers();
+    try {
+      const home = await tempHome();
+      const service = createService(1);
+      const heartbeat = vi.fn(async () => {});
+      const server = new BridgeServer({
+        service: service as never,
+        home,
+        hostApp: 'cursor',
+        pluginVersion: '0.3.0',
+        createPublisher: () =>
+          ({
+            publish: vi.fn(async () => {}),
+            unpublish: vi.fn(async () => {}),
+            heartbeat
+          }) as unknown as FsBridgePublisher
+      });
+      servers.push(server);
+      await server.start();
+
+      // Idle intervals with the same connectedTargets must not touch disk:
+      // the hub's fs.watch would fire on every rewrite of an unchanged record.
+      await vi.advanceTimersByTimeAsync(3 * 30_000);
+      expect(heartbeat).not.toHaveBeenCalled();
+
+      // A target change is written on the very next tick.
+      service.getTerminalContext.mockImplementation(async () => ({
+        connectedTerminals: [{ terminalId: 't0' }, { terminalId: 't1' }],
+        knownTerminals: []
+      }));
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(heartbeat).toHaveBeenCalledTimes(1);
+      expect(heartbeat).toHaveBeenCalledWith({ capabilities: { connectedTargets: 2 } });
+
+      // Unchanged again: silent until the forced-write interval elapses, then
+      // exactly one safety write goes out even though nothing changed.
+      await vi.advanceTimersByTimeAsync(2 * 30_000);
+      expect(heartbeat).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(BRIDGE_HEARTBEAT_FORCE_WRITE_INTERVAL_MS);
+      expect(heartbeat).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('rolls back when publish fails so start() can be retried', async () => {
     const home = await tempHome();
     let publishCalls = 0;
@@ -125,5 +176,81 @@ describe('BridgeServer FsBridgePublisher', () => {
     await expect(server.start()).rejects.toThrow('publish failed');
     await expect(server.start()).resolves.toBeUndefined();
     expect(publishCalls).toBe(2);
+  });
+});
+
+describe('gcStaleBridgeRecords', () => {
+  function bridgeRecord(overrides: Record<string, unknown> = {}): string {
+    return JSON.stringify({
+      protocolVersion: 1,
+      bridgeId: 'stale-bridge',
+      pluginId: AT_JUMPSERVER_PLUGIN_ID,
+      pluginDisplayName: 'AT JumpServer Terminal',
+      pluginVersion: '0.1.9',
+      hostApp: 'cursor',
+      port: 43210,
+      token: 'irrelevant',
+      pid: 1,
+      updatedAt: 1,
+      tools: [],
+      ...overrides
+    });
+  }
+
+  it('unlinks only this plugin records whose pid is dead', async () => {
+    const home = await tempHome();
+    const dir = join(home, '.at-series', 'bridges', 'cursor');
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, 'ours-dead.json'), bridgeRecord({ pid: 111 }), 'utf8');
+    await writeFile(join(dir, 'ours-alive.json'), bridgeRecord({ pid: process.pid }), 'utf8');
+    await writeFile(
+      join(dir, 'other-dead.json'),
+      bridgeRecord({ pluginId: 'at.someother', pid: 111 }),
+      'utf8'
+    );
+    await writeFile(join(dir, 'not-a-record.txt'), 'ignored', 'utf8');
+    await writeFile(join(dir, 'broken.json'), '{not json', 'utf8');
+
+    const removed = await gcStaleBridgeRecords({
+      hostApp: 'cursor',
+      home,
+      isPidAlive: (pid) => pid === process.pid
+    });
+
+    expect(removed).toEqual(['ours-dead.json']);
+    expect((await readdir(dir)).sort()).toEqual([
+      'broken.json',
+      'not-a-record.txt',
+      'other-dead.json',
+      'ours-alive.json'
+    ]);
+  });
+
+  it('returns empty when the registry directory does not exist', async () => {
+    const home = await tempHome();
+    await expect(gcStaleBridgeRecords({ hostApp: 'cursor', home })).resolves.toEqual([]);
+  });
+
+  it('start() sweeps a crashed window record using the real pid probe', async () => {
+    const home = await tempHome();
+    const dir = join(home, '.at-series', 'bridges', 'cursor');
+    await mkdir(dir, { recursive: true });
+    // A process that has already exited: its pid is dead by the time we GC
+    // (instant pid reuse would only make the record survive one more sweep).
+    const deadPid = spawnSync(process.execPath, ['-e', '']).pid!;
+    await writeFile(join(dir, 'crashed.json'), bridgeRecord({ pid: deadPid }), 'utf8');
+
+    const server = new BridgeServer({
+      service: createService() as never,
+      home,
+      hostApp: 'cursor',
+      pluginVersion: '0.3.0'
+    });
+    servers.push(server);
+    await server.start();
+
+    const files = await readdir(dir);
+    expect(files).not.toContain('crashed.json');
+    expect(files.filter((name) => name.endsWith('.json'))).toHaveLength(1);
   });
 });

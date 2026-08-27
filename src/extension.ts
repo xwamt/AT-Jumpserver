@@ -1,3 +1,5 @@
+import { createRequire } from 'node:module';
+import { join } from 'node:path';
 import * as vscode from 'vscode';
 import { JumpServerAgentToolService } from './agent/JumpServerAgentToolService';
 import { JumpServerConfigManager } from './config/JumpServerConfigManager';
@@ -5,13 +7,8 @@ import type { CachedJumpServerAsset, JumpServerBastion } from './config/schema';
 import { assetPathsFromNodes, JumpServerClient } from './jumpserver/JumpServerClient';
 import { JumpServerClientPool } from './jumpserver/JumpServerClientPool';
 import { resolveOrgContext } from './jumpserver/orgContext';
-import { BridgeServer } from './mcp/BridgeServer';
-import { syncPackagedHub } from './mcp/hubSync';
-import {
-  ensureAtSeriesConfigForCurrentIde,
-  uninstallAtSeriesConfigForCurrentIde
-} from './mcp/McpConfigInstaller';
-import { detectHostApp } from '@at-series/mcp-hub';
+import { confirmWithTimeout } from './mcp/confirmTimeout';
+import type { McpRuntimeHandle } from './mcp/mcpRuntime';
 import { assertTextFileEditable, DEFAULT_SFTP_EDIT_MAX_BYTES } from './sftp/SftpFileGuards';
 import { createVscodeSftpEditUi, SftpEditSessionManager } from './sftp/SftpEditSessionManager';
 import { JumpServerSftpManager } from './sftp/JumpServerSftpManager';
@@ -39,6 +36,31 @@ let clientPool: JumpServerClientPool | undefined;
  * the row the user settles on is worth a detail round-trip.
  */
 export const ASSET_DETAIL_PREFETCH_DEBOUNCE_MS = 300;
+
+export { MCP_CONFIRM_TIMEOUT_MS } from './mcp/confirmTimeout';
+
+type McpRuntimeModule = typeof import('./mcp/mcpRuntime');
+
+let mcpRuntimeModulePromise: Promise<McpRuntimeModule> | undefined;
+
+/**
+ * The MCP runtime (hub sync + bridge + installer, dragging in the whole
+ * `@at-series/mcp-hub` package) lives in its own `dist/mcpRuntime.js` bundle
+ * so `dist/extension.js` stays free of it. The fallback import keeps the
+ * vitest harness working, where no dist bundle exists next to the running
+ * code; esbuild marks that specifier external so it never re-inlines the hub.
+ */
+function loadMcpRuntimeModule(context: vscode.ExtensionContext): Promise<McpRuntimeModule> {
+  mcpRuntimeModulePromise ??= (async () => {
+    try {
+      const nodeRequire = createRequire(__filename);
+      return nodeRequire(context.asAbsolutePath(join('dist', 'mcpRuntime.js'))) as McpRuntimeModule;
+    } catch {
+      return import('./mcp/mcpRuntime.js');
+    }
+  })();
+  return mcpRuntimeModulePromise;
+}
 
 export function activate(context: vscode.ExtensionContext): void {
   // A WebSocket terminal, a chunked SFTP transport, a local HTTP bridge and a
@@ -85,55 +107,80 @@ export function activate(context: vscode.ExtensionContext): void {
     sftp: sftpManager,
     confirm: async (message) => {
       const continueAction = t('Continue');
-      const answer = await vscode.window.showWarningMessage(message, { modal: true }, continueAction);
+      // An unanswered modal must resolve before the hub's 120s invoke timeout
+      // retries the call on another window's bridge (a second execution).
+      // Dismissal by timeout is a cancel.
+      const answer = await confirmWithTimeout(
+        vscode.window.showWarningMessage(message, { modal: true }, continueAction)
+      );
       return answer === continueAction;
     }
   });
-  const hubReady = syncPackagedHub(context)
-    .then((result) => {
-      log.info(`hub sync ok (updated=${result.updated}, active=${result.activeVersion})`);
-      return result;
-    })
-    .catch((error) => {
-      log.error(`hub sync failed: ${errorMessage(error)}`);
+  let disposed = false;
+  let prefetchTimer: NodeJS.Timeout | undefined;
+  let mcpRuntimeHandle: McpRuntimeHandle | undefined;
+  let mcpRuntimeStart: Promise<void> | undefined;
+
+  const startMcpRuntimeOnce = async (): Promise<void> => {
+    const runtime = await loadMcpRuntimeModule(context);
+    if (disposed) {
+      return;
+    }
+    const handle = runtime.startMcpRuntime({
+      context,
+      service: agentService,
+      hostEnv,
+      workspaceFolder: currentWorkspaceFolder()
+    });
+    mcpRuntimeHandle = handle;
+    void handle.hubReady
+      .then((result) => {
+        log.info(`hub sync ok (updated=${result.updated}, active=${result.activeVersion})`);
+      })
+      .catch((error) => {
+        log.error(`hub sync failed: ${errorMessage(error)}`);
+        void showTimedNotification(
+          t('AT Series hub sync failed: {message}. MCP may not start until Repair succeeds.', {
+            message: errorMessage(error)
+          }),
+          'warning'
+        );
+      });
+    void handle.bridgeReady.catch((error) => {
+      log.error(`MCP bridge failed to start: ${errorMessage(error)}`);
       void showTimedNotification(
-        t('AT Series hub sync failed: {message}. MCP may not start until Repair succeeds.', {
-          message: errorMessage(error)
-        }),
+        t('JumpServer MCP bridge failed to start: {message}', { message: errorMessage(error) }),
         'warning'
       );
-      throw error;
     });
-  const bridgeServer = new BridgeServer({
-    service: agentService,
-    hostApp: detectHostApp(hostEnv),
-    pluginVersion:
-      typeof context.extension?.packageJSON?.version === 'string'
-        ? context.extension.packageJSON.version
-        : undefined
-  });
-  void bridgeServer.start().catch((error) => {
-    log.error(`MCP bridge failed to start: ${errorMessage(error)}`);
-    void showTimedNotification(
-      t('JumpServer MCP bridge failed to start: {message}', { message: errorMessage(error) }),
-      'warning'
-    );
-  });
-  void hubReady
-    .then(() =>
-      ensureAtSeriesConfigForCurrentIde({
-        ...hostEnv,
-        workspaceFolder: currentWorkspaceFolder()
-      })
-    )
-    .catch((error) => {
+    void handle.ideConfigReady.catch((error) => {
       void showTimedNotification(
         t('AT Series MCP config could not be updated: {message}', { message: errorMessage(error) }),
         'warning'
       );
     });
-  let disposed = false;
-  let prefetchTimer: NodeJS.Timeout | undefined;
+  };
+
+  /** Idempotent: the second and later calls return the first start. */
+  const ensureMcpRuntime = (): Promise<void> => {
+    mcpRuntimeStart ??= startMcpRuntimeOnce().catch((error) => {
+      log.error(`MCP runtime failed to load: ${errorMessage(error)}`);
+    });
+    return mcpRuntimeStart;
+  };
+
+  // activate() must stay synchronous; MCP spins up in the background and only
+  // for users who actually configured a bastion. Everyone else skips the hub
+  // bundle read, the bridge HTTP server, and the IDE MCP config write until a
+  // bastion is saved or refreshed (see ensureMcpRuntime call sites below).
+  void (async () => {
+    const bastions = await configManager.listBastions();
+    if (bastions.length > 0 && !disposed) {
+      await ensureMcpRuntime();
+    }
+  })().catch((error) => {
+    log.error(`MCP activation gate failed: ${errorMessage(error)}`);
+  });
 
   const cleanup = {
     dispose(): void {
@@ -147,7 +194,8 @@ export function activate(context: vscode.ExtensionContext): void {
       }
       sftpManager.dispose();
       sftpEditManager.dispose();
-      void bridgeServer.dispose();
+      void mcpRuntimeHandle?.dispose();
+      mcpRuntimeHandle = undefined;
       TerminalPanel.disconnectAll();
       clientPool?.dropAll();
       if (extensionCleanup === cleanup) {
@@ -271,6 +319,11 @@ export function activate(context: vscode.ExtensionContext): void {
         }
         const result = await refreshBastion(configManager, treeProvider, bastion.id);
         notifyRefreshSummary([bastion], [{ status: 'fulfilled', value: result }]);
+        if (!result.cancelled) {
+          // A working bastion now exists; late-start MCP for windows that
+          // activated with none configured. No-op when already running.
+          void ensureMcpRuntime();
+        }
       });
     }),
     vscode.commands.registerCommand('jumpserverManager.validate', async (item?: BastionCommandArg) => {
@@ -302,6 +355,9 @@ export function activate(context: vscode.ExtensionContext): void {
           bastions.map((bastion) => refreshBastion(configManager, treeProvider, bastion.id))
         );
         notifyRefreshSummary(bastions, results);
+        if (results.some((result) => result.status === 'fulfilled' && !result.value.cancelled)) {
+          void ensureMcpRuntime();
+        }
       });
     }),
     vscode.commands.registerCommand('jumpserverManager.connect', async (item?: AssetTreeItem) => {
@@ -459,13 +515,16 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand('jumpserverManager.installMcpConfig', async () => {
       await runCommand(async () => {
+        const runtime = await loadMcpRuntimeModule(context);
         try {
-          await syncPackagedHub(context);
+          // Repair must not trust the metadata short-circuit: force the full
+          // read+hash election so a tampered ~/.at-series install is rebuilt.
+          await runtime.syncPackagedHub(context, { force: true });
         } catch (error) {
           showTimedNotification(t('AT Series hub sync failed: {message}', { message: errorMessage(error) }), 'error');
           return;
         }
-        const result = await ensureAtSeriesConfigForCurrentIde({
+        const result = await runtime.ensureAtSeriesConfigForCurrentIde({
           ...hostEnv,
           workspaceFolder: currentWorkspaceFolder()
         });
@@ -485,7 +544,8 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand('jumpserverManager.uninstallAtSeriesMcpConfig', async () => {
       await runCommand(async () => {
-        const result = await uninstallAtSeriesConfigForCurrentIde({
+        const runtime = await loadMcpRuntimeModule(context);
+        const result = await runtime.uninstallAtSeriesConfigForCurrentIde({
           ...hostEnv,
           workspaceFolder: currentWorkspaceFolder()
         });
