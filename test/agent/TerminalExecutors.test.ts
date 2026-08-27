@@ -1,9 +1,11 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TerminalOutputBuffer } from '../../src/agent/TerminalOutputBuffer';
 import {
+  MAX_TIMEOUT_MS,
   MysqlCliExecutor,
   RedisCliExecutor,
   ShellTerminalExecutor,
+  START_MARKER_GRACE_MS,
   wrapShellCommand
 } from '../../src/agent/TerminalExecutors';
 
@@ -283,6 +285,149 @@ describe('TerminalExecutors', () => {
       output: 'PONG',
       timedOut: false,
       truncated: false
+    });
+  });
+
+  it('caps executor timeouts below the 120s hub failover so commands are not run twice', async () => {
+    expect(MAX_TIMEOUT_MS).toBe(110_000);
+    expect(MAX_TIMEOUT_MS).toBeLessThan(120_000);
+
+    const output = {
+      collectUntil: vi.fn(async (options: { timeoutMs: number }) => {
+        expect(options.timeoutMs).toBe(MAX_TIMEOUT_MS);
+        return {
+          output: '__JMS_CMD_START_abc__\nok\n__JMS_CMD_END_abc__0\n',
+          terminator: '__JMS_CMD_END_abc__0',
+          timedOut: false,
+          truncated: false
+        };
+      })
+    };
+    const executor = new ShellTerminalExecutor({ idFactory: () => 'abc' });
+
+    await executor.execute({
+      terminalId: 'terminal-1',
+      assetId: 'asset-1',
+      assetName: 'ssh-1',
+      command: 'sleep 300',
+      write: vi.fn(),
+      output: output as never,
+      timeoutMs: 500_000
+    });
+
+    expect(output.collectUntil).toHaveBeenCalledTimes(1);
+  });
+
+  describe('start-marker grace', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('fails fast near 3s when the terminal never echoes the shell start marker', async () => {
+      vi.useFakeTimers();
+      const output = new TerminalOutputBuffer();
+      const write = vi.fn(() => {
+        // Terminal parked in a pager: the wrapper line is swallowed, so the
+        // printf start marker never shows up in the output stream.
+        output.append(':\u001b[K');
+      });
+      const executor = new ShellTerminalExecutor({ idFactory: () => 'abc' });
+
+      const pending = executor.execute({
+        terminalId: 'terminal-1',
+        assetId: 'asset-1',
+        assetName: 'ssh-1',
+        command: 'echo hello',
+        write,
+        output,
+        timeoutMs: 30_000,
+        maxOutputBytes: 1024
+      });
+      // Advance only the grace window — resolving here proves the executor
+      // did not sit out the full 30s timeout.
+      await vi.advanceTimersByTimeAsync(START_MARKER_GRACE_MS);
+      const result = await pending;
+
+      expect(result.timedOut).toBe(true);
+      expect(result.exitCode).toBeNull();
+      expect(result.error).toContain('3s');
+      expect(result.durationMs).toBeGreaterThanOrEqual(START_MARKER_GRACE_MS);
+      expect(result.durationMs).toBeLessThan(30_000);
+    });
+
+    it('still completes when the start marker arrives inside the grace window', async () => {
+      vi.useFakeTimers();
+      const output = new TerminalOutputBuffer();
+      const write = vi.fn(() => {
+        output.append('__JMS_CMD_START_abc__\n');
+      });
+      const executor = new ShellTerminalExecutor({ idFactory: () => 'abc' });
+
+      const pending = executor.execute({
+        terminalId: 'terminal-1',
+        assetId: 'asset-1',
+        assetName: 'ssh-1',
+        command: 'sleep 5 && echo hello',
+        write,
+        output,
+        timeoutMs: 30_000,
+        maxOutputBytes: 1024
+      });
+      // Well past the grace deadline: a seen start marker disarms it.
+      await vi.advanceTimersByTimeAsync(10_000);
+      output.append('hello\n__JMS_CMD_END_abc__0\n');
+      const result = await pending;
+
+      expect(result.timedOut).toBe(false);
+      expect(result.exitCode).toBe(0);
+      expect(result.error).toBeUndefined();
+      expect(result.stdout).toContain('hello');
+    });
+
+    it('applies the same grace to mysql and redis start markers', async () => {
+      const captured: Array<Record<string, unknown>> = [];
+      const output = {
+        collectUntil: vi.fn(async (options: Record<string, unknown>) => {
+          captured.push(options);
+          return {
+            output: 'stuck pager output',
+            terminator: undefined,
+            timedOut: true,
+            truncated: false,
+            startMarkerMissing: true
+          };
+        })
+      };
+
+      const mysqlResult = await new MysqlCliExecutor({ idFactory: () => 'abc' }).execute({
+        terminalId: 'terminal-1',
+        assetId: 'mysql-1',
+        assetName: 'mysql-1',
+        sql: 'SELECT 1;',
+        write: vi.fn(),
+        output: output as never
+      });
+      const redisResult = await new RedisCliExecutor({ idFactory: () => 'abc' }).execute({
+        terminalId: 'terminal-1',
+        assetId: 'redis-1',
+        assetName: 'redis-1',
+        command: 'PING',
+        write: vi.fn(),
+        output: output as never
+      });
+
+      expect(captured[0]).toMatchObject({
+        startMarker: '__JMS_SQL_START_abc__',
+        startMarkerGraceMs: START_MARKER_GRACE_MS
+      });
+      expect(captured[1]).toMatchObject({
+        startMarker: '__JMS_REDIS_START_abc__',
+        startMarkerGraceMs: START_MARKER_GRACE_MS
+      });
+      expect(mysqlResult.timedOut).toBe(true);
+      expect(mysqlResult.error).toContain('did not start executing');
+      expect(redisResult.timedOut).toBe(true);
+      expect(redisResult.error).toContain('did not start executing');
     });
   });
 
