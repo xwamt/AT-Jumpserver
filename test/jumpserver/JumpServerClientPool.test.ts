@@ -16,9 +16,9 @@ function settings(overrides: Partial<JumpServerSettingsWithPassword> = {}): Jump
 }
 
 function poolWithStubs() {
-  const constructed: Array<{ setOrgId: ReturnType<typeof vi.fn> }> = [];
+  const constructed: Array<{ setOrgId: ReturnType<typeof vi.fn>; dispose: ReturnType<typeof vi.fn> }> = [];
   const pool = new JumpServerClientPool((next) => {
-    const stub = { settings: next, setOrgId: vi.fn() };
+    const stub = { settings: next, setOrgId: vi.fn(), dispose: vi.fn() };
     constructed.push(stub);
     return stub as unknown as JumpServerClient;
   });
@@ -80,6 +80,8 @@ describe('JumpServerClientPool', () => {
 
     expect(second).not.toBe(first);
     expect(constructed).toHaveLength(2);
+    expect(constructed[0].dispose).toHaveBeenCalledTimes(1);
+    expect(constructed[1].dispose).not.toHaveBeenCalled();
   });
 
   it('dropAll forgets every cached client', () => {
@@ -92,6 +94,29 @@ describe('JumpServerClientPool', () => {
     pool.acquire('test', settings({ baseUrl: 'https://test.example.com' }));
 
     expect(constructed).toHaveLength(4);
+    expect(constructed[0].dispose).toHaveBeenCalledTimes(1);
+    expect(constructed[1].dispose).toHaveBeenCalledTimes(1);
+    expect(constructed[2].dispose).not.toHaveBeenCalled();
+    expect(constructed[3].dispose).not.toHaveBeenCalled();
+  });
+
+  it('disposes the replaced client when the identity changes', () => {
+    const { pool, constructed } = poolWithStubs();
+
+    pool.acquire('bastion-1', settings({ password: 'old' }));
+    pool.acquire('bastion-1', settings({ password: 'new' }));
+
+    expect(constructed).toHaveLength(2);
+    expect(constructed[0].dispose).toHaveBeenCalledTimes(1);
+    expect(constructed[1].dispose).not.toHaveBeenCalled();
+  });
+
+  it('tolerates a client without dispose when dropping it', () => {
+    const pool = new JumpServerClientPool(() => ({ setOrgId: () => undefined } as unknown as JumpServerClient));
+
+    pool.acquire('bastion-1', settings());
+
+    expect(() => pool.drop('bastion-1')).not.toThrow();
   });
 
   it('logs whether acquire reused a client', () => {

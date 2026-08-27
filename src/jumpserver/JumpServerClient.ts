@@ -6,6 +6,7 @@ import { buildSelfAssetListPath, pageSignature, rewritePaginationRef, throttleWa
 import { GLOBAL_ORG_ID, type JumpServerOrg } from './orgs';
 import { createJumpServerFetch, type FetchLike } from './restTransport';
 import { buildOrigin } from './urls';
+import { Agent as HttpsAgent } from 'node:https';
 import WebSocket from 'ws';
 /**
  * `ping`/`terminate`/`bufferedAmount` are here for the session heartbeat and
@@ -514,9 +515,12 @@ export class JumpServerClient {
   private authInflight: Promise<string> | undefined;
   private warmupInflight: Promise<void> | undefined;
   private assetDetails = new Map<string, Record<string, any>>();
+  private detailInflight = new Map<string, Promise<Record<string, any>>>();
+  private restAuthEncoding: 'json' | 'form' | undefined;
   private smartEndpoint: JumpServerEndpoint | undefined;
   private cookies: JumpServerCookie[] = [];
   private readonly fetchImpl: FetchLike;
+  private readonly agent: HttpsAgent | undefined;
   private readonly timeouts: JumpServerTimeouts;
   private readonly sleep: (ms: number) => Promise<void>;
   private orgId: string;
@@ -527,7 +531,14 @@ export class JumpServerClient {
     options: Partial<JumpServerTimeouts> & { sleep?: (ms: number) => Promise<void> } = {}
   ) {
     const { sleep, ...timeouts } = options;
-    this.fetchImpl = fetchImpl ?? createJumpServerFetch({ verifyTls: settings.verifyTls });
+    if (fetchImpl) {
+      this.fetchImpl = fetchImpl;
+    } else {
+      // One warm TLS connection saves a full handshake on every REST call,
+      // which is most of the latency of a connect on a far-away bastion.
+      this.agent = new HttpsAgent({ keepAlive: true, keepAliveMsecs: 30_000, maxSockets: 8 });
+      this.fetchImpl = createJumpServerFetch({ verifyTls: settings.verifyTls, agent: this.agent });
+    }
     this.timeouts = { ...DEFAULT_JUMPSERVER_TIMEOUTS, ...timeouts };
     this.sleep = sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.orgId = settings.orgId;
@@ -535,6 +546,11 @@ export class JumpServerClient {
 
   setOrgId(orgId: string): void {
     this.orgId = orgId;
+  }
+
+  /** Closes the keep-alive sockets. The client must not be used afterwards. */
+  dispose(): void {
+    this.agent?.destroy();
   }
 
   async ensureAuthToken(): Promise<string> {
@@ -553,48 +569,55 @@ export class JumpServerClient {
 
   private async loginRestBearer(): Promise<string> {
     log.info('REST bearer login');
-    const jsonResponse = await this.request('/api/v1/authentication/auth/', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({ username: this.settings.username, password: this.settings.password })
-    }, false);
-    if (jsonResponse.ok) {
-      const jsonBody = await jsonResponse.json() as { token?: unknown };
-      if (jsonBody.token) {
-        this.authToken = String(jsonBody.token);
+    // A bastion answers exactly one of the two encodings; retrying the one
+    // that worked last time saves a guaranteed-to-fail round trip on every
+    // re-login after a 401.
+    const encodings: Array<'json' | 'form'> = this.restAuthEncoding === 'form' ? ['form', 'json'] : ['json', 'form'];
+    for (let index = 0; index < encodings.length; index += 1) {
+      const encoding = encodings[index];
+      const token = await this.postRestAuth(encoding, index === encodings.length - 1);
+      if (token) {
+        this.authToken = token;
+        this.restAuthEncoding = encoding;
         return this.authToken;
       }
     }
-    const form = new URLSearchParams({
-      username: this.settings.username,
-      password: this.settings.password
-    });
-    const formResponse = await this.request('/api/v1/authentication/auth/', {
+    throw new Error('JumpServer auth response did not include token.');
+  }
+
+  private async postRestAuth(encoding: 'json' | 'form', lastAttempt: boolean): Promise<string | undefined> {
+    const credentials = { username: this.settings.username, password: this.settings.password };
+    const response = await this.request('/api/v1/authentication/auth/', {
       method: 'POST',
       headers: {
-        'content-type': 'application/x-www-form-urlencoded',
+        'content-type': encoding === 'json' ? 'application/json' : 'application/x-www-form-urlencoded',
         Accept: 'application/json'
       },
-      body: form.toString()
+      body: encoding === 'json' ? JSON.stringify(credentials) : new URLSearchParams(credentials).toString()
     }, false);
-    if (!formResponse.ok) {
-      await this.requireOkResponse(formResponse, '/api/v1/authentication/auth/', 'POST');
+    if (!response.ok) {
+      if (lastAttempt) {
+        await this.requireOkResponse(response, '/api/v1/authentication/auth/', 'POST');
+      }
+      return undefined;
     }
-    const body = await formResponse.json() as { token?: unknown };
-    if (!body.token) {
+    const body = await response.json() as { token?: unknown };
+    if (body.token) {
+      return String(body.token);
+    }
+    if (lastAttempt) {
       throw new JumpServerApiError(
         apiErrorMessageFromPayload(body, 'JumpServer auth response did not include token.'),
         {
-          statusCode: formResponse.status,
+          statusCode: response.status,
           method: 'POST',
           path: logRoute(resolveJumpServerUrl(this.settings.baseUrl, '/api/v1/authentication/auth/')),
-          reason: classifyRestFailure(formResponse.status),
+          reason: classifyRestFailure(response.status),
           details: body
         }
       );
     }
-    this.authToken = String(body.token);
-    return this.authToken;
+    return undefined;
   }
 
   async listAssets(input: { limit: number; offset: number; treePaths?: AssetPathMap }): Promise<CachedJumpServerAsset[]> {
@@ -632,41 +655,47 @@ export class JumpServerClient {
     let pages = 1;
     const seen = new Set<string>([pageSignature(first.records)]);
 
-    if (typeof first.next === 'string' && first.next.length > 0) {
-      let nextRef: string | null = first.next;
-      while (nextRef && records.length < maxAssets) {
-        const page = await this.fetchAssetPageFromPath(rewritePaginationRef(this.settings.baseUrl, nextRef));
-        pages += 1;
-        if (page.records.length === 0) {
-          break;
+    if (typeof first.total !== 'number') {
+      if (typeof first.next === 'string' && first.next.length > 0) {
+        // No count to plan offsets against, but the server names the next
+        // page, so walk the links serially.
+        let nextRef: string | null = first.next;
+        while (nextRef && records.length < maxAssets) {
+          const page = await this.fetchAssetPageFromPath(rewritePaginationRef(this.settings.baseUrl, nextRef));
+          pages += 1;
+          if (page.records.length === 0) {
+            break;
+          }
+          const signature = pageSignature(page.records);
+          if (seen.has(signature)) {
+            break;
+          }
+          seen.add(signature);
+          records.push(...page.records);
+          nextRef = typeof page.next === 'string' && page.next.length > 0 ? page.next : null;
         }
-        const signature = pageSignature(page.records);
-        if (seen.has(signature)) {
-          break;
+      } else {
+        // A bare array carries no count to plan against, so walk forward until a
+        // page comes back short. The cap is the only other stop condition.
+        let lastPageSize = first.records.length;
+        for (let offset = pageSize; lastPageSize === pageSize && records.length < maxAssets; offset += pageSize) {
+          const page = await this.fetchAssetPage(pageSize, offset);
+          pages += 1;
+          if (page.records.length === 0) {
+            break;
+          }
+          const signature = pageSignature(page.records);
+          if (seen.has(signature)) {
+            break;
+          }
+          seen.add(signature);
+          records.push(...page.records);
+          lastPageSize = page.records.length;
         }
-        seen.add(signature);
-        records.push(...page.records);
-        nextRef = typeof page.next === 'string' && page.next.length > 0 ? page.next : null;
-      }
-    } else if (first.total === undefined) {
-      // A bare array carries no count to plan against, so walk forward until a
-      // page comes back short. The cap is the only other stop condition.
-      let lastPageSize = first.records.length;
-      for (let offset = pageSize; lastPageSize === pageSize && records.length < maxAssets; offset += pageSize) {
-        const page = await this.fetchAssetPage(pageSize, offset);
-        pages += 1;
-        if (page.records.length === 0) {
-          break;
-        }
-        const signature = pageSignature(page.records);
-        if (seen.has(signature)) {
-          break;
-        }
-        seen.add(signature);
-        records.push(...page.records);
-        lastPageSize = page.records.length;
       }
     } else {
+      // A known count makes every remaining offset computable up front, so
+      // the pages can be fetched concurrently even when `next` is also set.
       const wanted = Math.min(first.total, maxAssets);
       const offsets: number[] = [];
       for (let offset = pageSize; offset < wanted; offset += pageSize) {
@@ -786,11 +815,30 @@ export class JumpServerClient {
       log.info(`asset detail reused for ${assetId}`);
       return cached;
     }
+    // Prefetch and connect race for the same asset; the second caller must
+    // join the first fetch instead of firing its own.
+    const inflight = this.detailInflight.get(assetId);
+    if (inflight) {
+      log.info(`asset detail fetch joined for ${assetId}`);
+      return inflight;
+    }
+    const fetching = this.fetchAssetDetail(assetId);
+    this.detailInflight.set(assetId, fetching);
+    try {
+      const detail = await fetching;
+      this.assetDetails.set(assetId, detail);
+      return detail;
+    } finally {
+      // A rejection is never cached: dropping the in-flight entry either way
+      // lets the next caller retry.
+      this.detailInflight.delete(assetId);
+    }
+  }
+
+  private async fetchAssetDetail(assetId: string): Promise<Record<string, any>> {
     await this.ensureAuthToken();
     const response = await this.authenticatedRequest(`/api/v1/perms/users/self/assets/${encodeURIComponent(assetId)}/`);
-    const detail = await response.json() as Record<string, any>;
-    this.assetDetails.set(assetId, detail);
-    return detail;
+    return await response.json() as Record<string, any>;
   }
 
   async createConnectionToken(input: { assetId: string; account: JumpServerAccountRef; protocol: JumpServerConnectionProtocol }): Promise<{ id: string }> {
@@ -899,9 +947,20 @@ export class JumpServerClient {
       redirect: 'manual'
     }, false);
 
+    // The login POST usually carries the sessionid cookie itself; once it is
+    // in the jar the warmup is done, and following the post-login redirects,
+    // fetching the profile, and re-fetching the connect page are wasted round
+    // trips before the WebSocket handshake proves the session anyway.
+    if (this.hasWebSessionCookie()) {
+      return true;
+    }
     let location = loginSubmit.headers.get('location');
     for (let index = 0; index < 5 && location; index += 1) {
       const redirectResponse = await this.request(location, { redirect: 'manual' }, false);
+      // Some deployments only hand the session cookie out on a redirect hop.
+      if (this.hasWebSessionCookie()) {
+        return true;
+      }
       if (![301, 302, 303, 307, 308].includes(redirectResponse.status)) {
         break;
       }
@@ -1174,6 +1233,7 @@ export class JumpServerClient {
   private resetRestAuth(): void {
     this.authToken = '';
     this.assetDetails.clear();
+    this.detailInflight.clear();
     this.smartEndpoint = undefined;
   }
 

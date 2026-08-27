@@ -1,3 +1,4 @@
+import { Agent as HttpsAgent } from 'node:https';
 import { afterEach, describe, expect, it } from 'vitest';
 import { SELF_SIGNED_CERT, SELF_SIGNED_KEY } from '../../test-fixtures/selfSignedTls';
 import { createJumpServerFetch } from '../../src/jumpserver/restTransport';
@@ -66,6 +67,26 @@ describe('createJumpServerFetch', () => {
         body: '{"username":"alan","password":"secret"}'
       }
     ]);
+  });
+
+  it('sends requests through a caller-provided keep-alive agent', async () => {
+    const server = await serveHttps((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    });
+    const agent = new HttpsAgent({ keepAlive: true, keepAliveMsecs: 30_000, maxSockets: 8 });
+    try {
+      const fetchImpl = createJumpServerFetch({ verifyTls: false, agent });
+
+      const first = await fetchImpl(`${server.url}/api/v1/users/profile/`);
+      const second = await fetchImpl(`${server.url}/api/v1/users/profile/`);
+
+      expect(first.status).toBe(200);
+      await expect(second.json()).resolves.toEqual({ ok: true });
+      expect(server.requests).toHaveLength(2);
+    } finally {
+      agent.destroy();
+    }
   });
 
   it('surfaces a redirect as a response instead of following it', async () => {
