@@ -1,6 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import { AT_SERIES_TOKEN_HEADER } from '@at-series/mcp-hub';
-import { createBridgeRequestHandler, readLimitedBody } from '../../src/mcp/BridgeServer';
+import {
+  createBridgeNodeListener,
+  createBridgeRequestHandler,
+  readLimitedBody,
+  TOOLS_RESPONSE_JSON,
+  type BridgeNodeRequest,
+  type BridgeNodeResponse
+} from '../../src/mcp/BridgeServer';
 import { BRIDGE_MAX_BODY_BYTES, BRIDGE_TOKEN_HEADER } from '../../src/mcp/BridgeProtocol';
 import { AT_JUMPSERVER_PLUGIN_ID, AT_JUMPSERVER_TOOL_CATALOG } from '../../src/mcp/toolCatalog';
 
@@ -137,6 +144,51 @@ describe('createBridgeRequestHandler', () => {
     expect(tools.every((tool) => typeof tool.risk === 'string')).toBe(true);
     expect(tools.find((tool) => tool.name === 'jumpserver_list_assets')?.risk).toBe('read');
     expect(tools.find((tool) => tool.name === 'jumpserver_run_terminal_command')?.risk).toBe('exec');
+  });
+
+  it('serves /tools from the pre-serialized constant with identical content', async () => {
+    const handler = createHandler();
+
+    const response = await call(handler, {
+      path: '/tools',
+      token: 'secret',
+      tokenHeader: AT_SERIES_TOKEN_HEADER
+    });
+
+    expect(response.serializedBody).toBe(TOOLS_RESPONSE_JSON);
+    expect(JSON.parse(response.serializedBody!)).toEqual(response.body);
+  });
+
+  it('ends the HTTP response with the pre-serialized /tools constant', async () => {
+    const listener = createBridgeNodeListener({
+      token: 'secret',
+      bridgeId: 'bridge-1',
+      hostApp: 'cursor',
+      pluginVersion: '0.3.0',
+      service: {
+        getTerminalContext: async () => ({ connectedTerminals: [], knownTerminals: [] })
+      } as never
+    });
+    const request: BridgeNodeRequest = {
+      method: 'GET',
+      url: '/tools',
+      headers: { [AT_SERIES_TOKEN_HEADER]: 'secret' },
+      async *[Symbol.asyncIterator]() {}
+    };
+    let ended: string | undefined;
+    const response: BridgeNodeResponse = {
+      statusCode: 0,
+      setHeader: () => undefined,
+      end: (chunk?: string) => {
+        ended = chunk;
+      }
+    };
+
+    listener(request, response);
+    await vi.waitFor(() => expect(response.statusCode).toBe(200));
+
+    expect(ended).toBe(TOOLS_RESPONSE_JSON);
+    expect(JSON.parse(ended!)).toMatchObject({ protocolVersion: 1 });
   });
 
   it('invokes jumpserver_list_assets through POST /invoke', async () => {

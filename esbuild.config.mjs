@@ -1,4 +1,5 @@
 import * as esbuild from 'esbuild';
+import { copyHub } from './scripts/copy-hub.mjs';
 
 const watch = process.argv.includes('--watch');
 
@@ -16,11 +17,44 @@ const common = {
 const NODE_TARGET = 'node18';
 const BROWSER_TARGET = 'chrome114';
 
+// One-shot builds copy the hub via the `copy:hub` npm script; watch rebuilds
+// have no such step, so refresh dist/hub.js + hub-version.json (including the
+// bundleSha256 the activation short-circuit relies on) after each rebuild.
+const copyHubOnRebuild = {
+  name: 'copy-hub-on-rebuild',
+  setup(build) {
+    build.onEnd((result) => {
+      if (result.errors.length > 0) {
+        return;
+      }
+      try {
+        copyHub();
+      } catch (error) {
+        console.error('copy-hub failed:', error);
+      }
+    });
+  }
+};
+
 const contextConfigs = [
   esbuild.context({
     ...common,
     entryPoints: ['src/extension.ts'],
     outfile: 'dist/extension.js',
+    platform: 'node',
+    target: NODE_TARGET,
+    format: 'cjs',
+    // The MCP runtime ships as its own bundle (below) that extension.js loads
+    // lazily via require(asAbsolutePath('dist/mcpRuntime.js')). Its source
+    // specifier is only a fallback for the vitest harness; marking it external
+    // keeps @at-series/mcp-hub out of extension.js.
+    external: ['vscode', './mcp/mcpRuntime.js'],
+    plugins: watch ? [copyHubOnRebuild] : []
+  }),
+  esbuild.context({
+    ...common,
+    entryPoints: ['src/mcp/mcpRuntime.ts'],
+    outfile: 'dist/mcpRuntime.js',
     platform: 'node',
     target: NODE_TARGET,
     format: 'cjs',

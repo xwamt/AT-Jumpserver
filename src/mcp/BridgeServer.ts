@@ -1,12 +1,15 @@
 import { randomUUID } from 'node:crypto';
+import { readdir, readFile, unlink } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import { homedir } from 'node:os';
+import { join } from 'node:path';
 import type { z } from 'zod';
 import {
   AT_SERIES_PROTOCOL_VERSION,
   AT_SERIES_TOKEN_HEADER,
   BRIDGE_HOST,
   BRIDGE_MAX_BODY_BYTES,
+  bridgesDirForHostApp,
   createBridgeToken,
   FsBridgePublisher,
   timingSafeEqualToken,
@@ -32,6 +35,17 @@ import { AT_JUMPSERVER_PLUGIN_ID, AT_JUMPSERVER_TOOL_CATALOG } from './toolCatal
 
 /** Heartbeat cadence for `~/.at-series` registry freshness (protocol: ≤30s). */
 const BRIDGE_HEARTBEAT_INTERVAL_MS = 30_000;
+
+/**
+ * The hub's `fs.watch` on the registry fires on every rewrite, so an idle
+ * bridge that rewrites its record twice a minute keeps the hub (and any
+ * cloud-synced home directory) churning for nothing. Heartbeats are skipped
+ * while `connectedTargets` is unchanged and rewritten immediately when it
+ * changes; this interval bounds how stale `updatedAt` may get regardless, as
+ * a safety net for consumers that read the timestamp instead of probing
+ * `/health`.
+ */
+export const BRIDGE_HEARTBEAT_FORCE_WRITE_INTERVAL_MS = 5 * 60_000;
 
 /** Deadline for a client to deliver a whole request; not a response deadline. */
 const BRIDGE_REQUEST_TIMEOUT_MS = 30_000;
@@ -73,6 +87,8 @@ export interface BridgeRequest {
 export interface BridgeResponse {
   status: number;
   body: unknown;
+  /** Pre-serialized `body`; transports send it verbatim instead of re-stringifying. */
+  serializedBody?: string;
 }
 
 /**
@@ -95,12 +111,25 @@ export interface BridgeNodeResponse {
 
 const DEFAULT_PLUGIN_VERSION = '0.0.0';
 
+const TOOLS_RESPONSE_BODY = {
+  protocolVersion: AT_SERIES_PROTOCOL_VERSION,
+  tools: AT_JUMPSERVER_TOOL_CATALOG
+};
+
+/**
+ * `GET /tools` returns a constant; serialize the multi-KB catalog once at
+ * module load instead of on every hub poll.
+ */
+export const TOOLS_RESPONSE_JSON = JSON.stringify(TOOLS_RESPONSE_BODY);
+
 export class BridgeServer {
   private server: Server | undefined;
   private token = '';
   private port: number | undefined;
   private publisher: FsBridgePublisher | undefined;
   private heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+  private lastPublishedTargets: number | undefined;
+  private lastHeartbeatWriteAt = 0;
   private readonly bridgeId = randomUUID();
   private readonly service: JumpServerAgentToolService;
   private readonly home: string;
@@ -119,6 +148,14 @@ export class BridgeServer {
   async start(): Promise<void> {
     if (this.server) {
       return;
+    }
+    // Windows that crash never unpublish, so their records would sit in the
+    // registry forever and make the hub probe dead ports. Only records this
+    // plugin wrote are candidates — other plugins own their own lifecycle.
+    try {
+      await gcStaleBridgeRecords({ hostApp: this.hostApp, home: this.home });
+    } catch {
+      // Registry hygiene must never block the bridge from starting.
     }
     this.token = createBridgeToken();
     this.server = createServer(createBridgeNodeListener({
@@ -169,6 +206,8 @@ export class BridgeServer {
       await this.rollbackFailedStart();
       throw error;
     }
+    this.lastPublishedTargets = connectedTargets;
+    this.lastHeartbeatWriteAt = Date.now();
     this.heartbeatTimer = setInterval(() => {
       void this.tickHeartbeat();
     }, BRIDGE_HEARTBEAT_INTERVAL_MS);
@@ -215,10 +254,83 @@ export class BridgeServer {
     }
     try {
       const connectedTargets = await readConnectedTargets(this.service);
+      const now = Date.now();
+      if (
+        connectedTargets === this.lastPublishedTargets &&
+        now - this.lastHeartbeatWriteAt < BRIDGE_HEARTBEAT_FORCE_WRITE_INTERVAL_MS
+      ) {
+        // Nothing changed: skip the disk write instead of rewriting the same
+        // record (an utimes-style touch would still trip the hub's fs.watch).
+        return;
+      }
       await publisher.heartbeat({ capabilities: { connectedTargets } });
+      this.lastPublishedTargets = connectedTargets;
+      this.lastHeartbeatWriteAt = now;
     } catch {
       // Best-effort; next interval retries.
     }
+  }
+}
+
+export interface GcStaleBridgeRecordsOptions {
+  hostApp: HostApp;
+  home?: string;
+  /** Test hook: replace the `process.kill(pid, 0)` liveness probe. */
+  isPidAlive?: (pid: number) => boolean;
+}
+
+/**
+ * Delete registry records left behind by dead windows of THIS plugin.
+ * Records from other plugins are never touched, whatever their state. A live
+ * pid is trusted as-is (pid reuse handing a stale record to an unrelated
+ * process is acceptable — the hub's health probe rejects it anyway).
+ * Returns the file names it removed.
+ */
+export async function gcStaleBridgeRecords(options: GcStaleBridgeRecordsOptions): Promise<string[]> {
+  const isPidAlive = options.isPidAlive ?? isProcessAlive;
+  let names: string[];
+  try {
+    names = await readdir(bridgesDirForHostApp(options.hostApp, options.home));
+  } catch {
+    return [];
+  }
+  const dir = bridgesDirForHostApp(options.hostApp, options.home);
+  const removed: string[] = [];
+  for (const name of names) {
+    if (!name.endsWith('.json')) {
+      continue;
+    }
+    const recordPath = join(dir, name);
+    try {
+      const parsed = JSON.parse(await readFile(recordPath, 'utf8')) as {
+        pluginId?: unknown;
+        pid?: unknown;
+      };
+      if (parsed?.pluginId !== AT_JUMPSERVER_PLUGIN_ID) {
+        continue;
+      }
+      if (typeof parsed.pid !== 'number' || !Number.isInteger(parsed.pid) || parsed.pid <= 0) {
+        continue;
+      }
+      if (isPidAlive(parsed.pid)) {
+        continue;
+      }
+      await unlink(recordPath);
+      removed.push(name);
+    } catch {
+      // Unreadable or contended record: leave it for its owner or the next GC.
+    }
+  }
+  return removed;
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM means the process exists but belongs to someone else.
+    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
   }
 }
 
@@ -250,10 +362,7 @@ export function createBridgeRequestHandler(dependencies: BridgeHandlerDependenci
       }
 
       if (path === '/tools' && method === 'GET') {
-        return json(200, {
-          protocolVersion: AT_SERIES_PROTOCOL_VERSION,
-          tools: AT_JUMPSERVER_TOOL_CATALOG
-        });
+        return { status: 200, body: TOOLS_RESPONSE_BODY, serializedBody: TOOLS_RESPONSE_JSON };
       }
 
       if (path === '/invoke' && method === 'POST') {
@@ -582,7 +691,7 @@ async function handleNodeRequest(
       headers: request.headers,
       body: limited.body
     });
-    writeJson(response, result.status, result.body);
+    writeJson(response, result.status, result.body, result.serializedBody);
   } catch (error) {
     writeJson(response, 500, {
       error: { code: 'INTERNAL_ERROR', message: formatError(error) }
@@ -590,8 +699,13 @@ async function handleNodeRequest(
   }
 }
 
-function writeJson(response: BridgeNodeResponse, status: number, body: unknown): void {
+function writeJson(
+  response: BridgeNodeResponse,
+  status: number,
+  body: unknown,
+  serializedBody?: string
+): void {
   response.statusCode = status;
   response.setHeader('content-type', 'application/json; charset=utf-8');
-  response.end(JSON.stringify(body));
+  response.end(serializedBody ?? JSON.stringify(body));
 }

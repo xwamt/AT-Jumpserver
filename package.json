@@ -13,9 +13,7 @@
     "Other"
   ],
   "activationEvents": [
-    "onStartupFinished",
-    "onView:jumpserverManager.assets",
-    "onView:jumpserverManager.sftpFiles"
+    "onStartupFinished"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -287,7 +285,6 @@
   },
   "dependencies": {
     "@at-series/mcp-hub": "^0.3.2",
-    "@modelcontextprotocol/sdk": "^1.29.0",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/addon-web-links": "^0.11.0",
     "@xterm/xterm": "^5.5.0",

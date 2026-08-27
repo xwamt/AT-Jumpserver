@@ -104,6 +104,7 @@ vi.mock('../../src/mcp/McpConfigInstaller', () => ({
 }));
 
 import { activate, deactivate } from '../../src/extension';
+import { JumpServerConfigManager } from '../../src/config/JumpServerConfigManager';
 import type { CachedJumpServerAsset, JumpServerBastion } from '../../src/config/schema';
 import { BastionTreeItem } from '../../src/tree/BastionTreeItem';
 import { AssetTreeItem } from '../../src/tree/TreeItems';
@@ -393,8 +394,9 @@ describe('extension command wiring', () => {
     const context = contextWithSettings();
     activate(context);
 
-    expect(mcpLifecycleMock.syncPackagedHub).toHaveBeenCalledOnce();
     await vi.waitFor(() => {
+      expect(mcpLifecycleMock.syncPackagedHub).toHaveBeenCalledOnce();
+      expect(bridgeServerMock.start).toHaveBeenCalledOnce();
       expect(mcpLifecycleMock.ensureAtSeriesConfigForCurrentIde).toHaveBeenCalledWith({
         appName: vscode.env.appName,
         appRoot: vscode.env.appRoot,
@@ -405,9 +407,68 @@ describe('extension command wiring', () => {
     });
   });
 
+  it('does not sync the hub, start the bridge, or write MCP config without bastions', async () => {
+    activate(emptyContext());
+
+    // Flush the fire-and-forget activation gate (microtasks only).
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(mcpLifecycleMock.syncPackagedHub).not.toHaveBeenCalled();
+    expect(bridgeServerMock.start).not.toHaveBeenCalled();
+    expect(mcpLifecycleMock.ensureAtSeriesConfigForCurrentIde).not.toHaveBeenCalled();
+  });
+
+  it('starts the MCP runtime once after the first successful bastion refresh', async () => {
+    const context = contextWithBastions([prodBastion()]);
+    // The activation gate sees no bastions; the user "adds" one afterwards.
+    const listSpy = vi
+      .spyOn(JumpServerConfigManager.prototype, 'listBastions')
+      .mockResolvedValueOnce([]);
+    try {
+      activate(context);
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(bridgeServerMock.start).not.toHaveBeenCalled();
+      expect(mcpLifecycleMock.syncPackagedHub).not.toHaveBeenCalled();
+
+      await registeredCommand('jumpserverManager.refreshBastion')(new BastionTreeItem(prodBastion()));
+
+      await vi.waitFor(() => {
+        expect(bridgeServerMock.start).toHaveBeenCalledTimes(1);
+        expect(mcpLifecycleMock.syncPackagedHub).toHaveBeenCalledTimes(1);
+      });
+
+      // Idempotent: a second refresh must not start a second runtime.
+      await registeredCommand('jumpserverManager.refreshBastion')(new BastionTreeItem(prodBastion()));
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(bridgeServerMock.start).toHaveBeenCalledTimes(1);
+      expect(mcpLifecycleMock.syncPackagedHub).toHaveBeenCalledTimes(1);
+    } finally {
+      listSpy.mockRestore();
+    }
+  });
+
+  it('forces a full hub sync when the user repairs the MCP config', async () => {
+    activate(contextWithSettings());
+
+    await registeredCommand('jumpserverManager.installMcpConfig')();
+
+    expect(mcpLifecycleMock.syncPackagedHub).toHaveBeenCalledWith(
+      expect.anything(),
+      { force: true }
+    );
+    expect(notificationsMock.showTimedNotification).toHaveBeenCalledWith(
+      'AT Series MCP config installed/repaired.'
+    );
+  });
+
   it('dispose unpublishes bridge without uninstalling MCP config', async () => {
     const context = contextWithSettings();
     activate(context);
+    await vi.waitFor(() => {
+      expect(bridgeServerMock.start).toHaveBeenCalled();
+    });
 
     mcpLifecycleMock.uninstallAtSeriesConfigForCurrentIde.mockClear();
     bridgeServerMock.dispose.mockClear();

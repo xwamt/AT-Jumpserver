@@ -61,6 +61,16 @@ describe('AT JumpServer Terminal manifest', () => {
     expect(JSON.stringify(manifest)).not.toContain('media/terminal-activity.svg');
   });
 
+  it('activates on startup only, with no redundant onView events', () => {
+    // Contributed views implicitly activate the extension anyway; the explicit
+    // onView events only duplicated onStartupFinished.
+    expect(manifest.activationEvents).toEqual(['onStartupFinished']);
+  });
+
+  it('does not depend on @modelcontextprotocol/sdk directly', () => {
+    expect(manifest.dependencies['@modelcontextprotocol/sdk']).toBeUndefined();
+  });
+
   it('contributes AT Series MCP install commands without language model tools', () => {
     expect(manifest.contributes.languageModelTools).toBeUndefined();
     expect(JSON.stringify(manifest.activationEvents ?? [])).not.toContain('onLanguageModelTool');
