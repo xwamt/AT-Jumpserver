@@ -30,6 +30,13 @@ export const SFTP_DRAIN_POLL_MS = 50;
  */
 export const SFTP_DRAIN_TIMEOUT_MS = 120_000;
 
+/**
+ * Opening a remote file for edit stats it and then lists its directory within
+ * the same interaction; a short-lived cache turns that into one WS round-trip
+ * without letting the tree ever show data older than a moment.
+ */
+export const SFTP_LIST_CACHE_TTL_MS = 1500;
+
 export interface JumpServerSftpSessionAsset {
   id: string;
   name: string;
@@ -68,6 +75,7 @@ export class JumpServerSftpSession {
   private connectRejecter: ((error: Error) => void) | undefined;
   private readonly pending = new Map<string, PendingCommand>();
   private currentPath = '/';
+  private readonly listCache = new Map<string, { at: number; resolvedPath: string; entries: JumpServerSftpEntry[] }>();
 
   constructor(private readonly input: {
     asset: JumpServerSftpSessionAsset;
@@ -108,29 +116,31 @@ export class JumpServerSftpSession {
   }
 
   listDirectory(path: string): Promise<JumpServerSftpEntry[]> {
-    return this.sendCommand('list', { path }).then(({ message }) => {
-      this.currentPath = message.current_path || path || this.currentPath;
-      return normalizeSftpEntries(this.currentPath, JSON.parse(message.data || '[]'));
-    });
+    return this.listPath(path, { updateCurrentPath: true });
   }
 
   mkdir(path: string): Promise<void> {
+    this.listCache.clear();
     return this.sendCommand('mkdir', { path }).then(() => undefined);
   }
 
   rename(path: string, newName: string): Promise<void> {
+    this.listCache.clear();
     return this.sendCommand('rename', { path, new_name: newName }).then(() => undefined);
   }
 
   deleteEntry(path: string): Promise<void> {
+    this.listCache.clear();
     return this.sendCommand('rm', { path }).then(() => undefined);
   }
 
   downloadFile(path: string, isDir = false): Promise<Buffer> {
+    this.listCache.clear();
     return this.sendCommand('download', { path, is_dir: isDir }).then(({ pending }) => Buffer.concat(pending.chunks));
   }
 
   uploadBytes(path: string, bytes: Buffer): Promise<void> {
+    this.listCache.clear();
     return this.sendCommand(
       'upload',
       { path, size: bytes.byteLength, offSet: 0, chunk: false },
@@ -141,11 +151,32 @@ export class JumpServerSftpSession {
   async stat(path: string): Promise<{ size: number; modifiedAt: number }> {
     const parent = path.replace(/\/+[^/]*$/, '') || '/';
     const name = path.split('/').filter(Boolean).pop();
-    const entry = (await this.listDirectory(parent)).find((item) => item.name === name || item.path === path);
+    // Statting a file is a lookup, not a navigation: the parent listing must
+    // not become the session's working directory.
+    const entries = await this.listPath(parent, { updateCurrentPath: false });
+    const entry = entries.find((item) => item.name === name || item.path === path);
     if (!entry) {
       throw new Error(`Remote path not found: ${path}`);
     }
     return { size: entry.size ?? 0, modifiedAt: entry.modifiedAt ?? 0 };
+  }
+
+  private async listPath(path: string, options: { updateCurrentPath: boolean }): Promise<JumpServerSftpEntry[]> {
+    const cached = this.listCache.get(path);
+    if (cached && Date.now() - cached.at <= SFTP_LIST_CACHE_TTL_MS) {
+      if (options.updateCurrentPath) {
+        this.currentPath = cached.resolvedPath;
+      }
+      return cached.entries;
+    }
+    const { message } = await this.sendCommand('list', { path });
+    const resolvedPath = message.current_path || path || this.currentPath;
+    const entries = normalizeSftpEntries(resolvedPath, JSON.parse(message.data || '[]'));
+    this.listCache.set(path, { at: Date.now(), resolvedPath, entries });
+    if (options.updateCurrentPath) {
+      this.currentPath = resolvedPath;
+    }
+    return entries;
   }
 
   async readFile(path: string, maxBytes: number): Promise<Buffer> {
@@ -287,6 +318,7 @@ export class JumpServerSftpSession {
 
   private handleClose(error: Error): void {
     this.connected = false;
+    this.listCache.clear();
     this.connectRejecter?.(error);
     this.connectResolver = undefined;
     this.connectRejecter = undefined;

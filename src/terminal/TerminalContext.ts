@@ -42,10 +42,17 @@ export class TerminalContextRegistry {
       ...context,
       output: existing?.output ?? context.output ?? new TerminalOutputBuffer()
     };
+    // Re-activating the terminal that is already active with the same
+    // connection state would only re-trigger downstream refreshes (the SFTP
+    // tree among them); keep the freshest write/asset fields but stay quiet.
+    const activeUnchanged =
+      this.active?.terminalId === next.terminalId && this.active.connected === next.connected;
     this.contexts.set(next.terminalId, next);
     this.active = next;
     this.contextChanged.fire(next);
-    this.activeChanged.fire(this.active);
+    if (!activeUnchanged) {
+      this.activeChanged.fire(this.active);
+    }
   }
 
   getActive(): ActiveTerminalContext | undefined {
