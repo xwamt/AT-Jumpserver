@@ -8,7 +8,6 @@ import {
   parseJumpServerBastion,
   parseJumpServerBastionList,
   parseJumpServerSettings,
-  sanitizeCachedAssetRaw,
   type CachedJumpServerAsset,
   type CachedJumpServerNode,
   type JumpServerBastion,
@@ -45,19 +44,34 @@ function stampBastionId(rows: unknown, bastionId: string): unknown[] {
   });
 }
 
-function parseCachedRows<T>(rows: unknown, parseRow: (value: unknown) => T): T[] {
+function parseCachedRows<T extends { raw: Record<string, unknown> }>(
+  rows: unknown,
+  parseRow: (value: unknown) => T
+): T[] {
   if (!Array.isArray(rows)) {
     return [];
   }
   const parsed: T[] = [];
   for (const row of rows) {
     try {
-      parsed.push(parseRow(row));
+      parsed.push(dropRaw(parseRow(row)));
     } catch {
       // Spec: drop rows that fail schema so one corrupt cache entry cannot block the tree.
     }
   }
   return parsed;
+}
+
+/**
+ * `raw` is never read anywhere; retaining the original API payload (1-4 KB per
+ * asset, tens of MB across 10k assets) in the memoized cache is pure waste.
+ * Old caches may still carry it, so parse first, then drop the reference.
+ */
+function dropRaw<T extends { raw: Record<string, unknown> }>(row: T): T {
+  if (Object.keys(row.raw).length === 0) {
+    return row;
+  }
+  return { ...row, raw: {} };
 }
 
 export class JumpServerConfigManager {
@@ -204,10 +218,12 @@ export class JumpServerConfigManager {
   async saveCachedAssets(bastionId: string, assets: CachedJumpServerAsset[]): Promise<void> {
     await this.migrateIfNeeded();
     const others = (await this.listCachedAssets()).filter((asset) => asset.bastionId !== bastionId);
+    // Persist raw as {} (schema defaults it): nothing reads it back, and the
+    // original API blobs would bloat globalState and the next parse.
     const stamped = assets.map((asset) => ({
       ...asset,
       bastionId,
-      raw: sanitizeCachedAssetRaw(asset.raw)
+      raw: {}
     }));
     await this.globalState.update(ASSETS_KEY, parseCachedJumpServerAssets([...others, ...stamped]));
     this.assetsCache = undefined;
@@ -226,7 +242,7 @@ export class JumpServerConfigManager {
     const stamped = nodes.map((node) => ({
       ...node,
       bastionId,
-      raw: sanitizeCachedAssetRaw(node.raw)
+      raw: {}
     }));
     await this.globalState.update(NODES_KEY, parseCachedJumpServerNodes([...others, ...stamped]));
     this.nodesCache = undefined;

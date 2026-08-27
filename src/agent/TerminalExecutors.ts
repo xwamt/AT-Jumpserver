@@ -27,6 +27,8 @@ export interface ShellCommandExecutionResult {
   durationMs: number;
   timedOut: boolean;
   truncated: boolean;
+  /** Set when collection gave up early because the start marker never appeared. */
+  error?: string;
 }
 
 export interface MysqlSqlExecutionInput extends TerminalExecutionTarget {
@@ -44,6 +46,8 @@ export interface MysqlSqlExecutionResult {
   durationMs: number;
   timedOut: boolean;
   truncated: boolean;
+  /** Set when collection gave up early because the start marker never appeared. */
+  error?: string;
 }
 
 export interface RedisCommandExecutionInput extends TerminalExecutionTarget {
@@ -61,12 +65,33 @@ export interface RedisCommandExecutionResult {
   durationMs: number;
   timedOut: boolean;
   truncated: boolean;
+  /** Set when collection gave up early because the start marker never appeared. */
+  error?: string;
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000;
-const MAX_TIMEOUT_MS = 120_000;
+/**
+ * The hub invoke times out at 120 s and then fails over to another window,
+ * re-executing the command. Cap executor timeouts below that so a long command
+ * finishes (or fails) here first instead of being run twice.
+ */
+export const MAX_TIMEOUT_MS = 110_000;
+/**
+ * How long to wait for the start marker before giving up on the whole
+ * collection. If the terminal is parked in `less`/`vim`/a password prompt the
+ * wrapper never runs, and without this the user waits out the full timeout.
+ */
+export const START_MARKER_GRACE_MS = 3_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 64_000;
 const MAX_OUTPUT_BYTES = 256_000;
+
+function startMarkerMissingError(): string {
+  return (
+    `The terminal did not start executing the command within ${START_MARKER_GRACE_MS / 1000}s. ` +
+    'It may be stuck in an interactive program (e.g. less/vim) or waiting at a prompt; ' +
+    'any captured output may be unrelated or partial.'
+  );
+}
 
 export class ShellTerminalExecutor {
   constructor(private readonly options: { idFactory?: () => string } = {}) {}
@@ -92,6 +117,10 @@ export class ShellTerminalExecutor {
         }
         return endWithCode.test(text.slice(start));
       },
+      // Completion can only flip when a start marker or an end marker + exit
+      // code just arrived; both fit inside the tail overlap, so anything else
+      // skips the full-window re-check.
+      isCompleteTail: (tail) => tail.includes(startMarker) || endWithCode.test(tail),
       findTerminatorIndex: (text) => {
         const start = text.indexOf(startMarker);
         if (start < 0) {
@@ -100,6 +129,10 @@ export class ShellTerminalExecutor {
         const match = endWithCode.exec(text.slice(start));
         return match ? start + match.index : -1;
       },
+      // The printf wrapper splits the marker across arguments, so echo can
+      // never produce it: seeing these bytes means the wrapper really ran.
+      startMarker,
+      startMarkerGraceMs: START_MARKER_GRACE_MS,
       timeoutMs,
       maxOutputBytes
     });
@@ -116,7 +149,8 @@ export class ShellTerminalExecutor {
       exitCode: parseExitCode(collected.terminator ?? collected.output, endMarker),
       durationMs: Date.now() - started,
       timedOut: collected.timedOut,
-      truncated: collected.truncated
+      truncated: collected.truncated,
+      ...(collected.startMarkerMissing ? { error: startMarkerMissingError() } : {})
     };
   }
 }
@@ -137,6 +171,7 @@ export class MysqlCliExecutor {
         const start = text.indexOf(startMarker);
         return start >= 0 && text.indexOf(endMarker, start + startMarker.length) >= 0;
       },
+      isCompleteTail: (tail) => tail.includes(startMarker) || tail.includes(endMarker),
       findTerminatorIndex: (text) => {
         const start = text.indexOf(startMarker);
         if (start < 0) {
@@ -144,6 +179,10 @@ export class MysqlCliExecutor {
         }
         return text.indexOf(endMarker, start + startMarker.length);
       },
+      // CONCAT keeps the marker out of the echoed SQL, so these bytes only
+      // appear once the SELECT actually executed.
+      startMarker,
+      startMarkerGraceMs: START_MARKER_GRACE_MS,
       timeoutMs,
       maxOutputBytes
     });
@@ -163,7 +202,8 @@ export class MysqlCliExecutor {
       output: stripAnsi(trimBeforeMarker(collected.output, startMarker)),
       durationMs: Date.now() - started,
       timedOut: collected.timedOut,
-      truncated: collected.truncated
+      truncated: collected.truncated,
+      ...(collected.startMarkerMissing ? { error: startMarkerMissingError() } : {})
     };
   }
 }
@@ -184,6 +224,10 @@ export class RedisCliExecutor {
         const start = findStandaloneRedisMarker(text, startMarker);
         return start >= 0 && findStandaloneRedisMarker(text, endMarker, start + startMarker.length) >= 0;
       },
+      // Cheap substring gate; the full standalone-line validation above only
+      // reruns when marker text actually landed in the new tail, instead of
+      // rescanning the whole window for every output chunk.
+      isCompleteTail: (tail) => tail.includes(startMarker) || tail.includes(endMarker),
       findTerminatorIndex: (text) => {
         const start = findStandaloneRedisMarker(text, startMarker);
         if (start < 0) {
@@ -191,6 +235,12 @@ export class RedisCliExecutor {
         }
         return findStandaloneRedisMarker(text, endMarker, start + startMarker.length);
       },
+      // Weaker guarantee than shell/mysql: the typed `ECHO <marker>` line is
+      // echoed verbatim, so these bytes can appear even if redis-cli never
+      // executed it. Still useful — a pager or password prompt suppresses echo
+      // entirely, which is exactly the stuck case the grace should catch.
+      startMarker,
+      startMarkerGraceMs: START_MARKER_GRACE_MS,
       timeoutMs,
       maxOutputBytes
     });
@@ -213,7 +263,8 @@ export class RedisCliExecutor {
       output: cleanRedisCliCapture(between, command),
       durationMs: Date.now() - started,
       timedOut: collected.timedOut,
-      truncated: collected.truncated
+      truncated: collected.truncated,
+      ...(collected.startMarkerMissing ? { error: startMarkerMissingError() } : {})
     };
   }
 }

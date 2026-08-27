@@ -52,6 +52,30 @@ describe('TerminalOutputBuffer throughput', () => {
     expect(Buffer.byteLength(result.output, 'utf8')).toBe(64_000);
   }, 120_000);
 
+  it('absorbs 10 MB after end-marker echo without rescanning the window each time', async () => {
+    const buffer = new TerminalOutputBuffer();
+    const collection = buffer.collectUntil({
+      marker: MARKER,
+      completePattern: new RegExp(`${MARKER}\\d+`),
+      timeoutMs: 60_000,
+      maxOutputBytes: 64_000
+    });
+
+    // Echo-style sighting: the marker bytes land without an exit code, so the
+    // marker gate opens but completion stays pending while 10 MB streams
+    // through. D5 regression guard: each chunk may only decode its own tail,
+    // not the whole ~320 KB window.
+    buffer.append(Buffer.from(`${MARKER} echoed without exit code\n`, 'utf8'));
+    const feedMs = feed(buffer, Buffer.alloc(CHUNK_BYTES, 0x61), `\n${MARKER}7\n`);
+    report('collectUntil after marker echo', feedMs);
+    const result = await collection;
+
+    expect(feedMs).toBeLessThan(COLLECT_BUDGET_MS);
+    expect(result.timedOut).toBe(false);
+    expect(result.truncated).toBe(true);
+    expect(result.terminator).toBe(`${MARKER}7\n`);
+  }, 120_000);
+
   it('absorbs 10 MB through the shell executor double-hook path at the same cost', async () => {
     const output = new TerminalOutputBuffer();
     const executor = new ShellTerminalExecutor({ idFactory: () => 'bench' });

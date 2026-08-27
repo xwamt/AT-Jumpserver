@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TerminalOutputBuffer } from '../../src/agent/TerminalOutputBuffer';
 
 describe('TerminalOutputBuffer', () => {
@@ -203,6 +203,105 @@ describe('TerminalOutputBuffer', () => {
       timedOut: false,
       output: expect.stringContaining('command output'),
       terminator: expect.stringMatching(/^__JMS_CMD_END_abc__0/)
+    });
+  });
+
+  it('skips full-window rechecks for chunks whose tail cannot flip completion', async () => {
+    const buffer = new TerminalOutputBuffer(1024 * 1024);
+    const startMarker = '__JMS_CMD_START_abc__';
+    const endWithCode = /__JMS_CMD_END_abc__\d+/;
+    let fullChecks = 0;
+    const collection = buffer.collectUntil({
+      marker: '__JMS_CMD_END_abc__',
+      isComplete: (text) => {
+        fullChecks += 1;
+        const start = text.indexOf(startMarker);
+        return start >= 0 && endWithCode.test(text.slice(start));
+      },
+      isCompleteTail: (tail) => tail.includes(startMarker) || endWithCode.test(tail),
+      findTerminatorIndex: (text) => {
+        const start = text.indexOf(startMarker);
+        if (start < 0) {
+          return -1;
+        }
+        const match = endWithCode.exec(text.slice(start));
+        return match ? start + match.index : -1;
+      },
+      timeoutMs: 1000,
+      maxOutputBytes: 64_000
+    });
+
+    // End-marker text lands early (echo-style) so the marker gate is open for
+    // every following chunk; without tail gating each one would decode and
+    // scan the entire window again.
+    buffer.append(Buffer.from('echo: __JMS_CMD_END_abc__ without exit code\n'));
+    buffer.append(Buffer.from(`${startMarker}\n`));
+    const filler = `${'x'.repeat(400)}\n`;
+    for (let index = 0; index < 200; index += 1) {
+      buffer.append(Buffer.from(filler));
+    }
+    const checksBeforeTerminator = fullChecks;
+    buffer.append(Buffer.from('__JMS_CMD_END_abc__0\n'));
+
+    await expect(collection).resolves.toMatchObject({
+      timedOut: false,
+      terminator: expect.stringMatching(/^__JMS_CMD_END_abc__0/)
+    });
+    // A handful of checks while the markers are still inside the tail overlap,
+    // then exactly one more for the real terminator — never one per chunk.
+    expect(checksBeforeTerminator).toBeLessThan(10);
+    expect(fullChecks).toBe(checksBeforeTerminator + 1);
+  });
+
+  describe('start-marker grace', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('gives up near the grace deadline when the start marker never appears', async () => {
+      vi.useFakeTimers();
+      const buffer = new TerminalOutputBuffer(1024);
+      const collection = buffer.collectUntil({
+        marker: 'ENDMARK',
+        isComplete: (text) => text.includes('STARTMARK') && text.includes('ENDMARK'),
+        startMarker: 'STARTMARK',
+        startMarkerGraceMs: 3000,
+        timeoutMs: 30_000,
+        maxOutputBytes: 1024
+      });
+      buffer.append(Buffer.from('pager gibberish with no marker\n'));
+
+      // Only 3s of the 30s timeout elapse; resolving here is the early exit.
+      await vi.advanceTimersByTimeAsync(3000);
+
+      await expect(collection).resolves.toMatchObject({
+        timedOut: true,
+        startMarkerMissing: true,
+        output: expect.stringContaining('gibberish')
+      });
+    });
+
+    it('is disarmed by any sighting of the start marker, letting the normal path win', async () => {
+      vi.useFakeTimers();
+      const buffer = new TerminalOutputBuffer(1024);
+      const collection = buffer.collectUntil({
+        marker: 'ENDMARK',
+        isComplete: (text) => text.includes('STARTMARK') && text.includes('ENDMARK'),
+        startMarker: 'STARTMARK',
+        startMarkerGraceMs: 3000,
+        timeoutMs: 30_000,
+        maxOutputBytes: 1024
+      });
+      buffer.append(Buffer.from('STARTMARK\n'));
+
+      await vi.advanceTimersByTimeAsync(5000);
+      buffer.append(Buffer.from('payload\nENDMARK\n'));
+
+      await expect(collection).resolves.toMatchObject({
+        timedOut: false,
+        startMarkerMissing: false,
+        output: 'STARTMARK\npayload\n'
+      });
     });
   });
 });

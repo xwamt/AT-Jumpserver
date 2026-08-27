@@ -84,9 +84,16 @@ export class JumpServerConfigPanel {
         );
         return;
       }
-      await vscode.commands.executeCommand('jumpserverManager.refreshBastion', savedId);
-      await vscode.window.showInformationMessage(t('JumpServer configuration saved.'));
+      // The save itself is done: close the form right away. Refreshing the
+      // bastion pulls every asset page and can take many seconds, so it runs
+      // fire-and-forget (the command reports its own failures via runCommand),
+      // and the success toast must not gate the dispose either — awaiting
+      // showInformationMessage blocks until the notification is dismissed.
       panel.dispose();
+      void Promise.resolve(
+        vscode.commands.executeCommand('jumpserverManager.refreshBastion', savedId)
+      ).catch(() => undefined);
+      void vscode.window.showInformationMessage(t('JumpServer configuration saved.'));
     });
   }
 }
