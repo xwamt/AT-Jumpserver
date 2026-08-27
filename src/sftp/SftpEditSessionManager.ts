@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import { mkdir, rm } from 'node:fs/promises';
+import { statSync } from 'node:fs';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import * as vscode from 'vscode';
 import { formatError } from '../utils/errors';
@@ -84,7 +84,7 @@ export class SftpEditSessionManager {
     );
   }
 
-  async openRemoteFile(remotePath: string): Promise<SftpEditSession> {
+  async openRemoteFile(remotePath: string, options: { initialContent?: Buffer } = {}): Promise<SftpEditSession> {
     const connectionKey = this.options.sftp.getActiveConnectionKey();
     if (!connectionKey) {
       throw new Error(t('No active JumpServer SFTP asset.'));
@@ -101,7 +101,15 @@ export class SftpEditSessionManager {
     const localUri = createEditCacheUri(this.options.storageUri, connectionKey, remotePath);
     await mkdir(dirname(localUri.fsPath), { recursive: true });
     const baseRemoteStat = await this.options.sftp.stat(remotePath, connectionKey);
-    await this.options.sftp.downloadFile(remotePath, localUri.fsPath, false, connectionKey);
+    if (options.initialContent && options.initialContent.byteLength === baseRemoteStat.size) {
+      // A preview already fetched exactly these bytes; downloading them again
+      // doubles the transfer for nothing.
+      await writeFile(localUri.fsPath, options.initialContent);
+    } else if (baseRemoteStat.size === 0) {
+      await writeFile(localUri.fsPath, Buffer.alloc(0));
+    } else {
+      await this.options.sftp.downloadFile(remotePath, localUri.fsPath, false, connectionKey);
+    }
 
     const session: SftpEditSession = {
       key,
@@ -240,19 +248,16 @@ export class SftpEditSessionManager {
 
     await this.options.sftp.uploadFile(session.localUri.fsPath, session.remotePath, session.connectionKey);
     const uploadedStat = await this.options.sftp.stat(session.remotePath, session.connectionKey);
-    await this.verifyUploadedContent(session, uploadedStat);
+    this.verifyUploadedContent(session, uploadedStat);
     session.baseRemoteStat = uploadedStat;
   }
 
-  private async verifyUploadedContent(session: SftpEditSession, remoteStat: JumpServerSftpFileStat): Promise<void> {
-    const localContent = readFileSync(session.localUri.fsPath);
-    if (remoteStat.size !== localContent.byteLength) {
-      throw new Error(`Remote sync verification failed for ${session.remotePath}: remote size is ${remoteStat.size} bytes, expected ${localContent.byteLength} bytes.`);
-    }
-
-    const remoteContent = await this.options.sftp.readFile(session.remotePath, localContent.byteLength, session.connectionKey);
-    if (!remoteContent.equals(localContent)) {
-      throw new Error(`Remote sync verification failed for ${session.remotePath}: remote content does not match local edits.`);
+  private verifyUploadedContent(session: SftpEditSession, remoteStat: JumpServerSftpFileStat): void {
+    // A matching size right after our own upload is proof enough; re-reading
+    // the whole remote file doubled every save's transfer cost.
+    const localSize = statSync(session.localUri.fsPath).size;
+    if (remoteStat.size !== localSize) {
+      throw new Error(`Remote sync verification failed for ${session.remotePath}: remote size is ${remoteStat.size} bytes, expected ${localSize} bytes.`);
     }
   }
 

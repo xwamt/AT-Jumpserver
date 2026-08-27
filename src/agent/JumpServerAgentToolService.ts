@@ -142,7 +142,9 @@ export class JumpServerAgentToolService {
     path?: string;
     maxEntries?: number;
   }) {
-    const entries = await this.dependencies.sftp.listDirectory(input.path, connectionKeyOf(input));
+    // An agent walking the tree must not move the Files view's working
+    // directory out from under the user.
+    const entries = await this.dependencies.sftp.listDirectory(input.path, connectionKeyOf(input), { updateCurrentPath: false });
     const maxEntries = clampPositiveInteger(
       input.maxEntries,
       DEFAULT_SFTP_LIST_MAX_ENTRIES,
@@ -163,6 +165,23 @@ export class JumpServerAgentToolService {
 
   async sftpReadFile(input: { connectionKey?: string; terminalId?: string; path: string; maxBytes?: number }) {
     const maxBytes = clampReadBytes(input.maxBytes);
+    // maxBytes only bounds what this side keeps: KoKo still pushes the whole
+    // file over the websocket. Stat first (served from the short list cache)
+    // and refuse outright when the transfer itself would be the problem.
+    let remoteSize: number | undefined;
+    try {
+      remoteSize = (await this.dependencies.sftp.stat(input.path, connectionKeyOf(input))).size;
+    } catch {
+      // Size unknown (for example /proc files that do not appear in their
+      // parent listing): fall through to the capped read.
+    }
+    if (remoteSize !== undefined && remoteSize > SFTP_MCP_READ_MAX_FILE_BYTES) {
+      throw new Error(
+        `Remote file ${input.path} is ${remoteSize} bytes, larger than the ${SFTP_MCP_READ_MAX_FILE_BYTES}-byte ` +
+        'jumpserver_sftp_read_file limit. Use jumpserver_sftp_stat for metadata, or jumpserver_run_terminal_command ' +
+        'with tail/head/grep to inspect part of the file instead of downloading it.'
+      );
+    }
     const buffer = await this.dependencies.sftp.readFile(input.path, maxBytes, connectionKeyOf(input));
     if (buffer.includes(0)) {
       throw new Error('Remote file appears to be binary.');
@@ -361,6 +380,13 @@ const DEFAULT_LIST_ASSETS_LIMIT = 200;
 const MAX_LIST_ASSETS_LIMIT = 500;
 const DEFAULT_SFTP_LIST_MAX_ENTRIES = 500;
 const MAX_SFTP_LIST_MAX_ENTRIES = 5_000;
+
+/**
+ * jumpserver_sftp_read_file refuses files larger than this: KoKo streams the
+ * entire file over the websocket regardless of the local maxBytes cap, so a
+ * capped read of a huge file still costs the full transfer.
+ */
+export const SFTP_MCP_READ_MAX_FILE_BYTES = 8 * 1024 * 1024;
 
 function clampReadBytes(value: number | undefined): number {
   if (!Number.isInteger(value) || value === undefined || value <= 0) {

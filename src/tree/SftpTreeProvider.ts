@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import type { JumpServerSftpTreeState } from '../sftp/JumpServerSftpManager';
-import type { JumpServerSftpEntry } from '../sftp/SftpTypes';
+import type { JumpServerSftpEntry, SftpListDirectoryOptions } from '../sftp/SftpTypes';
 import {
   SftpDirectoryTreeItem,
   SftpFileTreeItem,
@@ -11,7 +11,7 @@ import { t } from '../i18n/t';
 
 export interface SftpTreeSource {
   getState(): JumpServerSftpTreeState;
-  listDirectory?(path?: string): Promise<JumpServerSftpEntry[]>;
+  listDirectory?(path?: string, options?: SftpListDirectoryOptions): Promise<JumpServerSftpEntry[]>;
 }
 
 export type SftpTreeNode = SftpPlaceholderTreeItem | SftpParentDirectoryTreeItem | SftpDirectoryTreeItem | SftpFileTreeItem;
@@ -19,10 +19,17 @@ export type SftpTreeNode = SftpPlaceholderTreeItem | SftpParentDirectoryTreeItem
 export class SftpTreeProvider implements vscode.TreeDataProvider<SftpTreeNode> {
   private readonly changed = new vscode.EventEmitter<SftpTreeNode | undefined>();
   readonly onDidChangeTreeData = this.changed.event;
+  /**
+   * An explicit refresh must show live data even inside the session's short
+   * list-cache TTL; the first listing it triggers therefore bypasses the
+   * cache.
+   */
+  private bypassCacheOnNextList = false;
 
   constructor(private readonly source: SftpTreeSource) {}
 
   refresh(item?: SftpTreeNode): void {
+    this.bypassCacheOnNextList = true;
     this.changed.fire(item);
   }
 
@@ -46,7 +53,9 @@ export class SftpTreeProvider implements vscode.TreeDataProvider<SftpTreeNode> {
       return element ? [] : state.entries.map((entry) => this.toTreeItem(entry, true));
     }
     const path = element instanceof SftpDirectoryTreeItem ? element.entry.path : state.rootPath;
-    const entries = await this.source.listDirectory?.(path) ?? [];
+    const bypassCache = this.bypassCacheOnNextList;
+    this.bypassCacheOnNextList = false;
+    const entries = await this.source.listDirectory?.(path, bypassCache ? { bypassCache: true } : undefined) ?? [];
     const children = entries.map((entry) => this.toTreeItem(entry, false));
     return element || state.rootPath === '/' ? children : [new SftpParentDirectoryTreeItem(), ...children];
   }

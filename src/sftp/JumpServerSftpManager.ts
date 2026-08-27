@@ -1,7 +1,8 @@
+import { createWriteStream, type WriteStream } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import type { CachedJumpServerAsset } from '../config/schema';
 import { dirname } from './RemotePath';
-import type { JumpServerSftpEntry, JumpServerSftpFileStat } from './SftpTypes';
+import type { JumpServerSftpEntry, JumpServerSftpFileStat, SftpListDirectoryOptions, SftpUploadProgress } from './SftpTypes';
 import { TransferService, type TransferReporter } from './TransferService';
 import { t } from '../i18n/t';
 
@@ -9,12 +10,15 @@ import { t } from '../i18n/t';
 export interface JumpServerSftpSessionLike {
   connect(): Promise<void>;
   realpath(path?: string): Promise<string>;
-  listDirectory(path: string): Promise<JumpServerSftpEntry[]>;
+  listDirectory(path: string, options?: SftpListDirectoryOptions): Promise<JumpServerSftpEntry[]>;
   mkdir(path: string): Promise<void>;
   rename(oldPath: string, newPath: string): Promise<void>;
   deleteEntry(path: string): Promise<void>;
-  uploadBytes(path: string, bytes: Buffer): Promise<void>;
+  uploadBytes(path: string, bytes: Buffer, onProgress?: SftpUploadProgress): Promise<void>;
   downloadFile(path: string, isDir?: boolean): Promise<Buffer>;
+  /** Sessions that can stream a download chunk-by-chunk expose this; the manager then never buffers a file. */
+  downloadFileToWriter?(path: string, isDir: boolean, write: (chunk: Buffer) => void | Promise<void>): Promise<void>;
+  invalidateListCache?(): void;
   stat(path: string): Promise<JumpServerSftpFileStat>;
   readFile(path: string, maxBytes: number): Promise<Buffer>;
   writeFile(path: string, content: Buffer): Promise<void>;
@@ -31,6 +35,8 @@ export type JumpServerSftpTreeState =
 interface ManagedConnection {
   asset: CachedJumpServerAsset;
   session: JumpServerSftpSessionLike | undefined;
+  /** A connect in flight; concurrent callers share it instead of opening a second websocket. */
+  sessionPromise: Promise<JumpServerSftpSessionLike> | undefined;
   rootPath: string | undefined;
   snapshot: { rootPath: string; entries: JumpServerSftpEntry[] } | undefined;
 }
@@ -54,7 +60,7 @@ export class JumpServerSftpManager {
       this.connections.delete(terminalId);
     }
     if (!this.connections.has(terminalId)) {
-      this.connections.set(terminalId, { asset, session: undefined, rootPath: undefined, snapshot: undefined });
+      this.connections.set(terminalId, { asset, session: undefined, sessionPromise: undefined, rootPath: undefined, snapshot: undefined });
     }
     this.activeTerminalId = terminalId;
   }
@@ -132,15 +138,25 @@ export class JumpServerSftpManager {
     return connection.rootPath;
   }
 
-  async listDirectory(path?: string, connectionKey?: string): Promise<JumpServerSftpEntry[]> {
+  async listDirectory(path?: string, connectionKey?: string, options?: SftpListDirectoryOptions): Promise<JumpServerSftpEntry[]> {
     const connection = this.requireConnection(connectionKey);
     const root = connection.rootPath ?? await this.ensureRoot(connectionKey);
     const target = path ?? root;
-    const entries = await (await this.ensureSession(connection)).listDirectory(target);
-    if (target === root) {
+    const session = await this.ensureSession(connection);
+    const entries = options ? await session.listDirectory(target, options) : await session.listDirectory(target);
+    if (target === root && options?.updateCurrentPath !== false) {
+      // A non-navigating listing (an MCP tool walking the tree) must not
+      // overwrite the snapshot the Files view falls back to when offline.
       connection.snapshot = { rootPath: root, entries };
     }
     return entries;
+  }
+
+  /** Explicit UI refresh: drops the session's list cache and re-fetches past the TTL. */
+  async refreshDirectory(path?: string, connectionKey?: string): Promise<JumpServerSftpEntry[]> {
+    const connection = this.requireConnection(connectionKey);
+    (await this.ensureSession(connection)).invalidateListCache?.();
+    return this.listDirectory(path, connectionKey, { bypassCache: true });
   }
 
   async changeDirectory(path: string): Promise<string> {
@@ -170,16 +186,32 @@ export class JumpServerSftpManager {
   }
 
   async uploadFile(localPath: string, remotePath: string, connectionKey?: string): Promise<void> {
-    await this.transfers.run(t('Upload {path}', { path: remotePath }), async () => {
+    await this.transfers.run(t('Upload {path}', { path: remotePath }), async (progress) => {
       const bytes = await readFile(localPath);
-      await (await this.ensureSession(this.requireConnection(connectionKey))).uploadBytes(remotePath, bytes);
+      const session = await this.ensureSession(this.requireConnection(connectionKey));
+      await session.uploadBytes(remotePath, bytes, (transferredBytes, totalBytes) =>
+        progress.report({ transferredBytes, totalBytes })
+      );
     });
   }
 
   async downloadFile(remotePath: string, localPath: string, isDir = false, connectionKey?: string): Promise<void> {
     await this.transfers.run(t('Download {path}', { path: remotePath }), async () => {
-      const bytes = await (await this.ensureSession(this.requireConnection(connectionKey))).downloadFile(remotePath, isDir);
-      await writeFile(localPath, bytes);
+      const session = await this.ensureSession(this.requireConnection(connectionKey));
+      if (!session.downloadFileToWriter) {
+        await writeFile(localPath, await session.downloadFile(remotePath, isDir));
+        return;
+      }
+      // Each chunk goes straight to disk; the extension host never holds more
+      // than the chunk in flight, whatever the file size.
+      const stream = createWriteStream(localPath);
+      try {
+        await session.downloadFileToWriter(remotePath, isDir, (chunk) => writeChunk(stream, chunk));
+        await endStream(stream);
+      } catch (error) {
+        stream.destroy();
+        throw error;
+      }
     });
   }
 
@@ -216,14 +248,55 @@ export class JumpServerSftpManager {
     if (connection.session) {
       return connection.session;
     }
-    const session = await this.options.createSession(connection.asset);
-    connection.session = session;
-    await session.connect();
-    return session;
+    if (connection.sessionPromise) {
+      return connection.sessionPromise;
+    }
+    const sessionPromise = (async () => {
+      const session = await this.options.createSession(connection.asset);
+      try {
+        await session.connect();
+      } catch (error) {
+        // A session whose connect failed can still hold a live websocket;
+        // dropping it un-disposed leaks the socket, and leaving it on the
+        // connection would hand a broken session to the next caller.
+        session.dispose();
+        throw error;
+      }
+      connection.session = session;
+      return session;
+    })();
+    connection.sessionPromise = sessionPromise;
+    try {
+      return await sessionPromise;
+    } finally {
+      if (connection.sessionPromise === sessionPromise) {
+        connection.sessionPromise = undefined;
+      }
+    }
   }
 
   private disposeConnection(connection: ManagedConnection): void {
     connection.session?.dispose();
     connection.session = undefined;
+    // A connect still in flight resolves to a socket nobody will use.
+    connection.sessionPromise?.then((session) => session.dispose(), swallowError);
+    connection.sessionPromise = undefined;
   }
+}
+
+function swallowError(): void {
+  // ensureSession already surfaced the failure to its callers.
+}
+
+function writeChunk(stream: WriteStream, chunk: Buffer): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    stream.write(chunk, (error) => (error ? reject(error) : resolve()));
+  });
+}
+
+function endStream(stream: WriteStream): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    stream.once('error', reject);
+    stream.end(() => resolve());
+  });
 }
