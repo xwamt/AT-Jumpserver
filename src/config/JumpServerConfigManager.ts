@@ -62,6 +62,10 @@ function parseCachedRows<T>(rows: unknown, parseRow: (value: unknown) => T): T[]
 
 export class JumpServerConfigManager {
   private readonly idFactory: () => string;
+  private migrated?: Promise<void>;
+  private bastionsCache?: JumpServerBastion[];
+  private assetsCache?: CachedJumpServerAsset[];
+  private nodesCache?: CachedJumpServerNode[];
 
   constructor(
     private readonly globalState: ExtensionMemento,
@@ -73,7 +77,8 @@ export class JumpServerConfigManager {
 
   async listBastions(): Promise<JumpServerBastion[]> {
     await this.migrateIfNeeded();
-    return parseJumpServerBastionList(this.globalState.get<unknown>(BASTIONS_KEY, []));
+    this.bastionsCache ??= parseJumpServerBastionList(this.globalState.get<unknown>(BASTIONS_KEY, []));
+    return this.bastionsCache;
   }
 
   async getBastion(id: string): Promise<JumpServerBastion | undefined> {
@@ -97,6 +102,7 @@ export class JumpServerConfigManager {
       ? [...bastions, parsed]
       : bastions.map((item, itemIndex) => (itemIndex === index ? parsed : item));
     await this.globalState.update(BASTIONS_KEY, next);
+    this.bastionsCache = undefined;
     if (password !== undefined) {
       await this.secrets.store(passwordKey(parsed.id), password);
     }
@@ -110,6 +116,9 @@ export class JumpServerConfigManager {
     await this.globalState.update(BASTIONS_KEY, bastions);
     await this.globalState.update(ASSETS_KEY, assets);
     await this.globalState.update(NODES_KEY, nodes);
+    this.bastionsCache = undefined;
+    this.assetsCache = undefined;
+    this.nodesCache = undefined;
     await this.secrets.delete(passwordKey(id));
   }
 
@@ -170,6 +179,9 @@ export class JumpServerConfigManager {
     await this.globalState.update(ASSETS_KEY, undefined);
     await this.globalState.update(NODES_KEY, undefined);
     await this.globalState.update(SETTINGS_KEY, undefined);
+    this.bastionsCache = undefined;
+    this.assetsCache = undefined;
+    this.nodesCache = undefined;
   }
 
   async getPassword(id?: string): Promise<string | undefined> {
@@ -198,11 +210,13 @@ export class JumpServerConfigManager {
       raw: sanitizeCachedAssetRaw(asset.raw)
     }));
     await this.globalState.update(ASSETS_KEY, parseCachedJumpServerAssets([...others, ...stamped]));
+    this.assetsCache = undefined;
   }
 
   async listCachedAssets(bastionId?: string): Promise<CachedJumpServerAsset[]> {
     await this.migrateIfNeeded();
-    const assets = parseCachedRows(this.globalState.get<unknown[]>(ASSETS_KEY, []), parseCachedJumpServerAsset);
+    this.assetsCache ??= parseCachedRows(this.globalState.get<unknown[]>(ASSETS_KEY, []), parseCachedJumpServerAsset);
+    const assets = this.assetsCache;
     return bastionId ? assets.filter((asset) => asset.bastionId === bastionId) : assets;
   }
 
@@ -215,15 +229,22 @@ export class JumpServerConfigManager {
       raw: sanitizeCachedAssetRaw(node.raw)
     }));
     await this.globalState.update(NODES_KEY, parseCachedJumpServerNodes([...others, ...stamped]));
+    this.nodesCache = undefined;
   }
 
   async listCachedAssetNodes(bastionId?: string): Promise<CachedJumpServerNode[]> {
     await this.migrateIfNeeded();
-    const nodes = parseCachedRows(this.globalState.get<unknown[]>(NODES_KEY, []), parseCachedJumpServerNode);
+    this.nodesCache ??= parseCachedRows(this.globalState.get<unknown[]>(NODES_KEY, []), parseCachedJumpServerNode);
+    const nodes = this.nodesCache;
     return bastionId ? nodes.filter((node) => node.bastionId === bastionId) : nodes;
   }
 
-  private async migrateIfNeeded(): Promise<void> {
+  private migrateIfNeeded(): Promise<void> {
+    this.migrated ??= this.runMigration();
+    return this.migrated;
+  }
+
+  private async runMigration(): Promise<void> {
     const rawBastions = this.globalState.get<unknown | undefined>(BASTIONS_KEY, undefined);
     if (rawBastions !== undefined) {
       const parsed = parseJumpServerBastionList(rawBastions);
@@ -244,6 +265,7 @@ export class JumpServerConfigManager {
       return;
     }
     await this.globalState.update(BASTIONS_KEY, []);
+    this.bastionsCache = undefined;
   }
 
   private readLegacySettings(): JumpServerSettings | undefined {
@@ -287,5 +309,8 @@ export class JumpServerConfigManager {
     await this.globalState.update(ASSETS_KEY, assets);
     await this.globalState.update(NODES_KEY, nodes);
     await this.globalState.update(SETTINGS_KEY, undefined);
+    this.bastionsCache = undefined;
+    this.assetsCache = undefined;
+    this.nodesCache = undefined;
   }
 }

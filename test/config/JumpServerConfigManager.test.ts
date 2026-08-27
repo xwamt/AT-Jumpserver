@@ -374,6 +374,76 @@ describe('JumpServerConfigManager', () => {
     ]);
   });
 
+  it('memoizes parsed cached assets so a corrupted memento does not affect later reads', async () => {
+    const globalState = new MemoryMemento();
+    const manager = new JumpServerConfigManager(globalState, new MemorySecretStore());
+    await manager.saveCachedAssets('b1', [asset({ id: 'a' })]);
+    const first = await manager.listCachedAssets();
+    expect(first).toEqual([expect.objectContaining({ id: 'a', bastionId: 'b1' })]);
+
+    await globalState.update('jumpserverManager.cachedAssets', 'garbage');
+
+    expect(await manager.listCachedAssets()).toEqual(first);
+    expect(await manager.listCachedAssets('b1')).toEqual(first);
+  });
+
+  it('invalidates the asset memo when a new snapshot is saved', async () => {
+    const manager = new JumpServerConfigManager(new MemoryMemento(), new MemorySecretStore());
+    await manager.saveCachedAssets('b1', [asset({ id: 'a' })]);
+    await manager.listCachedAssets();
+
+    await manager.saveCachedAssets('b1', [asset({ id: 'c' })]);
+
+    expect(await manager.listCachedAssets()).toEqual([
+      expect.objectContaining({ id: 'c', bastionId: 'b1' })
+    ]);
+  });
+
+  it('memoizes parsed cached nodes so a corrupted memento does not affect later reads', async () => {
+    const globalState = new MemoryMemento();
+    const manager = new JumpServerConfigManager(globalState, new MemorySecretStore());
+    await manager.saveCachedAssetNodes('b1', [node({ id: 'n1' })]);
+    const first = await manager.listCachedAssetNodes();
+    expect(first).toEqual([expect.objectContaining({ id: 'n1', bastionId: 'b1' })]);
+
+    await globalState.update('jumpserverManager.cachedAssetNodes', 'garbage');
+
+    expect(await manager.listCachedAssetNodes()).toEqual(first);
+    expect(await manager.listCachedAssetNodes('b1')).toEqual(first);
+  });
+
+  it('invalidates the node memo when a new snapshot is saved', async () => {
+    const manager = new JumpServerConfigManager(new MemoryMemento(), new MemorySecretStore());
+    await manager.saveCachedAssetNodes('b1', [node({ id: 'n1' })]);
+    await manager.listCachedAssetNodes();
+
+    await manager.saveCachedAssetNodes('b1', [node({ id: 'n2' })]);
+
+    expect(await manager.listCachedAssetNodes()).toEqual([
+      expect.objectContaining({ id: 'n2', bastionId: 'b1' })
+    ]);
+  });
+
+  it('memoizes bastions after the first list and does not re-run migration or parse', async () => {
+    const globalState = new MemoryMemento();
+    const manager = new JumpServerConfigManager(globalState, new MemorySecretStore());
+    const saved = bastion();
+    await manager.saveBastion(saved);
+    const first = await manager.listBastions();
+    expect(first).toEqual([expect.objectContaining({ id: saved.id })]);
+
+    await globalState.update('jumpserverManager.bastions', 'garbage');
+
+    expect(await manager.listBastions()).toEqual(first);
+
+    const second = bastion({ id: '22222222-2222-2222-2222-222222222222', name: 'Test' });
+    await manager.saveBastion(second);
+    expect(await manager.listBastions()).toEqual([
+      expect.objectContaining({ id: saved.id }),
+      expect.objectContaining({ id: second.id })
+    ]);
+  });
+
   it('drops corrupt cached rows when listing after bastions already exist', async () => {
     const globalState = new MemoryMemento();
     const existing = bastion();
