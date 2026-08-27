@@ -13,7 +13,6 @@ import {
 import { createTerminalOptions } from './options';
 import { writeTerminalOutputMessage } from './output';
 import { watchTerminalTheme } from './theme';
-import { watchTerminalZebraStripes } from './zebra';
 
 type VsCodeApi = { postMessage(message: unknown): void };
 
@@ -43,7 +42,6 @@ term.loadAddon(fitAddon);
 term.loadAddon(new WebLinksAddon());
 term.open(container);
 watchTerminalTheme(term);
-watchTerminalZebraStripes(term);
 
 const clipboard: TerminalClipboard = {
   readText: () => navigator.clipboard?.readText() ?? Promise.resolve(''),

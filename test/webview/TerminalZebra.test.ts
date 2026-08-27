@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   applyTerminalZebraRows,
@@ -70,5 +72,13 @@ describe('terminal zebra striping', () => {
     frames[0](0);
 
     expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it('stripes rows via CSS nth-child so no per-frame JS is needed', () => {
+    const css = readFileSync(resolve(__dirname, '../../webview/terminal/index.css'), 'utf8');
+
+    // First visible row (CSS nth-child(odd)) keeps the old JS "even" stripe color.
+    expect(css).toMatch(/\.xterm-rows > div:nth-child\(odd\)\s*\{[^}]*rgba\(255, 255, 255, 0\.025\)/);
+    expect(css).toMatch(/\.xterm-rows > div:nth-child\(even\)\s*\{[^}]*rgba\(0, 0, 0, 0\.06\)/);
   });
 });

@@ -1,5 +1,10 @@
 const RESET = '\x1b[0m';
 
+/** Chunks larger than this are written verbatim; scanning 64KB frames per write is too costly. */
+const MAX_HIGHLIGHT_TEXT_LENGTH = 16384;
+/** Stop collecting after this many matches; the remaining text is written uncolored. */
+const MAX_HIGHLIGHT_MATCHES = 500;
+
 interface HighlightRule {
   readonly pattern: RegExp;
   readonly color: string;
@@ -9,6 +14,7 @@ interface HighlightMatch {
   readonly start: number;
   readonly end: number;
   readonly color: string;
+  readonly ruleIndex: number;
 }
 
 const ansiEscapePattern = /\x1b\[[0-?]*[ -/]*[@-~]/;
@@ -25,7 +31,7 @@ const rules: HighlightRule[] = [
 ];
 
 export function semanticHighlightText(text: string): string {
-  if (!isHighlightableText(text)) {
+  if (text.length > MAX_HIGHLIGHT_TEXT_LENGTH || !isHighlightableText(text)) {
     return text;
   }
 
@@ -50,26 +56,36 @@ function isHighlightableText(text: string): boolean {
 }
 
 function collectMatches(text: string): HighlightMatch[] {
-  const matches: HighlightMatch[] = [];
-  for (const rule of rules) {
+  const candidates: HighlightMatch[] = [];
+  collect: for (let ruleIndex = 0; ruleIndex < rules.length; ruleIndex++) {
+    const rule = rules[ruleIndex];
     rule.pattern.lastIndex = 0;
     for (const match of text.matchAll(rule.pattern)) {
       if (match.index === undefined || match[0].length === 0) {
         continue;
       }
-      const candidate = {
+      candidates.push({
         start: match.index,
         end: match.index + match[0].length,
-        color: rule.color
-      };
-      if (!overlapsExistingMatch(candidate, matches)) {
-        matches.push(candidate);
+        color: rule.color,
+        ruleIndex
+      });
+      if (candidates.length >= MAX_HIGHLIGHT_MATCHES) {
+        break collect;
       }
     }
   }
-  return matches.sort((left, right) => left.start - right.start);
-}
 
-function overlapsExistingMatch(candidate: HighlightMatch, matches: HighlightMatch[]): boolean {
-  return matches.some((match) => candidate.start < match.end && candidate.end > match.start);
+  // Earlier rules win ties at the same position, matching the old first-rule-wins behavior.
+  candidates.sort((left, right) => left.start - right.start || left.ruleIndex - right.ruleIndex);
+
+  const kept: HighlightMatch[] = [];
+  let lastEnd = 0;
+  for (const candidate of candidates) {
+    if (candidate.start >= lastEnd) {
+      kept.push(candidate);
+      lastEnd = candidate.end;
+    }
+  }
+  return kept;
 }

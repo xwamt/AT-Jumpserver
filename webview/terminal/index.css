@@ -107,10 +107,15 @@ body {
   position: relative;
 }
 
-.xterm-rows > div.terminal-row-even {
+/*
+ * Zebra striping is pure CSS so no per-frame JS classList churn is needed.
+ * The first visible row (nth-child is 1-based, so :nth-child(odd)) maps to
+ * rowIndex 0 in the old JS striping, which used the "even" stripe color.
+ */
+.xterm-rows > div:nth-child(odd) {
   background: rgba(255, 255, 255, 0.025);
 }
 
-.xterm-rows > div.terminal-row-odd {
+.xterm-rows > div:nth-child(even) {
   background: rgba(0, 0, 0, 0.06);
 }
