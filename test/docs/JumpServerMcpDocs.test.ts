@@ -26,6 +26,10 @@ describe('JumpServer MCP docs', () => {
     expect(text).toContain('jumpserver_redis_execute_command');
     expect(text).not.toContain('jumpserver_mysql_get_context');
     expect(text).not.toContain('jumpserver_mysql_send_input');
+    const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+    expect(match).not.toBeNull();
+    expect(match![1]).not.toMatch(/discover\s*→\s*select/i);
+    expect(match![1]).not.toMatch(/first-class call/i);
   });
 
   it('mentions MCP support in README', async () => {

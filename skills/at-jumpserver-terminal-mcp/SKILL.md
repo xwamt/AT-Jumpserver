@@ -2,8 +2,8 @@
 name: at-jumpserver-terminal-mcp
 description: >-
   Use when an agent needs JumpServer SSH terminals, SFTP, MySQL CLI, Redis CLI,
-  or SQL/Redis execution through AT Series MCP (pluginId at.jumpserver),
-  including progressive discover → select → first-class call.
+  or SQL/Redis execution through AT Series MCP (pluginId at.jumpserver). Not
+  for direct AT Terminal SSH (pluginId at.terminal).
 ---
 
 # AT JumpServer Terminal (via AT Series)
@@ -54,3 +54,5 @@ Keep tool results small so they fit agent context:
 6. Prefer `jumpserver_redis_execute_command` for a single non-blocking Redis command; use `jumpserver_send_terminal_input` for interactive or blocking Redis CLI work (`SUBSCRIBE`, `MONITOR`, `BLPOP`, and similar).
 7. Never read local IDE secret storage, cookies, or JumpServer tokens.
 8. Do not confuse `AT Terminal MCP` with `AT JumpServer Terminal MCP`; their bridge files and tool names are intentionally different.
+
+Ops runbooks live in SuperOps. Load **at most 1 ops reference** plus Safe operations when changing state. Do not load every applicable file. `at_clear_tool_selection` only when the JumpServer task ends.
