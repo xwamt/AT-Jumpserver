@@ -1,0 +1,4 @@
+{
+  "name": "AT JumpServer Terminal",
+  "install": "npm ci && npm run build"
+}
