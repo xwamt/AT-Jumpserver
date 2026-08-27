@@ -301,4 +301,46 @@ describe('JumpServerConfigPanel', () => {
 
     expect(vscode.commands.executeCommand).toHaveBeenCalledWith('jumpserverManager.refreshBastion', FIXED_BASTION_ID);
   });
+
+  /**
+   * The refresh pulls every asset page and used to be awaited before dispose,
+   * holding the form open (and a modal toast) until the whole sync finished.
+   * Save must await only saveBastion; the panel closes immediately and the
+   * refresh + toast are fire-and-forget.
+   */
+  it('closes the panel immediately instead of blocking on the refresh or the toast', async () => {
+    const panelHost = createPanel();
+    vi.spyOn(vscode.window, 'createWebviewPanel').mockReturnValue(panelHost.panel);
+    const hangs = new Promise<never>(() => {});
+    vi.mocked(vscode.commands.executeCommand).mockReturnValueOnce(hangs as never);
+    vi.mocked(vscode.window.showInformationMessage).mockReturnValueOnce(hangs as never);
+    const saveBastion = vi.fn(async () => undefined);
+
+    await JumpServerConfigPanel.open(
+      extensionContext(),
+      { getBastion: async () => undefined, saveBastion },
+      { mode: 'add' },
+      idFactory
+    );
+    // Resolving here proves the listener never awaited the hanging refresh/toast.
+    await panelHost.fireMessage({
+      type: 'save',
+      payload: {
+        displayName: '',
+        bastionId: '',
+        baseUrl: 'https://jms.prod.example.com/',
+        orgId: '',
+        username: 'alan',
+        password: 'secret',
+        verifyTls: true
+      }
+    });
+
+    expect(saveBastion).toHaveBeenCalledTimes(1);
+    expect(panelHost.panel.dispose).toHaveBeenCalledTimes(1);
+    expect(vscode.commands.executeCommand).toHaveBeenCalledWith('jumpserverManager.refreshBastion', FIXED_BASTION_ID);
+    const disposeOrder = vi.mocked(panelHost.panel.dispose).mock.invocationCallOrder[0];
+    const refreshOrder = vi.mocked(vscode.commands.executeCommand).mock.invocationCallOrder[0];
+    expect(disposeOrder).toBeLessThan(refreshOrder);
+  });
 });

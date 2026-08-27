@@ -127,20 +127,52 @@ describe('JumpServerConfigManager', () => {
     await expect(manager.requirePassword(saved.id)).rejects.toThrow('JumpServer password is not configured.');
   });
 
-  it('stores and returns sanitized cached assets', async () => {
-    const manager = new JumpServerConfigManager(new MemoryMemento(), new MemorySecretStore());
+  it('drops raw asset payloads instead of persisting or caching them', async () => {
+    const globalState = new MemoryMemento();
+    const manager = new JumpServerConfigManager(globalState, new MemorySecretStore());
 
-    await manager.saveCachedAssets('b1', [asset({ raw: { id: 'asset-1', token: 'secret-token' } })]);
+    await manager.saveCachedAssets('b1', [
+      asset({ raw: { id: 'asset-1', token: 'secret-token', comment: 'huge-api-blob' } })
+    ]);
 
-    expect(await manager.listCachedAssets()).toEqual([asset({ raw: { id: 'asset-1' } })]);
+    expect(await manager.listCachedAssets()).toEqual([asset({ raw: {} })]);
+    const persisted = JSON.stringify(globalState.data.get('jumpserverManager.cachedAssets'));
+    expect(persisted).not.toContain('secret-token');
+    expect(persisted).not.toContain('huge-api-blob');
   });
 
-  it('stores and returns sanitized cached JumpServer nodes', async () => {
-    const manager = new JumpServerConfigManager(new MemoryMemento(), new MemorySecretStore());
+  it('drops raw node payloads instead of persisting or caching them', async () => {
+    const globalState = new MemoryMemento();
+    const manager = new JumpServerConfigManager(globalState, new MemorySecretStore());
 
-    await manager.saveCachedAssetNodes('b1', [node({ raw: { id: 'node-web', cookie: 'secret-cookie' } })]);
+    await manager.saveCachedAssetNodes('b1', [
+      node({ raw: { id: 'node-web', cookie: 'secret-cookie', meta: 'huge-api-blob' } })
+    ]);
 
-    expect(await manager.listCachedAssetNodes()).toEqual([node({ raw: { id: 'node-web' } })]);
+    expect(await manager.listCachedAssetNodes()).toEqual([node({ raw: {} })]);
+    const persisted = JSON.stringify(globalState.data.get('jumpserverManager.cachedAssetNodes'));
+    expect(persisted).not.toContain('secret-cookie');
+    expect(persisted).not.toContain('huge-api-blob');
+  });
+
+  it('parses an old cache that still carries raw blobs and drops them from memory', async () => {
+    const globalState = new MemoryMemento();
+    const existing = bastion();
+    await globalState.update('jumpserverManager.bastions', [existing]);
+    await globalState.update('jumpserverManager.cachedAssets', [
+      asset({ id: 'asset-1', bastionId: existing.id, raw: { legacy: 'x'.repeat(4096) } })
+    ]);
+    await globalState.update('jumpserverManager.cachedAssetNodes', [
+      node({ id: 'node-web', bastionId: existing.id, raw: { legacy: 'y'.repeat(4096) } })
+    ]);
+    const manager = new JumpServerConfigManager(globalState, new MemorySecretStore());
+
+    expect(await manager.listCachedAssets()).toEqual([
+      expect.objectContaining({ id: 'asset-1', raw: {} })
+    ]);
+    expect(await manager.listCachedAssetNodes()).toEqual([
+      expect.objectContaining({ id: 'node-web', raw: {} })
+    ]);
   });
 
   it('legacy saveSettings creates the first bastion', async () => {
