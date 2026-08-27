@@ -28,6 +28,8 @@ export class JumpServerClientPool {
       log.info(`JumpServer client reused for bastion ${bastionId}`);
       return cached.client;
     }
+    // A replaced client would otherwise keep its keep-alive sockets open.
+    disposeClient(cached?.client);
     const client = this.factory(settings);
     this.entries.set(bastionId, { client, identity });
     log.info(`JumpServer client created for bastion ${bastionId}`);
@@ -35,11 +37,22 @@ export class JumpServerClientPool {
   }
 
   drop(bastionId: string): void {
+    disposeClient(this.entries.get(bastionId)?.client);
     this.entries.delete(bastionId);
   }
 
   dropAll(): void {
+    for (const cached of this.entries.values()) {
+      disposeClient(cached.client);
+    }
     this.entries.clear();
+  }
+}
+
+function disposeClient(client: JumpServerClient | undefined): void {
+  // Guarded so test doubles without dispose() keep working.
+  if (client && typeof (client as { dispose?: unknown }).dispose === 'function') {
+    client.dispose();
   }
 }
 

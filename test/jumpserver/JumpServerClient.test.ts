@@ -277,7 +277,7 @@ describe('JumpServerClient full asset pagination', () => {
   }
 
   /** Serves `total` assets, page by page, the way JumpServer's DRF paginator does. */
-  function pagedJumpServer(total: number, options: { reportCount?: boolean; delayMs?: number } = {}) {
+  function pagedJumpServer(total: number, options: { reportCount?: boolean; includeNext?: boolean; delayMs?: number } = {}) {
     const state = { inFlight: 0, peakInFlight: 0, pageRequests: [] as number[], treeRequests: 0 };
     const fetchMock = vi.fn(async (url: string) => {
       if (url.includes('/authentication/auth/')) {
@@ -297,7 +297,13 @@ describe('JumpServerClient full asset pagination', () => {
       }
       state.inFlight -= 1;
       const results = assetRecords(offset, Math.max(0, Math.min(limit, total - offset)));
-      return jsonResponse(options.reportCount === false ? results : { count: total, results });
+      if (options.reportCount === false) {
+        return jsonResponse(results);
+      }
+      const next = options.includeNext && offset + limit < total
+        ? `https://jumpserver.example.com/api/v1/perms/users/self/assets/?all=1&display=1&limit=${limit}&offset=${offset + limit}`
+        : null;
+      return jsonResponse(options.includeNext ? { count: total, results, next } : { count: total, results });
     });
     return { fetchMock, state };
   }
@@ -321,6 +327,18 @@ describe('JumpServerClient full asset pagination', () => {
 
     await client.listAllAssets({ pageSize: 200, concurrency: 4, treePaths: new Map() });
 
+    expect(state.peakInFlight).toBeGreaterThan(1);
+    expect(state.peakInFlight).toBeLessThanOrEqual(4);
+  });
+
+  it('still pages concurrently when DRF sends both a count and a next link', async () => {
+    const { fetchMock, state } = pagedJumpServer(2000, { includeNext: true, delayMs: 5 });
+    const client = new JumpServerClient(settings, fetchMock);
+
+    const inventory = await client.listAllAssets({ pageSize: 200, concurrency: 4, treePaths: new Map() });
+
+    expect(inventory.assets).toHaveLength(2000);
+    expect(inventory.truncated).toBe(false);
     expect(state.peakInFlight).toBeGreaterThan(1);
     expect(state.peakInFlight).toBeLessThanOrEqual(4);
   });
@@ -397,16 +415,14 @@ describe('JumpServerClient full asset pagination', () => {
     expect(inventory.truncated).toBe(true);
   });
 
-  it('follows a DRF next link rewritten onto the configured origin', async () => {
+  it('follows a DRF next link rewritten onto the configured origin when the count is absent', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(jsonResponse({ token: 'bearer-1' }))
       .mockResolvedValueOnce(jsonResponse({
-        count: 2,
         next: 'https://internal.example.com/api/v1/perms/users/self/assets/?all=1&display=1&limit=1&offset=1',
         results: [{ id: 'asset-0', name: 'a' }]
       }))
       .mockResolvedValueOnce(jsonResponse({
-        count: 2,
         next: null,
         results: [{ id: 'asset-1', name: 'b' }]
       }));
@@ -972,6 +988,50 @@ describe('JumpServerClient REST flow', () => {
     expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('/self/assets/asset-1/'))).toHaveLength(1);
   });
 
+  it('joins two concurrent detail fetches for the same asset into one request', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes('/authentication/auth/')) {
+        return jsonResponse({ token: 'bearer-1' });
+      }
+      // The prefetch-versus-connect race only exists while the fetch is slow.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return jsonResponse({ id: 'asset-1', permed_protocols: [{ name: 'ssh' }] });
+    });
+    const client = new JumpServerClient({
+      baseUrl: 'https://jumpserver.example.com',
+      orgId: '',
+      username: 'alan',
+      password: 'secret',
+      verifyTls: true
+    }, fetchMock);
+
+    const [first, second] = await Promise.all([
+      client.getAssetDetail('asset-1'),
+      client.getAssetDetail('asset-1')
+    ]);
+
+    expect(second).toBe(first);
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('/self/assets/asset-1/'))).toHaveLength(1);
+  });
+
+  it('lets a later detail fetch retry after a failed one instead of caching the rejection', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ token: 'bearer-1' }))
+      .mockResolvedValueOnce(jsonResponse({ detail: 'bastion hiccup' }, { status: 502 }))
+      .mockResolvedValueOnce(jsonResponse({ id: 'asset-1' }));
+    const client = new JumpServerClient({
+      baseUrl: 'https://jumpserver.example.com',
+      orgId: '',
+      username: 'alan',
+      password: 'secret',
+      verifyTls: true
+    }, fetchMock);
+
+    await expect(client.getAssetDetail('asset-1')).rejects.toThrow(/bastion hiccup/);
+    await expect(client.getAssetDetail('asset-1')).resolves.toMatchObject({ id: 'asset-1' });
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('/self/assets/asset-1/'))).toHaveLength(2);
+  });
+
   it('creates connection token and smart endpoint requests', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(jsonResponse({ token: 'bearer-1' }))
@@ -1050,10 +1110,7 @@ describe('JumpServerClient REST flow', () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response('', { status: 302, headers: { location: '/core/auth/login/?next=%2Fkoko%2Fconnect%2F%3Fdisableautohash%3Dfalse%26token%3Dtoken-1%26_%3D1000' } }))
       .mockResolvedValueOnce(textResponse('<input name="csrfmiddlewaretoken" value="csrf-1">', { headers: { 'set-cookie': 'csrftoken=abc; Path=/' } }))
-      .mockResolvedValueOnce(new Response('', { status: 302, headers: { location: '/ui/', 'set-cookie': 'sessionid=session-1; Path=/' } }))
-      .mockResolvedValueOnce(textResponse('ok'))
-      .mockResolvedValueOnce(jsonResponse({ id: 'user-1' }))
-      .mockResolvedValueOnce(textResponse('<html>koko</html>'));
+      .mockResolvedValueOnce(new Response('', { status: 302, headers: { location: '/ui/', 'set-cookie': 'sessionid=session-1; Path=/' } }));
     const client = new JumpServerClient({
       baseUrl: 'https://jumpserver.example.com',
       orgId: '',
@@ -1073,11 +1130,34 @@ describe('JumpServerClient REST flow', () => {
         Cookie: 'csrftoken=abc'
       })
     }));
-    expect(fetchMock).toHaveBeenLastCalledWith('https://jumpserver.example.com/koko/connect/?disableautohash=false&token=token-1&_=1000', expect.objectContaining({
-      headers: expect.objectContaining({
-        Cookie: 'csrftoken=abc; sessionid=session-1'
-      })
-    }));
+    // The login POST already delivered the sessionid, so the warmup stops
+    // there: no redirect chase, no profile GET, no second connect GET.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(client.cookieHeader()).toBe('csrftoken=abc; sessionid=session-1');
+  });
+
+  it('keeps following post-login redirects until a hop delivers the sessionid', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('', { status: 302, headers: { location: '/core/auth/login/?next=/koko/connect/' } }))
+      .mockResolvedValueOnce(textResponse('<input name="csrfmiddlewaretoken" value="csrf-1">', { headers: { 'set-cookie': 'csrftoken=abc; Path=/' } }))
+      // The POST answers with a redirect but no session cookie yet.
+      .mockResolvedValueOnce(new Response('', { status: 302, headers: { location: '/core/auth/login/otp/' } }))
+      // The next hop is the one that hands the session out.
+      .mockResolvedValueOnce(new Response('', { status: 302, headers: { location: '/ui/', 'set-cookie': 'sessionid=session-1; Path=/' } }));
+    const client = new JumpServerClient({
+      baseUrl: 'https://jumpserver.example.com',
+      orgId: '',
+      username: 'alan',
+      password: 'secret',
+      verifyTls: true
+    }, fetchMock);
+
+    await client.warmupKokoConnectPage('token-1', 1000);
+
+    // Once the hop delivered the sessionid the warmup stops: no profile GET
+    // and no second connect GET follow.
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(client.cookieHeader()).toContain('sessionid=session-1');
   });
 
   it('treats a non-login KoKo redirect as an authenticated warmup', async () => {
@@ -1137,18 +1217,19 @@ describe('JumpServerClient REST flow', () => {
 
   it('retries KoKo warmup once with a fresh web session when the connect page redirects to login', async () => {
     const fetchMock = vi.fn()
+      // First attempt: the login flow never yields a sessionid, so the
+      // warmup falls back to the profile + connect verification and finds
+      // the connect page still redirecting to login.
       .mockResolvedValueOnce(new Response('', { status: 302, headers: { location: '/core/auth/login/?next=%2Fkoko%2Fconnect%2F%3Fdisableautohash%3Dfalse%26token%3Dtoken-1%26_%3D1000' } }))
       .mockResolvedValueOnce(textResponse('<input name="csrfmiddlewaretoken" value="csrf-1">', { headers: { 'set-cookie': 'csrftoken=abc; Path=/' } }))
-      .mockResolvedValueOnce(new Response('', { status: 302, headers: { location: '/ui/', 'set-cookie': 'sessionid=expired; Path=/' } }))
+      .mockResolvedValueOnce(new Response('', { status: 302, headers: { location: '/ui/' } }))
       .mockResolvedValueOnce(textResponse('ok'))
       .mockResolvedValueOnce(jsonResponse({ id: 'user-1' }))
       .mockResolvedValueOnce(new Response('', { status: 302, headers: { location: '/core/auth/login/' } }))
+      // Retry: a fresh login that does hand out a session cookie.
       .mockResolvedValueOnce(new Response('', { status: 302, headers: { location: '/core/auth/login/?next=%2Fkoko%2Fconnect%2F%3Fdisableautohash%3Dfalse%26token%3Dtoken-1%26_%3D1000' } }))
       .mockResolvedValueOnce(textResponse('<input name="csrfmiddlewaretoken" value="csrf-2">', { headers: { 'set-cookie': 'csrftoken=def; Path=/' } }))
-      .mockResolvedValueOnce(new Response('', { status: 302, headers: { location: '/ui/', 'set-cookie': 'sessionid=session-2; Path=/' } }))
-      .mockResolvedValueOnce(textResponse('ok'))
-      .mockResolvedValueOnce(jsonResponse({ id: 'user-1' }))
-      .mockResolvedValueOnce(textResponse('<html>koko</html>'));
+      .mockResolvedValueOnce(new Response('', { status: 302, headers: { location: '/ui/', 'set-cookie': 'sessionid=session-2; Path=/' } }));
     const client = new JumpServerClient({
       baseUrl: 'https://jumpserver.example.com',
       orgId: '',
@@ -1160,13 +1241,14 @@ describe('JumpServerClient REST flow', () => {
     await client.warmupKokoConnectPage('token-1', 1000);
 
     expect(fetchMock).toHaveBeenNthCalledWith(8, 'https://jumpserver.example.com/core/auth/login/?next=%2Fkoko%2Fconnect%2F%3Fdisableautohash%3Dfalse%26token%3Dtoken-1%26_%3D1000', expect.objectContaining({
-      headers: expect.not.objectContaining({ Cookie: expect.stringContaining('sessionid=expired') })
+      headers: expect.not.objectContaining({ Cookie: expect.stringContaining('sessionid=') })
     }));
-    expect(fetchMock).toHaveBeenLastCalledWith('https://jumpserver.example.com/koko/connect/?disableautohash=false&token=token-1&_=1000', expect.objectContaining({
-      headers: expect.objectContaining({
-        Cookie: 'csrftoken=def; sessionid=session-2'
-      })
+    expect(fetchMock).toHaveBeenNthCalledWith(9, 'https://jumpserver.example.com/core/auth/login/?next=%2Fkoko%2Fconnect%2F%3Fdisableautohash%3Dfalse%26token%3Dtoken-1%26_%3D1000', expect.objectContaining({
+      method: 'POST'
     }));
+    // The retry ends as soon as the POST delivers the sessionid.
+    expect(fetchMock).toHaveBeenCalledTimes(9);
+    expect(client.cookieHeader()).toContain('sessionid=session-2');
   });
 
   it('refreshes an expired Bearer token once when a REST request returns unauthorized', async () => {
@@ -1396,6 +1478,33 @@ describe('JumpServerClient REST flow', () => {
       body: 'username=alan&password=secret'
     }));
     expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('/authentication/auth/'))).toHaveLength(2);
+  });
+
+  it('re-logs in with the encoding that worked last time instead of failing JSON again', async () => {
+    const fetchMock = vi.fn()
+      // First login: JSON is rejected, form works.
+      .mockResolvedValueOnce(jsonResponse({ detail: 'Unsupported media type' }, { status: 415 }))
+      .mockResolvedValueOnce(jsonResponse({ token: 'bearer-form-1' }))
+      // The bearer later expires mid-flight.
+      .mockResolvedValueOnce(jsonResponse({ detail: 'token expired' }, { status: 401 }))
+      // Re-login: must go straight to the form encoding.
+      .mockResolvedValueOnce(jsonResponse({ token: 'bearer-form-2' }))
+      .mockResolvedValueOnce(jsonResponse({ id: 'user-1' }));
+    const client = new JumpServerClient({
+      baseUrl: 'https://jumpserver.example.com',
+      orgId: '',
+      username: 'alan',
+      password: 'secret',
+      verifyTls: true
+    }, fetchMock);
+
+    await expect(client.getUserProfile()).resolves.toMatchObject({ id: 'user-1' });
+
+    const authCalls = fetchMock.mock.calls.filter(([url]) => String(url).includes('/authentication/auth/'));
+    expect(authCalls).toHaveLength(3);
+    expect((authCalls[2][1] as RequestInit).headers).toEqual(expect.objectContaining({
+      'content-type': 'application/x-www-form-urlencoded'
+    }));
   });
 
   it('does not send form auth when JSON already returned a token', async () => {

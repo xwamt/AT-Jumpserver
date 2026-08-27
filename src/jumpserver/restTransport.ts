@@ -1,5 +1,5 @@
 import { request as httpRequest, type IncomingMessage } from 'node:http';
-import { request as httpsRequest, type RequestOptions } from 'node:https';
+import { request as httpsRequest, type Agent as HttpsAgent, type RequestOptions } from 'node:https';
 
 export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 
@@ -12,19 +12,26 @@ const NULL_BODY_STATUSES = new Set([204, 205, 304]);
  * only ever reached the WebSocket side. Going through `node:https` lets one
  * setting drive both channels, and it never follows redirects on its own,
  * which keeps every hop visible to the caller's same-origin check.
+ *
+ * A caller-owned keep-alive `agent` lets consecutive REST calls reuse one TLS
+ * connection instead of paying a fresh handshake each time. The caller keeps
+ * ownership: it must `destroy()` the agent when the client goes away.
  */
-export function createJumpServerFetch(options: { verifyTls: boolean }): FetchLike {
-  return (url, init = {}) => sendRequest(url, init, options.verifyTls);
+export function createJumpServerFetch(options: { verifyTls: boolean; agent?: HttpsAgent }): FetchLike {
+  return (url, init = {}) => sendRequest(url, init, options.verifyTls, options.agent);
 }
 
-function sendRequest(url: string, init: RequestInit, verifyTls: boolean): Promise<Response> {
+function sendRequest(url: string, init: RequestInit, verifyTls: boolean, agent?: HttpsAgent): Promise<Response> {
   const target = new URL(url);
   const secure = target.protocol === 'https:';
   const body = toRequestBody(init.body);
   const options: RequestOptions = {
     method: init.method ?? 'GET',
     headers: toOutgoingHeaders(init.headers, body),
-    rejectUnauthorized: verifyTls
+    rejectUnauthorized: verifyTls,
+    // The agent pools TLS sockets; handing it to a plain-http request would
+    // make the agent open a TLS connection to an http port.
+    agent: secure ? agent : undefined
   };
   const signal = init.signal ?? undefined;
   return new Promise<Response>((resolve, reject) => {
