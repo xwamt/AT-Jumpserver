@@ -162,6 +162,109 @@ describe('SftpEditSessionManager', () => {
     expect(session.baseRemoteStat).toEqual({ size: 5, modifiedAt: 300 });
   });
 
+  it('verifies uploads by size alone and never re-reads the remote content', async () => {
+    const storagePath = join(process.cwd(), '.tmp-edit-verify-size');
+    cleanupPaths.push(storagePath);
+    const client = sftpClient();
+    const view = ui();
+    const manager = new SftpEditSessionManager({
+      storageUri: vscode.Uri.file(storagePath),
+      sftp: client,
+      ui: view,
+      debounceMs: 1
+    });
+    const session = await manager.openRemoteFile('/tmp/app.conf');
+
+    await writeFile(session.localUri.fsPath, 'hello');
+    await manager.handleSavedDocument({ uri: session.localUri });
+    await manager.flushForTest(session.key);
+
+    expect(client.uploadFile).toHaveBeenCalledTimes(1);
+    expect(client.readFile).not.toHaveBeenCalled();
+    expect(session.syncState).toBe('idle');
+  });
+
+  it('fails the sync when the post-upload remote size does not match the local file', async () => {
+    const storagePath = join(process.cwd(), '.tmp-edit-verify-mismatch');
+    cleanupPaths.push(storagePath);
+    const client = sftpClient();
+    client.stat
+      .mockResolvedValueOnce({ size: 5, modifiedAt: 100 })
+      .mockResolvedValueOnce({ size: 5, modifiedAt: 100 })
+      .mockResolvedValueOnce({ size: 3, modifiedAt: 300 });
+    const view = ui();
+    const manager = new SftpEditSessionManager({
+      storageUri: vscode.Uri.file(storagePath),
+      sftp: client,
+      ui: view,
+      debounceMs: 1
+    });
+    const session = await manager.openRemoteFile('/tmp/app.conf');
+
+    await writeFile(session.localUri.fsPath, 'hello');
+    await manager.handleSavedDocument({ uri: session.localUri });
+    await manager.flushForTest(session.key);
+
+    expect(session.syncState).toBe('failed');
+    expect(view.showError).toHaveBeenCalledWith('/tmp/app.conf', expect.stringContaining('verification failed'));
+    expect(session.baseRemoteStat).toEqual({ size: 5, modifiedAt: 100 });
+  });
+
+  it('skips the download when the caller provides matching initial content', async () => {
+    const storagePath = join(process.cwd(), '.tmp-edit-initial-content');
+    cleanupPaths.push(storagePath);
+    const client = sftpClient();
+    const view = ui();
+    const manager = new SftpEditSessionManager({
+      storageUri: vscode.Uri.file(storagePath),
+      sftp: client,
+      ui: view,
+      debounceMs: 1
+    });
+
+    const session = await manager.openRemoteFile('/tmp/app.conf', { initialContent: Buffer.from('hello') });
+
+    expect(client.downloadFile).not.toHaveBeenCalled();
+    await expect(readFile(session.localUri.fsPath, 'utf8')).resolves.toBe('hello');
+  });
+
+  it('downloads anyway when the provided initial content no longer matches the remote size', async () => {
+    const storagePath = join(process.cwd(), '.tmp-edit-initial-stale');
+    cleanupPaths.push(storagePath);
+    const client = sftpClient();
+    const view = ui();
+    const manager = new SftpEditSessionManager({
+      storageUri: vscode.Uri.file(storagePath),
+      sftp: client,
+      ui: view,
+      debounceMs: 1
+    });
+
+    const session = await manager.openRemoteFile('/tmp/app.conf', { initialContent: Buffer.from('old') });
+
+    expect(client.downloadFile).toHaveBeenCalledTimes(1);
+    await expect(readFile(session.localUri.fsPath, 'utf8')).resolves.toBe('hello');
+  });
+
+  it('skips the download for an empty remote file', async () => {
+    const storagePath = join(process.cwd(), '.tmp-edit-empty-remote');
+    cleanupPaths.push(storagePath);
+    const client = sftpClient();
+    client.stat.mockResolvedValueOnce({ size: 0, modifiedAt: 10 });
+    const view = ui();
+    const manager = new SftpEditSessionManager({
+      storageUri: vscode.Uri.file(storagePath),
+      sftp: client,
+      ui: view,
+      debounceMs: 1
+    });
+
+    const session = await manager.openRemoteFile('/tmp/empty.conf');
+
+    expect(client.downloadFile).not.toHaveBeenCalled();
+    await expect(readFile(session.localUri.fsPath, 'utf8')).resolves.toBe('');
+  });
+
   it('flushes pending upload and deletes cache on close', async () => {
     const storagePath = join(process.cwd(), '.tmp-edit-close');
     cleanupPaths.push(storagePath);

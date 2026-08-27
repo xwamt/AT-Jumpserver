@@ -65,4 +65,25 @@ describe('SftpTreeProvider', () => {
 
     expect(children.map((child) => child.contextValue)).toEqual(['jumpserverSftpDisconnectedDirectory', 'jumpserverSftpDisconnectedFile']);
   });
+
+  it('bypasses the list cache only on the first listing after an explicit refresh', async () => {
+    const calls: Array<{ path?: string; options?: { bypassCache?: boolean } }> = [];
+    const provider = new SftpTreeProvider({
+      getState: () => ({ kind: 'active', rootPath: '/home/root', asset: {} as never }),
+      listDirectory: async (path, options) => {
+        calls.push({ path, options });
+        return entries;
+      }
+    });
+
+    await provider.getChildren();
+    provider.refresh();
+    await provider.getChildren();
+    await provider.getChildren();
+
+    expect(calls).toHaveLength(3);
+    expect(calls[0].options).toBeUndefined();
+    expect(calls[1].options).toEqual({ bypassCache: true });
+    expect(calls[2].options).toBeUndefined();
+  });
 });

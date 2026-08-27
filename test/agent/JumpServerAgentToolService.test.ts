@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { CachedJumpServerAsset } from '../../src/config/schema';
-import { JumpServerAgentToolService } from '../../src/agent/JumpServerAgentToolService';
+import { JumpServerAgentToolService, SFTP_MCP_READ_MAX_FILE_BYTES } from '../../src/agent/JumpServerAgentToolService';
 import { TerminalContextRegistry } from '../../src/terminal/TerminalContext';
 
 describe('JumpServerAgentToolService', () => {
@@ -140,7 +140,7 @@ describe('JumpServerAgentToolService', () => {
       truncated: false,
       total: 1
     });
-    expect(sftp.listDirectory).toHaveBeenCalledWith('/', undefined);
+    expect(sftp.listDirectory).toHaveBeenCalledWith('/', undefined, { updateCurrentPath: false });
   });
 
   it('truncates sftp list directory at maxEntries default 500', async () => {
@@ -169,6 +169,46 @@ describe('JumpServerAgentToolService', () => {
       truncated: true
     });
     expect(sftp.readFile).toHaveBeenCalledWith('/a.txt', 8, undefined);
+  });
+
+  it('refuses sftpReadFile before transfer when stat reports an oversized file', async () => {
+    const sftp = {
+      stat: vi.fn(async () => ({ size: SFTP_MCP_READ_MAX_FILE_BYTES + 1, modifiedAt: 0 })),
+      readFile: vi.fn()
+    };
+    const service = serviceWith({ sftp });
+
+    await expect(service.sftpReadFile({ path: '/var/log/huge.log' })).rejects.toThrow(
+      /jumpserver_sftp_stat|run_terminal_command/
+    );
+    expect(sftp.stat).toHaveBeenCalledWith('/var/log/huge.log', undefined);
+    expect(sftp.readFile).not.toHaveBeenCalled();
+  });
+
+  it('still reads files whose size cannot be determined, capped at maxBytes', async () => {
+    const sftp = {
+      stat: vi.fn(async () => {
+        throw new Error('Remote path not found: /proc/meminfo');
+      }),
+      readFile: vi.fn(async () => Buffer.from('MemTotal: 1'))
+    };
+    const service = serviceWith({ sftp });
+
+    await expect(service.sftpReadFile({ path: '/proc/meminfo' })).resolves.toMatchObject({
+      content: 'MemTotal: 1',
+      truncated: false
+    });
+    expect(sftp.readFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows sftpReadFile for files at or under the size gate', async () => {
+    const sftp = {
+      stat: vi.fn(async () => ({ size: SFTP_MCP_READ_MAX_FILE_BYTES, modifiedAt: 0 })),
+      readFile: vi.fn(async () => Buffer.from('ok'))
+    };
+    const service = serviceWith({ sftp });
+
+    await expect(service.sftpReadFile({ path: '/etc/hosts' })).resolves.toMatchObject({ content: 'ok' });
   });
 
   it('requires confirmation before sendTerminalInput', async () => {
@@ -415,7 +455,7 @@ describe('JumpServerAgentToolService', () => {
 
     await service.sftpListDirectory({ connectionKey: 'terminal-prod', path: '/data' });
 
-    expect(sftp.listDirectory).toHaveBeenCalledWith('/data', 'terminal-prod');
+    expect(sftp.listDirectory).toHaveBeenCalledWith('/data', 'terminal-prod', { updateCurrentPath: false });
   });
 
   it('names the target asset and address in every SFTP write confirmation', async () => {

@@ -1,9 +1,15 @@
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, expect, it, vi } from 'vitest';
 import type { CachedJumpServerAsset } from '../../src/config/schema';
 import { JumpServerSftpManager } from '../../src/sftp/JumpServerSftpManager';
+
+async function flushPromises(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+}
 
 function asset(overrides: Partial<CachedJumpServerAsset> = {}): CachedJumpServerAsset {
   return {
@@ -199,7 +205,7 @@ describe('JumpServerSftpManager', () => {
     expect(firstSession.writeFile).toHaveBeenCalledWith('/tmp/a.txt', Buffer.from('a'));
     expect(firstSession.createFile).toHaveBeenCalledWith('/tmp/new.txt');
     expect(firstSession.downloadFile).toHaveBeenCalledWith('/tmp/a.txt', false);
-    expect(firstSession.uploadBytes).toHaveBeenCalledWith('/tmp/a.txt', Buffer.from('a'));
+    expect(firstSession.uploadBytes).toHaveBeenCalledWith('/tmp/a.txt', Buffer.from('a'), expect.any(Function));
 
     expect(secondSession.stat).not.toHaveBeenCalled();
     expect(secondSession.readFile).not.toHaveBeenCalled();
@@ -243,5 +249,134 @@ describe('JumpServerSftpManager', () => {
     expect(manager.getConnectionAsset('terminal-1')).toMatchObject({ name: 'prod-db', address: '10.0.0.9' });
     expect(manager.getConnectionAsset()).toMatchObject({ name: 'uat-web', address: '10.0.1.4' });
     expect(manager.getConnectionAsset('terminal-unknown')).toBeUndefined();
+  });
+
+  it('shares one in-flight connect across concurrent callers', async () => {
+    let releaseConnect: (() => void) | undefined;
+    const fakeSession = session();
+    fakeSession.connect = vi.fn(() => new Promise<void>((resolve) => { releaseConnect = resolve; }));
+    const createSession = vi.fn(() => fakeSession);
+    const manager = new JumpServerSftpManager({ createSession });
+    await manager.openAsset(asset());
+
+    const first = manager.listDirectory();
+    const second = manager.listDirectory();
+    await flushPromises();
+    releaseConnect?.();
+    await Promise.all([first, second]);
+
+    expect(createSession).toHaveBeenCalledTimes(1);
+    expect(fakeSession.connect).toHaveBeenCalledTimes(1);
+  });
+
+  it('disposes a session whose connect failed and retries with a fresh one', async () => {
+    const failingSession = session();
+    failingSession.connect = vi.fn(async () => {
+      throw new Error('handshake refused');
+    });
+    const workingSession = session();
+    const createSession = vi.fn()
+      .mockReturnValueOnce(failingSession)
+      .mockReturnValueOnce(workingSession);
+    const manager = new JumpServerSftpManager({ createSession });
+    await manager.openAsset(asset());
+
+    await expect(manager.listDirectory()).rejects.toThrow('handshake refused');
+    expect(failingSession.dispose).toHaveBeenCalledTimes(1);
+
+    await expect(manager.listDirectory()).resolves.toEqual([
+      { name: 'app', path: '/home/root/app', type: 'directory' }
+    ]);
+    expect(createSession).toHaveBeenCalledTimes(2);
+    expect(workingSession.connect).toHaveBeenCalledTimes(1);
+  });
+
+  it('disposes a session that finishes connecting after its terminal was removed', async () => {
+    let releaseConnect: (() => void) | undefined;
+    const fakeSession = session();
+    fakeSession.connect = vi.fn(() => new Promise<void>((resolve) => { releaseConnect = resolve; }));
+    const manager = new JumpServerSftpManager({ createSession: () => fakeSession });
+    await manager.openAsset(asset(), 'terminal-1');
+
+    const listing = manager.listDirectory(undefined, 'terminal-1');
+    await flushPromises();
+    manager.removeTerminal('terminal-1');
+    releaseConnect?.();
+    await listing.catch(() => undefined);
+    await flushPromises();
+
+    expect(fakeSession.dispose).toHaveBeenCalled();
+  });
+
+  it('keeps the offline snapshot when a listing opts out of navigation', async () => {
+    const uiEntries = [{ name: 'app', path: '/home/root/app', type: 'directory' as const }];
+    const mcpEntries = [{ name: 'ghost', path: '/home/root/ghost', type: 'file' as const }];
+    const fakeSession = session();
+    fakeSession.listDirectory = vi.fn()
+      .mockResolvedValueOnce(uiEntries)
+      .mockResolvedValueOnce(mcpEntries);
+    const manager = new JumpServerSftpManager({ createSession: () => fakeSession });
+    await manager.openAsset(asset());
+
+    await manager.listDirectory();
+    await manager.listDirectory('/home/root', undefined, { updateCurrentPath: false });
+    expect(fakeSession.listDirectory).toHaveBeenLastCalledWith('/home/root', { updateCurrentPath: false });
+
+    manager.closeActive();
+    expect(manager.getState()).toMatchObject({ kind: 'disconnected', entries: uiEntries });
+  });
+
+  it('refreshDirectory drops the session list cache and bypasses it for the re-fetch', async () => {
+    const invalidateListCache = vi.fn();
+    const fakeSession = { ...session(), invalidateListCache };
+    const manager = new JumpServerSftpManager({ createSession: () => fakeSession });
+    await manager.openAsset(asset());
+    await manager.listDirectory();
+
+    await manager.refreshDirectory();
+
+    expect(invalidateListCache).toHaveBeenCalledTimes(1);
+    expect(fakeSession.listDirectory).toHaveBeenLastCalledWith('/home/root', { bypassCache: true });
+  });
+
+  it('streams file downloads to disk through the session writer', async () => {
+    const downloadFileToWriter = vi.fn(async (_path: string, _isDir: boolean, write: (chunk: Buffer) => void | Promise<void>) => {
+      await write(Buffer.from('hel'));
+      await write(Buffer.from('lo'));
+    });
+    const fakeSession = { ...session(), downloadFileToWriter };
+    const manager = new JumpServerSftpManager({ createSession: () => fakeSession });
+    const tempDir = await mkdtemp(join(tmpdir(), 'jumpserver-sftp-stream-'));
+    const localPath = join(tempDir, 'streamed.txt');
+    await manager.openAsset(asset());
+
+    await manager.downloadFile('/tmp/a.txt', localPath);
+
+    expect(downloadFileToWriter).toHaveBeenCalledWith('/tmp/a.txt', false, expect.any(Function));
+    expect(fakeSession.downloadFile).not.toHaveBeenCalled();
+    await expect(readFile(localPath, 'utf8')).resolves.toBe('hello');
+  });
+
+  it('reports upload progress through the transfer reporter', async () => {
+    const fakeSession = session();
+    fakeSession.uploadBytes = vi.fn(async (_path: string, bytes: Buffer, onProgress?: (sent: number, total: number) => void) => {
+      onProgress?.(bytes.byteLength, bytes.byteLength);
+    });
+    const reported: Array<{ transferredBytes: number; totalBytes: number }> = [];
+    const manager = new JumpServerSftpManager({
+      createSession: () => fakeSession,
+      reporter: {
+        withProgress: (_label, job) => job({ report: (event) => reported.push(event) }),
+        notifySuccess: async () => undefined
+      }
+    });
+    const tempDir = await mkdtemp(join(tmpdir(), 'jumpserver-sftp-progress-'));
+    const localPath = join(tempDir, 'upload.txt');
+    await writeFile(localPath, 'hello');
+    await manager.openAsset(asset());
+
+    await manager.uploadFile(localPath, '/tmp/upload.txt');
+
+    expect(reported).toEqual([{ transferredBytes: 5, totalBytes: 5 }]);
   });
 });
