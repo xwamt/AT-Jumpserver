@@ -149,6 +149,83 @@ describe('JumpServerSftpSession', () => {
     await expect(upload).resolves.toBeUndefined();
   });
 
+  it('stat lists the parent directory without moving the current path', async () => {
+    const socket = new FakeSocket();
+    const session = new JumpServerSftpSession({ asset: { id: 'asset-1', name: 'web-1' }, client: client(socket) });
+    const connect = session.connect();
+    await flushPromises();
+    socket.emitMessage({ id: 'ws-1', type: 'CONNECT', data: '{}' });
+    await connect;
+
+    const list = session.listDirectory('/tmp');
+    let sent = JSON.parse(String(socket.send.mock.calls.at(-1)?.[0]));
+    socket.emitMessage({
+      id: sent.id,
+      type: 'SFTP_DATA',
+      cmd: 'list',
+      current_path: '/tmp',
+      data: JSON.stringify([{ name: 'a.txt', size: 1 }])
+    });
+    await list;
+    await expect(session.realpath('.')).resolves.toBe('/tmp');
+
+    const stat = session.stat('/etc/passwd');
+    sent = JSON.parse(String(socket.send.mock.calls.at(-1)?.[0]));
+    expect(sent).toMatchObject({ type: 'SFTP_DATA', cmd: 'list' });
+    expect(JSON.parse(sent.data)).toEqual({ path: '/etc' });
+    socket.emitMessage({
+      id: sent.id,
+      type: 'SFTP_DATA',
+      cmd: 'list',
+      current_path: '/etc',
+      data: JSON.stringify([{ name: 'passwd', size: 42, mod_time: 7 }])
+    });
+
+    await expect(stat).resolves.toEqual({ size: 42, modifiedAt: 7 });
+    await expect(session.realpath('.')).resolves.toBe('/tmp');
+  });
+
+  it('serves a repeated stat from the short list cache until a mutation invalidates it', async () => {
+    const socket = new FakeSocket();
+    const session = new JumpServerSftpSession({ asset: { id: 'asset-1', name: 'web-1' }, client: client(socket) });
+    const connect = session.connect();
+    await flushPromises();
+    socket.emitMessage({ id: 'ws-1', type: 'CONNECT', data: '{}' });
+    await connect;
+
+    const first = session.stat('/etc/passwd');
+    let sent = JSON.parse(String(socket.send.mock.calls.at(-1)?.[0]));
+    socket.emitMessage({
+      id: sent.id,
+      type: 'SFTP_DATA',
+      cmd: 'list',
+      current_path: '/etc',
+      data: JSON.stringify([{ name: 'passwd', size: 42, mod_time: 7 }])
+    });
+    await expect(first).resolves.toEqual({ size: 42, modifiedAt: 7 });
+
+    const sendsAfterFirstStat = socket.send.mock.calls.length;
+    await expect(session.stat('/etc/passwd')).resolves.toEqual({ size: 42, modifiedAt: 7 });
+    expect(socket.send.mock.calls.length).toBe(sendsAfterFirstStat);
+
+    const mkdir = session.mkdir('/etc/new-dir');
+    sent = JSON.parse(String(socket.send.mock.calls.at(-1)?.[0]));
+    socket.emitMessage({ id: sent.id, type: 'SFTP_DATA', cmd: 'mkdir', data: 'ok' });
+    await mkdir;
+
+    const statAfterMkdir = session.stat('/etc/passwd');
+    sent = JSON.parse(String(socket.send.mock.calls.at(-1)?.[0]));
+    expect(sent).toMatchObject({ type: 'SFTP_DATA', cmd: 'list' });
+    socket.emitMessage({
+      id: sent.id,
+      type: 'SFTP_DATA',
+      cmd: 'list',
+      current_path: '/etc',
+      data: JSON.stringify([{ name: 'passwd', size: 43, mod_time: 8 }])
+    });
+    await expect(statAfterMkdir).resolves.toEqual({ size: 43, modifiedAt: 8 });
+  });
+
   it('rejects pending commands on CLOSE', async () => {
     const socket = new FakeSocket();
     const session = new JumpServerSftpSession({ asset: { id: 'asset-1', name: 'web-1' }, client: client(socket) });

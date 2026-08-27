@@ -38,6 +38,28 @@ describe('TerminalContextRegistry', () => {
     expect(activeChanges.map((next) => next?.terminalId)).toEqual(['terminal-1', 'terminal-2', 'terminal-1']);
   });
 
+  it('does not re-emit active changes when the same terminal stays active with the same connection state', () => {
+    const registry = new TerminalContextRegistry();
+    const activeChanges: Array<ActiveTerminalContext | undefined> = [];
+    registry.onDidChangeActiveContext((next) => activeChanges.push(next));
+
+    registry.setActive(context('terminal-1', 'asset-1', true));
+    const write = vi.fn();
+    registry.setActive({ ...context('terminal-1', 'asset-1', true), write });
+
+    expect(activeChanges).toHaveLength(1);
+    // The quiet update still refreshes the stored fields.
+    expect(registry.getActive()?.write).toBe(write);
+
+    registry.setActive(context('terminal-1', 'asset-1', false));
+    expect(activeChanges).toHaveLength(2);
+    expect(activeChanges[1]?.connected).toBe(false);
+
+    registry.setActive(context('terminal-2', 'asset-2', false));
+    expect(activeChanges).toHaveLength(3);
+    expect(activeChanges[2]?.terminalId).toBe('terminal-2');
+  });
+
   it('emits changed and removed context events without losing other terminals', () => {
     const registry = new TerminalContextRegistry();
     const changed: ActiveTerminalContext[] = [];

@@ -434,38 +434,70 @@ describe('extension command wiring', () => {
   });
 
   it('prefetches asset detail when an asset is selected in the tree', async () => {
-    jumpServerClientMock.getAssetDetail.mockResolvedValue({ id: 'server-1' });
-    activate(contextWithBastions([prodBastion()]));
-    const assetsView = vi.mocked(vscode.window.createTreeView).mock.results[0]?.value as {
-      onDidChangeSelection: ReturnType<typeof vi.fn>;
-    };
-    const handler = assetsView.onDidChangeSelection.mock.calls[0]?.[0] as
-      | ((event: { selection: unknown[] }) => void)
-      | undefined;
-    expect(handler).toEqual(expect.any(Function));
+    vi.useFakeTimers();
+    try {
+      jumpServerClientMock.getAssetDetail.mockResolvedValue({ id: 'server-1' });
+      activate(contextWithBastions([prodBastion()]));
+      const assetsView = vi.mocked(vscode.window.createTreeView).mock.results[0]?.value as {
+        onDidChangeSelection: ReturnType<typeof vi.fn>;
+      };
+      const handler = assetsView.onDidChangeSelection.mock.calls[0]?.[0] as
+        | ((event: { selection: unknown[] }) => void)
+        | undefined;
+      expect(handler).toEqual(expect.any(Function));
 
-    handler?.({ selection: [new AssetTreeItem(sshAsset())] });
-    await vi.waitFor(() => {
+      handler?.({ selection: [new AssetTreeItem(sshAsset())] });
+      expect(jumpServerClientMock.getAssetDetail).not.toHaveBeenCalled();
+      await vi.runAllTimersAsync();
       expect(jumpServerClientMock.getAssetDetail).toHaveBeenCalledWith('server-1');
-    });
-    expect(notificationsMock.showTimedNotification).not.toHaveBeenCalled();
+      expect(notificationsMock.showTimedNotification).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('collapses rapid selection changes into one prefetch for the last asset', async () => {
+    vi.useFakeTimers();
+    try {
+      jumpServerClientMock.getAssetDetail.mockResolvedValue({ id: 'server-2' });
+      activate(contextWithBastions([prodBastion()]));
+      const assetsView = vi.mocked(vscode.window.createTreeView).mock.results[0]?.value as {
+        onDidChangeSelection: ReturnType<typeof vi.fn>;
+      };
+      const handler = assetsView.onDidChangeSelection.mock.calls[0]?.[0] as
+        | ((event: { selection: unknown[] }) => void)
+        | undefined;
+
+      handler?.({ selection: [new AssetTreeItem(sshAsset({ id: 'server-1' }))] });
+      handler?.({ selection: [new AssetTreeItem(sshAsset({ id: 'server-2' }))] });
+      await vi.runAllTimersAsync();
+
+      expect(jumpServerClientMock.getAssetDetail).toHaveBeenCalledTimes(1);
+      expect(jumpServerClientMock.getAssetDetail).toHaveBeenCalledWith('server-2');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('does not toast when asset detail prefetch fails', async () => {
-    jumpServerClientMock.getAssetDetail.mockRejectedValue(new Error('offline'));
-    activate(contextWithBastions([prodBastion()]));
-    const assetsView = vi.mocked(vscode.window.createTreeView).mock.results[0]?.value as {
-      onDidChangeSelection: ReturnType<typeof vi.fn>;
-    };
-    const handler = assetsView.onDidChangeSelection.mock.calls[0]?.[0] as
-      | ((event: { selection: unknown[] }) => void)
-      | undefined;
+    vi.useFakeTimers();
+    try {
+      jumpServerClientMock.getAssetDetail.mockRejectedValue(new Error('offline'));
+      activate(contextWithBastions([prodBastion()]));
+      const assetsView = vi.mocked(vscode.window.createTreeView).mock.results[0]?.value as {
+        onDidChangeSelection: ReturnType<typeof vi.fn>;
+      };
+      const handler = assetsView.onDidChangeSelection.mock.calls[0]?.[0] as
+        | ((event: { selection: unknown[] }) => void)
+        | undefined;
 
-    handler?.({ selection: [new AssetTreeItem(sshAsset())] });
-    await vi.waitFor(() => {
+      handler?.({ selection: [new AssetTreeItem(sshAsset())] });
+      await vi.runAllTimersAsync();
       expect(jumpServerClientMock.getAssetDetail).toHaveBeenCalledWith('server-1');
-    });
-    expect(notificationsMock.showTimedNotification).not.toHaveBeenCalled();
+      expect(notificationsMock.showTimedNotification).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('switches the SFTP file tree when the active terminal changes', async () => {
@@ -480,7 +512,10 @@ describe('extension command wiring', () => {
     registry.setActive({ terminalId: 'terminal-1', asset: { id: 'asset-1' }, connected: true, write: vi.fn() });
     registry.setActive({ terminalId: 'terminal-2', asset: { id: 'asset-2' }, connected: true, write: vi.fn() });
     registry.setActive({ terminalId: 'terminal-1', asset: { id: 'asset-1' }, connected: true, write: vi.fn() });
+    // Re-activating the already-active terminal must not refresh the tree again.
+    registry.setActive({ terminalId: 'terminal-1', asset: { id: 'asset-1' }, connected: true, write: vi.fn() });
 
+    expect(sftpManagerMock.selectTerminal).toHaveBeenCalledTimes(3);
     expect(sftpManagerMock.selectTerminal).toHaveBeenNthCalledWith(1, 'terminal-1');
     expect(sftpManagerMock.selectTerminal).toHaveBeenNthCalledWith(2, 'terminal-2');
     expect(sftpManagerMock.selectTerminal).toHaveBeenNthCalledWith(3, 'terminal-1');
@@ -673,26 +708,28 @@ describe('extension command wiring', () => {
     expect(jumpServerClientMock.listAllAssets).not.toHaveBeenCalled();
   });
 
-  it('warns when the saved organization is no longer accessible then asks again', async () => {
-    const context = contextWithSettings('gone-org');
-    jumpServerClientMock.listAccessibleOrgs.mockResolvedValueOnce([
-      { id: '00000000-0000-0000-0000-000000000002', name: 'Default' },
-      { id: '11111111-1111-1111-1111-111111111111', name: 'Prod' }
-    ]);
-    vi.mocked(vscode.window.showQuickPick).mockResolvedValueOnce({
-      label: 'Prod',
-      description: '11111111-1111-1111-1111-111111111111',
-      orgId: '11111111-1111-1111-1111-111111111111',
-      name: 'Prod'
-    } as never);
+  it('trusts the saved organization on validate without listing orgs', async () => {
+    const context = contextWithSettings('33333333-3333-3333-3333-333333333333');
 
     activate(context);
     await registeredCommand('jumpserverManager.validate')();
 
-    expect(notificationsMock.showTimedNotification).toHaveBeenCalledWith(
-      'Saved JumpServer organization gone-org is no longer accessible.'
-    );
-    expect(jumpServerClientMock.setOrgId).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
+    expect(jumpServerClientMock.listAccessibleOrgs).not.toHaveBeenCalled();
+    expect(vscode.window.showQuickPick).not.toHaveBeenCalled();
+    expect(jumpServerClientMock.setOrgId).toHaveBeenCalledWith('33333333-3333-3333-3333-333333333333');
+  });
+
+  it('skips the org listing on refresh when the bastion already has a saved org', async () => {
+    const savedOrgId = '44444444-4444-4444-4444-444444444444';
+    activate(contextWithBastions([prodBastion({ orgId: savedOrgId })]));
+
+    await registeredCommand('jumpserverManager.refresh')();
+
+    expect(jumpServerClientMock.listAccessibleOrgs).not.toHaveBeenCalled();
+    expect(vscode.window.showQuickPick).not.toHaveBeenCalled();
+    expect(jumpServerClientMock.setOrgId).toHaveBeenCalledWith(savedOrgId);
+    expect(jumpServerClientMock.listAssetNodes).toHaveBeenCalledTimes(1);
+    expect(jumpServerClientMock.listAllAssets).toHaveBeenCalledTimes(1);
   });
 
   it('opens the unified terminal panel for MySQL assets', async () => {

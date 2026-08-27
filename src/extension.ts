@@ -34,6 +34,12 @@ import { t } from './i18n/t';
 let extensionCleanup: { dispose(): void } | undefined;
 let clientPool: JumpServerClientPool | undefined;
 
+/**
+ * Arrow-keying through the asset tree fires a selection change per row; only
+ * the row the user settles on is worth a detail round-trip.
+ */
+export const ASSET_DETAIL_PREFETCH_DEBOUNCE_MS = 300;
+
 export function activate(context: vscode.ExtensionContext): void {
   // A WebSocket terminal, a chunked SFTP transport, a local HTTP bridge and a
   // scoped cookie jar have no business failing into a toast that disappears
@@ -127,7 +133,7 @@ export function activate(context: vscode.ExtensionContext): void {
       );
     });
   let disposed = false;
-
+  let prefetchTimer: NodeJS.Timeout | undefined;
 
   const cleanup = {
     dispose(): void {
@@ -135,6 +141,10 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
       disposed = true;
+      if (prefetchTimer) {
+        clearTimeout(prefetchTimer);
+        prefetchTimer = undefined;
+      }
       sftpManager.dispose();
       sftpEditManager.dispose();
       void bridgeServer.dispose();
@@ -171,7 +181,13 @@ export function activate(context: vscode.ExtensionContext): void {
       if (!(item instanceof AssetTreeItem)) {
         return;
       }
-      void prefetchAssetDetail(configManager, item.asset);
+      if (prefetchTimer) {
+        clearTimeout(prefetchTimer);
+      }
+      prefetchTimer = setTimeout(() => {
+        prefetchTimer = undefined;
+        void prefetchAssetDetail(configManager, item.asset);
+      }, ASSET_DETAIL_PREFETCH_DEBOUNCE_MS);
     }),
     vscode.window.createTreeView('jumpserverManager.sftpFiles', {
       treeDataProvider: sftpTreeProvider,
@@ -622,13 +638,15 @@ async function ensureOrgContext(
   client: JumpServerClient,
   bastion: JumpServerBastion
 ): Promise<{ id: string; name: string } | undefined> {
+  // A saved org id is trusted as-is: listing orgs on every refresh/validate
+  // costs a REST round-trip, and a stale org still surfaces through the
+  // existing error toasts when the follow-up asset calls fail.
+  const savedOrgId = bastion.orgId.trim();
+  if (savedOrgId) {
+    return { id: savedOrgId, name: bastion.name || savedOrgId };
+  }
   const accessible = await client.listAccessibleOrgs();
   const context = resolveOrgContext({ savedOrgId: bastion.orgId, accessibleOrgs: accessible });
-  if (bastion.orgId && !context.selectedOrgAccessible) {
-    showTimedNotification(
-      t('Saved JumpServer organization {org} is no longer accessible.', { org: bastion.orgId })
-    );
-  }
   if (context.effectiveOrg && context.effectiveOrg.source === 'reserved_auto_select') {
     await configManager.saveBastion({ ...bastion, orgId: context.effectiveOrg.id, updatedAt: Date.now() });
     return context.effectiveOrg;
