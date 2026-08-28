@@ -55,11 +55,16 @@ describe('policy runtime bundle', () => {
     expect((await runtime.evaluateRedis({ sourceText: 'BLPOP q 0' })).action).toBe('deny');
   });
 
-  it('keeps policy code out of dist/extension.js', () => {
+  it('keeps policy engine code out of dist/extension.js', () => {
     expect(extensionBundle).not.toContain('createShellPolicyEvaluator');
-    expect(extensionBundle).not.toContain('createJumpServerPolicyRuntime');
     expect(extensionBundle).not.toContain('tree-sitter-bash');
     expect(extensionBundle).not.toContain('@at-series/command-policy');
+    // Since Phase B the extension bundles the lazy loader (loadCommandPolicy),
+    // which references the factory by property name; the reference must stay a
+    // dynamic property access on the runtime require, never a static import.
+    const occurrences = extensionBundle.split('createJumpServerPolicyRuntime').length - 1;
+    expect(occurrences).toBeGreaterThan(0);
+    expect(occurrences).toBeLessThanOrEqual(3);
   });
 
   it('ships license notice next to the wasm assets', () => {

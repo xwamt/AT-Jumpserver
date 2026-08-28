@@ -255,7 +255,7 @@ describe('JumpServerAgentToolService', () => {
     expect('mysqlSendInput' in service).toBe(false);
   });
 
-  it('executes read-only Redis commands without confirmation', async () => {
+  it('executes read-only Redis commands without confirmation under full trust', async () => {
     const terminalContext = new TerminalContextRegistry();
     const write = vi.fn((data: string) => {
       const startMatch = data.match(/__JMS_REDIS_START_([0-9a-f]+)__/);
@@ -278,7 +278,7 @@ describe('JumpServerAgentToolService', () => {
       connected: true,
       write
     });
-    const service = serviceWith({ confirm, terminalContext });
+    const service = serviceWith({ confirm, terminalContext, ...withTrust('full') });
 
     await expect(service.redisExecuteCommand({ command: 'PING' })).resolves.toMatchObject({
       terminalId: 'redis-terminal',
@@ -624,7 +624,250 @@ describe('JumpServerAgentToolService', () => {
     expect(first.exitCode).toBe(0);
     expect(second.exitCode).toBe(0);
   });
+
+  it('evaluates the normalized shell text and passes cwd separately', async () => {
+    const evaluateShellPolicy = vi.fn(async () => verdict('review'));
+    const confirm = vi.fn(async () => false);
+    const service = serviceWith({
+      confirm,
+      evaluateShellPolicy,
+      ...withTrust('policy'),
+      terminalContext: sshTerminal()
+    });
+
+    await expect(
+      service.runTerminalCommand({ command: ' # note\n uptime \n df -h ', cwd: '/srv' })
+    ).rejects.toThrow(/cancelled/i);
+
+    expect(evaluateShellPolicy).toHaveBeenCalledWith({ command: 'uptime; df -h', cwd: '/srv' });
+  });
+
+  it('policy allow skips the ssh confirmation and executes the original command', async () => {
+    const evaluateShellPolicy = vi.fn(async () => verdict('allow'));
+    const confirm = vi.fn(async () => true);
+    const { terminalContext, write } = sshExecutingTerminal();
+    const service = serviceWith({ confirm, evaluateShellPolicy, ...withTrust('policy'), terminalContext });
+
+    const result = await service.runTerminalCommand({ command: 'uptime' });
+
+    expect(confirm).not.toHaveBeenCalled();
+    expect(evaluateShellPolicy).toHaveBeenCalledOnce();
+    expect(result.stdout).toContain('command-ran');
+    expect(result.exitCode).toBe(0);
+    expect(write.mock.calls[0][0]).toContain("eval 'uptime'");
+  });
+
+  it('full trust skips the ssh confirmation without consulting any evaluator', async () => {
+    const evaluateShellPolicy = vi.fn(async () => verdict('allow'));
+    const confirm = vi.fn(async () => true);
+    const { terminalContext } = sshExecutingTerminal();
+    const service = serviceWith({ confirm, evaluateShellPolicy, ...withTrust('full'), terminalContext });
+
+    const result = await service.runTerminalCommand({ command: 'uptime' });
+
+    expect(confirm).not.toHaveBeenCalled();
+    expect(evaluateShellPolicy).not.toHaveBeenCalled();
+    expect(result.exitCode).toBe(0);
+  });
+
+  it('confirmation carries the policy note and redacted risk summaries', async () => {
+    const evaluateShellPolicy = vi.fn(async () =>
+      verdict('review', {
+        reasonCode: 'policy.unknown_semantics',
+        riskSummaries: ['Writes to a file path']
+      })
+    );
+    const confirm = vi.fn(async (_message: string) => false);
+    const service = serviceWith({
+      confirm,
+      evaluateShellPolicy,
+      ...withTrust('policy'),
+      terminalContext: sshTerminal()
+    });
+
+    await expect(service.runTerminalCommand({ command: 'tee /etc/x' })).rejects.toThrow(/cancelled/i);
+
+    const message = confirm.mock.calls[0][0];
+    expect(message).toContain('tee /etc/x');
+    expect(message).toContain('Policy: review (policy.unknown_semantics)');
+    expect(message).toContain('\n- Writes to a file path');
+  });
+
+  it('deny verdicts confirm with a strong warning instead of silently refusing', async () => {
+    const evaluateShellPolicy = vi.fn(async () =>
+      verdict('deny', {
+        reasonCode: 'policy.explicit_deny',
+        riskSummaries: ['Deletes files recursively']
+      })
+    );
+    const confirm = vi.fn(async (_message: string) => true);
+    const { terminalContext } = sshExecutingTerminal();
+    const service = serviceWith({ confirm, evaluateShellPolicy, ...withTrust('policy'), terminalContext });
+
+    const result = await service.runTerminalCommand({ command: 'rm -rf /tmp/x' });
+
+    const message = confirm.mock.calls[0][0];
+    expect(message).toContain('Policy: DENY (policy.explicit_deny) — approve only if you are certain.');
+    expect(message).toContain('\n- Deletes files recursively');
+    expect(result.stdout).toContain('command-ran');
+  });
+
+  it('evaluates ensureSemicolon(sql) for mysql under limited trust', async () => {
+    const evaluateMysqlPolicy = vi.fn(async () =>
+      verdict('review', { reasonCode: 'policy.unknown_semantics' })
+    );
+    const confirm = vi.fn(async (_message: string) => false);
+    const service = serviceWith({ confirm, evaluateMysqlPolicy, ...withTrust('policy') });
+
+    await expect(service.mysqlExecuteSql({ sql: 'SELECT 1' })).rejects.toThrow(/cancelled/i);
+
+    expect(evaluateMysqlPolicy).toHaveBeenCalledWith({ command: 'SELECT 1;', cwd: undefined });
+    // Read-only heuristic only selects the wording; the prompt still shows the original sql.
+    const message = confirm.mock.calls[0][0];
+    expect(message).toContain('Run JumpServer MySQL SQL');
+    expect(message).toContain('SELECT 1');
+    expect(message).toContain('Policy: review (policy.unknown_semantics)');
+  });
+
+  it('an untrusted asset confirms even a read-only SELECT and consults no evaluator', async () => {
+    const evaluateMysqlPolicy = vi.fn(async () => verdict('allow'));
+    const confirm = vi.fn(async (_message: string) => false);
+    const service = serviceWith({ confirm, evaluateMysqlPolicy, ...withTrust('none') });
+
+    await expect(service.mysqlExecuteSql({ sql: 'SELECT 1' })).rejects.toThrow(/cancelled/i);
+
+    expect(evaluateMysqlPolicy).not.toHaveBeenCalled();
+    const message = confirm.mock.calls[0][0];
+    expect(message).toContain('Run JumpServer MySQL SQL');
+    expect(message).not.toContain('Policy:');
+  });
+
+  it('policy allow skips the mysql confirmation entirely', async () => {
+    const terminalContext = new TerminalContextRegistry();
+    const write = vi.fn((data: string) => {
+      const id = data.match(/__JMS_SQL_START_', '([0-9a-f]+)'/)?.[1] ?? 'unknown';
+      const buffer = terminalContext.getOutputBuffer('mysql-terminal');
+      buffer?.append(`__JMS_SQL_START_${id}__\n1\n__JMS_SQL_END_${id}__\n`);
+    });
+    terminalContext.setActive({
+      terminalId: 'mysql-terminal',
+      asset: asset({ id: 'mysql-1', name: 'mysql-1', type: 'mysql', platform: 'MySQL', protocolNames: ['mysql'] }),
+      connected: true,
+      write
+    });
+    const evaluateMysqlPolicy = vi.fn(async () => verdict('allow'));
+    const confirm = vi.fn(async () => true);
+    const service = serviceWith({ confirm, evaluateMysqlPolicy, ...withTrust('policy'), terminalContext });
+
+    await expect(service.mysqlExecuteSql({ sql: 'SELECT 1' })).resolves.toMatchObject({
+      sql: 'SELECT 1',
+      output: expect.stringContaining('1')
+    });
+
+    expect(confirm).not.toHaveBeenCalled();
+    expect(evaluateMysqlPolicy).toHaveBeenCalledOnce();
+  });
+
+  it('evaluates the trimmed redis command and words read-only prompts accordingly', async () => {
+    const evaluateRedisPolicy = vi.fn(async () =>
+      verdict('review', { reasonCode: 'policy.unknown_semantics' })
+    );
+    const confirm = vi.fn(async (_message: string) => false);
+    const service = serviceWith({
+      confirm,
+      evaluateRedisPolicy,
+      ...withTrust('policy'),
+      terminalContext: redisTerminal()
+    });
+
+    await expect(service.redisExecuteCommand({ command: '  GET k  ' })).rejects.toThrow(/cancelled/i);
+
+    expect(evaluateRedisPolicy).toHaveBeenCalledWith({ command: 'GET k', cwd: undefined });
+    const message = confirm.mock.calls[0][0];
+    expect(message).toContain('Run JumpServer Redis command');
+    expect(message).toContain('Policy: review (policy.unknown_semantics)');
+  });
+
+  it('an untrusted asset confirms even a read-only redis command', async () => {
+    const evaluateRedisPolicy = vi.fn(async () => verdict('allow'));
+    const confirm = vi.fn(async (_message: string) => false);
+    const service = serviceWith({
+      confirm,
+      evaluateRedisPolicy,
+      ...withTrust('none'),
+      terminalContext: redisTerminal()
+    });
+
+    await expect(service.redisExecuteCommand({ command: 'GET k' })).rejects.toThrow(/cancelled/i);
+
+    expect(evaluateRedisPolicy).not.toHaveBeenCalled();
+    expect(confirm.mock.calls[0][0]).toContain('Run JumpServer Redis command');
+  });
+
+  it('rejects blocking redis commands before any evaluator call, even under full trust', async () => {
+    const evaluateRedisPolicy = vi.fn(async () => verdict('allow'));
+    const confirm = vi.fn(async () => true);
+    const write = vi.fn();
+    const service = serviceWith({
+      confirm,
+      evaluateRedisPolicy,
+      ...withTrust('full'),
+      terminalContext: redisTerminal(write)
+    });
+
+    await expect(service.redisExecuteCommand({ command: 'BLPOP q 0' })).rejects.toThrow(
+      /blocking|send_terminal_input/i
+    );
+
+    expect(evaluateRedisPolicy).not.toHaveBeenCalled();
+    expect(confirm).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+  });
 });
+
+function verdict(
+  action: 'allow' | 'review' | 'deny',
+  overrides: Partial<{ riskSummaries: string[]; reasonCode: string }> = {}
+) {
+  return { action, riskSummaries: [], reasonCode: 'ok', ...overrides };
+}
+
+function sshExecutingTerminal() {
+  const terminalContext = new TerminalContextRegistry();
+  const write = vi.fn((data: string) => {
+    const id = data.match(/'([0-9a-f]{32})'/)?.[1] ?? 'unknown';
+    const buffer = terminalContext.getOutputBuffer('terminal-1');
+    buffer?.append(`prompt$ ${data}`);
+    setTimeout(() => {
+      buffer?.append(`__JMS_CMD_START_${id}__\ncommand-ran\n__JMS_CMD_END_${id}__0\n`);
+    }, 5);
+  });
+  terminalContext.setActive({
+    terminalId: 'terminal-1',
+    asset: asset({ id: 'ssh-1', name: 'web-1', address: '10.0.0.5', protocolNames: ['ssh'] }),
+    connected: true,
+    write
+  });
+  return { terminalContext, write };
+}
+
+function redisTerminal(write: (data: string) => void = vi.fn()): TerminalContextRegistry {
+  const terminalContext = new TerminalContextRegistry();
+  terminalContext.setActive({
+    terminalId: 'redis-terminal',
+    asset: asset({
+      id: 'redis-1',
+      name: 'redis-1',
+      type: 'redis',
+      platform: 'Redis',
+      category: 'database',
+      protocolNames: ['redis']
+    }),
+    connected: true,
+    write
+  });
+  return terminalContext;
+}
 
 function withTrust(level: AssetCommandTrust) {
   return { resolveAssetTrust: () => level };
@@ -687,7 +930,10 @@ function serviceWith(overrides: Record<string, unknown>) {
     confirm: (overrides.confirm as never) ?? vi.fn(async () => true),
     resolveAssetTrust: overrides.resolveAssetTrust as
       | ((target: CachedJumpServerAsset) => AssetCommandTrust)
-      | undefined
+      | undefined,
+    evaluateShellPolicy: overrides.evaluateShellPolicy as never,
+    evaluateMysqlPolicy: overrides.evaluateMysqlPolicy as never,
+    evaluateRedisPolicy: overrides.evaluateRedisPolicy as never
   });
 }
 

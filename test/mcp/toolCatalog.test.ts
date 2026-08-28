@@ -72,4 +72,27 @@ describe('toolCatalog', () => {
     expect(redis?.description).toMatch(/64KB/i);
     expect(redis?.description).toMatch(/jumpserver_send_terminal_input/);
   });
+
+  it('documents the three trust levels on each exec command tool', () => {
+    for (const name of [
+      'jumpserver_run_terminal_command',
+      'jumpserver_mysql_execute_sql',
+      'jumpserver_redis_execute_command'
+    ]) {
+      const entry = AT_JUMPSERVER_TOOL_CATALOG.find((tool) => tool.name === name);
+      expect(entry?.description, name).toMatch(/untrusted asset always asks/);
+      expect(entry?.description, name).toMatch(/@at-series\/command-policy/);
+      expect(entry?.description, name).toMatch(/skips the prompt only for a proven ordinary read \(allow\)/);
+      expect(entry?.description, name).toMatch(/review and deny verdicts still ask/);
+      expect(entry?.description, name).toMatch(/fully trusted asset never asks/);
+    }
+  });
+
+  it('documents that mysql/redis read-only inputs still confirm on an untrusted asset', () => {
+    const mysql = AT_JUMPSERVER_TOOL_CATALOG.find((t) => t.name === 'jumpserver_mysql_execute_sql');
+    expect(mysql?.description).toMatch(/even for SELECT/);
+    const redis = AT_JUMPSERVER_TOOL_CATALOG.find((t) => t.name === 'jumpserver_redis_execute_command');
+    expect(redis?.description).toMatch(/even for read-only commands/);
+    expect(redis?.description).toMatch(/rejected at every trust level, even full trust/);
+  });
 });
