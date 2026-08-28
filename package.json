@@ -2,7 +2,7 @@
   "name": "at-jumpserver-terminal",
   "displayName": "%atJumpServer.displayName%",
   "description": "%atJumpServer.description%",
-  "version": "0.1.9",
+  "version": "0.2.0",
   "publisher": "local",
   "icon": "media/at-terminal-icon.png",
   "l10n": "./l10n",
@@ -145,7 +145,6 @@
         "title": "%atJumpServer.command.reconnect.title%"
       }
     ],
-
     "menus": {
       "view/title": [
         {
@@ -245,7 +244,6 @@
     "configuration": {
       "title": "%atJumpServer.configuration.title%",
       "properties": {
-
         "jumpserverManager.terminalFontSize": {
           "type": "number",
           "default": 14,
@@ -284,7 +282,7 @@
     "package": "npm run build && npx @vscode/vsce package --no-dependencies --allow-missing-repository --no-rewrite-relative-links"
   },
   "dependencies": {
-    "@at-series/mcp-hub": "^0.3.2",
+    "@at-series/mcp-hub": "^0.3.3",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/addon-web-links": "^0.11.0",
     "@xterm/xterm": "^5.5.0",

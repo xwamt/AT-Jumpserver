@@ -8,7 +8,7 @@ describe('AT JumpServer Terminal manifest', () => {
   it('declares JumpServer terminal, SFTP file commands, and MCP install command', () => {
     expect(manifest.name).toBe('at-jumpserver-terminal');
     expect(manifest.displayName).toBe('%atJumpServer.displayName%');
-    expect(manifest.version).toBe('0.1.9');
+    expect(manifest.version).toBe('0.2.0');
     expect(manifest.contributes.viewsContainers.activitybar[0].id).toBe('jumpserverManager');
     expect(manifest.contributes.viewsContainers.activitybar[0].icon).toBe('media/at-terminal-activity.svg');
 
