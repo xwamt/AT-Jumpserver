@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import {
+  assetTrustKey,
   bastionDisplayName,
+  parseAssetTrustOverlay,
   parseCachedJumpServerAsset,
   parseCachedJumpServerAssets,
   parseCachedJumpServerNode,
@@ -8,6 +10,7 @@ import {
   parseJumpServerBastion,
   parseJumpServerBastionList,
   parseJumpServerSettings,
+  type AssetCommandTrust,
   type CachedJumpServerAsset,
   type CachedJumpServerNode,
   type JumpServerBastion,
@@ -18,6 +21,7 @@ const BASTIONS_KEY = 'jumpserverManager.bastions';
 const SETTINGS_KEY = 'jumpserverManager.settings';
 const ASSETS_KEY = 'jumpserverManager.cachedAssets';
 const NODES_KEY = 'jumpserverManager.cachedAssetNodes';
+const ASSET_TRUST_KEY = 'jumpserverManager.assetTrust';
 const PASSWORD_KEY = 'jumpserverManager.password';
 const passwordKey = (id: string) => `jumpserverManager.password.${id}`;
 
@@ -80,6 +84,7 @@ export class JumpServerConfigManager {
   private bastionsCache?: JumpServerBastion[];
   private assetsCache?: CachedJumpServerAsset[];
   private nodesCache?: CachedJumpServerNode[];
+  private assetTrustCache?: Record<string, 'policy' | 'full'>;
 
   constructor(
     private readonly globalState: ExtensionMemento,
@@ -127,12 +132,18 @@ export class JumpServerConfigManager {
     const bastions = (await this.listBastions()).filter((item) => item.id !== id);
     const assets = (await this.listCachedAssets()).filter((asset) => asset.bastionId !== id);
     const nodes = (await this.listCachedAssetNodes()).filter((node) => node.bastionId !== id);
+    const trustPrefix = `${id}/`;
+    const trust = Object.fromEntries(
+      Object.entries(this.readAssetTrustOverlay()).filter(([key]) => !key.startsWith(trustPrefix))
+    );
     await this.globalState.update(BASTIONS_KEY, bastions);
     await this.globalState.update(ASSETS_KEY, assets);
     await this.globalState.update(NODES_KEY, nodes);
+    await this.globalState.update(ASSET_TRUST_KEY, trust);
     this.bastionsCache = undefined;
     this.assetsCache = undefined;
     this.nodesCache = undefined;
+    this.assetTrustCache = undefined;
     await this.secrets.delete(passwordKey(id));
   }
 
@@ -193,9 +204,11 @@ export class JumpServerConfigManager {
     await this.globalState.update(ASSETS_KEY, undefined);
     await this.globalState.update(NODES_KEY, undefined);
     await this.globalState.update(SETTINGS_KEY, undefined);
+    await this.globalState.update(ASSET_TRUST_KEY, undefined);
     this.bastionsCache = undefined;
     this.assetsCache = undefined;
     this.nodesCache = undefined;
+    this.assetTrustCache = undefined;
   }
 
   async getPassword(id?: string): Promise<string | undefined> {
@@ -253,6 +266,49 @@ export class JumpServerConfigManager {
     this.nodesCache ??= parseCachedRows(this.globalState.get<unknown[]>(NODES_KEY, []), parseCachedJumpServerNode);
     const nodes = this.nodesCache;
     return bastionId ? nodes.filter((node) => node.bastionId === bastionId) : nodes;
+  }
+
+  /**
+   * Synchronous on purpose: the authorization gate reads the trust level on
+   * every tool invocation (VS Code Memento.get is a sync API). This key does
+   * not take part in the legacy migration, so no migrateIfNeeded here.
+   * Missing or corrupt entries resolve to 'none'.
+   */
+  resolveAssetTrust(bastionId: string, assetId: string): AssetCommandTrust {
+    return this.readAssetTrustOverlay()[assetTrustKey(bastionId, assetId)] ?? 'none';
+  }
+
+  /** 'none' deletes the entry; 'policy' / 'full' write it. Read-modify-write of the whole map. */
+  async setAssetTrust(bastionId: string, assetId: string, trust: AssetCommandTrust): Promise<void> {
+    const overlay = { ...this.readAssetTrustOverlay() };
+    const key = assetTrustKey(bastionId, assetId);
+    if (trust === 'none') {
+      delete overlay[key];
+    } else {
+      overlay[key] = trust;
+    }
+    await this.globalState.update(ASSET_TRUST_KEY, overlay);
+    this.assetTrustCache = undefined;
+  }
+
+  async listAssetTrustOverrides(bastionId?: string): Promise<Record<string, 'policy' | 'full'>> {
+    const overlay = this.readAssetTrustOverlay();
+    if (bastionId === undefined) {
+      return { ...overlay };
+    }
+    const prefix = `${bastionId}/`;
+    const result: Record<string, 'policy' | 'full'> = {};
+    for (const [key, trust] of Object.entries(overlay)) {
+      if (key.startsWith(prefix)) {
+        result[key] = trust;
+      }
+    }
+    return result;
+  }
+
+  private readAssetTrustOverlay(): Record<string, 'policy' | 'full'> {
+    this.assetTrustCache ??= parseAssetTrustOverlay(this.globalState.get<unknown>(ASSET_TRUST_KEY, {}));
+    return this.assetTrustCache;
   }
 
   private migrateIfNeeded(): Promise<void> {

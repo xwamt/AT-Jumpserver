@@ -66,4 +66,68 @@ describe('formatCommandConfirmMessage', () => {
     expect(message).toContain(`… (truncated, ${command.length} chars, 1 lines)`);
     expect(message.endsWith('Warning: this command appears destructive.')).toBe(true);
   });
+
+  it('appends the policy note and dashed risk summaries after the preview', () => {
+    const message = formatCommandConfirmMessage({
+      action: 'Run JumpServer SSH command',
+      target: 'web-1 (10.0.0.5)',
+      command: 'tee /etc/x',
+      policyNote: 'Policy: review (policy.unknown_semantics)',
+      riskSummaries: ['Writes to a file path', 'Touches system configuration']
+    });
+
+    expect(message).toBe(
+      'Run JumpServer SSH command on web-1 (10.0.0.5)?\n\n' +
+      'tee /etc/x\n\n' +
+      'Policy: review (policy.unknown_semantics)\n' +
+      '- Writes to a file path\n' +
+      '- Touches system configuration'
+    );
+  });
+
+  it('renders risk summaries even without a policy note, and vice versa', () => {
+    expect(formatCommandConfirmMessage({
+      action: 'Run JumpServer Redis command',
+      target: 'cache-1',
+      command: 'GET k',
+      riskSummaries: ['Reads a key']
+    })).toBe('Run JumpServer Redis command on cache-1?\n\nGET k\n\n- Reads a key');
+
+    expect(formatCommandConfirmMessage({
+      action: 'Run JumpServer Redis command',
+      target: 'cache-1',
+      command: 'GET k',
+      policyNote: 'Policy: DENY (policy.blocked) — approve only if you are certain.'
+    })).toBe(
+      'Run JumpServer Redis command on cache-1?\n\nGET k\n\n' +
+      'Policy: DENY (policy.blocked) — approve only if you are certain.'
+    );
+  });
+
+  it('keeps the destructive warning ahead of the policy block', () => {
+    const message = formatCommandConfirmMessage({
+      action: 'Run JumpServer SSH command',
+      target: 'web-1',
+      command: 'rm -rf /tmp/x',
+      policyNote: 'Policy: review (policy.unknown_semantics)',
+      riskSummaries: ['Deletes files recursively']
+    });
+
+    expect(message).toBe(
+      'Run JumpServer SSH command on web-1?\n\n' +
+      'rm -rf /tmp/x\n\n' +
+      'Warning: this command appears destructive.\n\n' +
+      'Policy: review (policy.unknown_semantics)\n' +
+      '- Deletes files recursively'
+    );
+  });
+
+  it('leaves the message untouched when no policy fields are given', () => {
+    expect(formatCommandConfirmMessage({
+      action: 'Run JumpServer SSH command',
+      target: 'web-1',
+      command: 'uptime',
+      riskSummaries: []
+    })).toBe('Run JumpServer SSH command on web-1?\n\nuptime');
+  });
 });

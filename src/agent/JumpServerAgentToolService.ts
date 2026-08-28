@@ -1,13 +1,26 @@
 import type { JumpServerConfigManager } from '../config/JumpServerConfigManager';
-import { bastionDisplayName, type CachedJumpServerAsset } from '../config/schema';
+import { bastionDisplayName, type AssetCommandTrust, type CachedJumpServerAsset } from '../config/schema';
 import { getAssetConnectionKind } from '../jumpserver/connectionTypes';
 import type { JumpServerSftpManager } from '../sftp/JumpServerSftpManager';
 import type { JumpServerSftpEntry } from '../sftp/SftpTypes';
 import type { ActiveTerminalContext, TerminalContextRegistry } from '../terminal/TerminalContext';
 import { formatCommandConfirmMessage } from '../utils/commandPreview';
+import { authorizeAssetCommand, type AssetCommandAuthorization } from './assetCommandTrust';
+import {
+  evaluateMysqlCommandPolicy,
+  evaluateRedisCommandPolicy,
+  evaluateShellCommandPolicy,
+  type CommandPolicyEvaluate
+} from './loadCommandPolicy';
 import { isBlockingRedisCommand, isReadOnlyRedisCommand } from './RedisSafety';
 import { isReadOnlySql } from './SqlSafety';
-import { MysqlCliExecutor, RedisCliExecutor, ShellTerminalExecutor } from './TerminalExecutors';
+import {
+  ensureSemicolon,
+  MysqlCliExecutor,
+  normalizeShellCommand,
+  RedisCliExecutor,
+  ShellTerminalExecutor
+} from './TerminalExecutors';
 
 export interface JumpServerAgentToolServiceDependencies {
   configManager: Pick<JumpServerConfigManager, 'listCachedAssets' | 'listBastions'>;
@@ -17,6 +30,20 @@ export interface JumpServerAgentToolServiceDependencies {
     | 'getConnectionAsset'
   >;
   confirm(message: string): Promise<boolean>;
+  /**
+   * Per-asset command trust resolver, provided by the trust-mode design.
+   * Read at every invoke, never snapshotted; absent means every asset is
+   * untrusted ('none', the strictest level).
+   */
+  resolveAssetTrust?: (asset: CachedJumpServerAsset) => AssetCommandTrust;
+  /**
+   * Policy evaluators consulted only under 'policy' (limited) trust. The
+   * defaults lazily load the bundled @at-series/command-policy runtime and
+   * fail closed to review; tests inject spies here.
+   */
+  evaluateShellPolicy?: CommandPolicyEvaluate;
+  evaluateMysqlPolicy?: CommandPolicyEvaluate;
+  evaluateRedisPolicy?: CommandPolicyEvaluate;
   shellExecutor?: ShellTerminalExecutor;
   mysqlExecutor?: MysqlCliExecutor;
 }
@@ -26,10 +53,16 @@ export class JumpServerAgentToolService {
   private readonly mysqlExecutor: MysqlCliExecutor;
   private readonly redisExecutor = new RedisCliExecutor();
   private readonly terminalQueues = new Map<string, Promise<unknown>>();
+  private readonly evaluateShellPolicy: CommandPolicyEvaluate;
+  private readonly evaluateMysqlPolicy: CommandPolicyEvaluate;
+  private readonly evaluateRedisPolicy: CommandPolicyEvaluate;
 
   constructor(private readonly dependencies: JumpServerAgentToolServiceDependencies) {
     this.shellExecutor = dependencies.shellExecutor ?? new ShellTerminalExecutor();
     this.mysqlExecutor = dependencies.mysqlExecutor ?? new MysqlCliExecutor();
+    this.evaluateShellPolicy = dependencies.evaluateShellPolicy ?? evaluateShellCommandPolicy;
+    this.evaluateMysqlPolicy = dependencies.evaluateMysqlPolicy ?? evaluateMysqlCommandPolicy;
+    this.evaluateRedisPolicy = dependencies.evaluateRedisPolicy ?? evaluateRedisCommandPolicy;
   }
 
   private enqueueTerminal<T>(terminalId: string, task: () => Promise<T>): Promise<T> {
@@ -109,13 +142,25 @@ export class JumpServerAgentToolService {
     if (getAssetConnectionKind(target.asset) !== 'ssh') {
       throw new Error('A connected JumpServer SSH terminal is required.');
     }
-    const confirmed = await this.dependencies.confirm(formatCommandConfirmMessage({
-      action: 'Run JumpServer SSH command',
-      target: formatAssetTarget(target.asset),
-      command
-    }));
-    if (!confirmed) {
-      throw new Error('Terminal command was cancelled.');
+    // Evaluate the exact text the executor will run: wrapShellCommand evals
+    // normalizeShellCommand(command) with cwd applied separately (spec D7).
+    const authorization = await this.authorizeCommand({
+      asset: target.asset,
+      kind: 'ssh',
+      command: normalizeShellCommand(command),
+      cwd: input.cwd
+    });
+    if (!authorization.autoApprove) {
+      const confirmed = await this.dependencies.confirm(formatCommandConfirmMessage({
+        action: 'Run JumpServer SSH command',
+        target: formatAssetTarget(target.asset),
+        command,
+        policyNote: policyNoteOf(authorization),
+        riskSummaries: authorization.riskSummaries
+      }));
+      if (!confirmed) {
+        throw new Error('Terminal command was cancelled.');
+      }
     }
     // Serialize per terminal so parallel MCP tool calls cannot interleave wrappers
     // on the same PTY (which looks like "one confirm ran three commands").
@@ -196,13 +241,13 @@ export class JumpServerAgentToolService {
     content: string;
     overwrite?: boolean;
   }) {
-    await this.requireConfirm(`Write JumpServer SFTP file ${input.path} on ${this.sftpTarget(input)}?`);
+    await this.requireSftpWriteConfirm(input, `Write JumpServer SFTP file ${input.path} on ${this.sftpTarget(input)}?`);
     await this.dependencies.sftp.writeFile(input.path, Buffer.from(input.content, 'utf8'), connectionKeyOf(input));
     return { path: input.path, bytesWritten: Buffer.byteLength(input.content, 'utf8') };
   }
 
   async sftpCreateFile(input: { connectionKey?: string; terminalId?: string; path: string; content?: string }) {
-    await this.requireConfirm(`Create JumpServer SFTP file ${input.path} on ${this.sftpTarget(input)}?`);
+    await this.requireSftpWriteConfirm(input, `Create JumpServer SFTP file ${input.path} on ${this.sftpTarget(input)}?`);
     if (input.content === undefined) {
       await this.dependencies.sftp.createFile(input.path, connectionKeyOf(input));
     } else {
@@ -212,13 +257,14 @@ export class JumpServerAgentToolService {
   }
 
   async sftpCreateDirectory(input: { connectionKey?: string; terminalId?: string; path: string }) {
-    await this.requireConfirm(`Create JumpServer SFTP directory ${input.path} on ${this.sftpTarget(input)}?`);
+    await this.requireSftpWriteConfirm(input, `Create JumpServer SFTP directory ${input.path} on ${this.sftpTarget(input)}?`);
     await this.dependencies.sftp.mkdir(input.path, connectionKeyOf(input));
     return { path: input.path };
   }
 
   async sftpRename(input: { connectionKey?: string; terminalId?: string; oldPath: string; newPath: string }) {
-    await this.requireConfirm(
+    await this.requireSftpWriteConfirm(
+      input,
       `Rename JumpServer SFTP path ${input.oldPath} to ${input.newPath} on ${this.sftpTarget(input)}?`
     );
     await this.dependencies.sftp.rename(input.oldPath, input.newPath, connectionKeyOf(input));
@@ -244,11 +290,20 @@ export class JumpServerAgentToolService {
     if (getAssetConnectionKind(target.asset) !== 'mysql') {
       throw new Error('A connected JumpServer MySQL terminal is required.');
     }
-    if (!isReadOnlySql(sql)) {
+    // Evaluate the exact text the executor sends between the markers (spec D7).
+    const authorization = await this.authorizeCommand({
+      asset: target.asset,
+      kind: 'mysql',
+      command: ensureSemicolon(sql)
+    });
+    if (!authorization.autoApprove) {
+      // isReadOnlySql only picks the wording; it no longer skips confirmation.
       const ok = await this.dependencies.confirm(formatCommandConfirmMessage({
-        action: 'Run state-changing MySQL SQL',
+        action: isReadOnlySql(sql) ? 'Run JumpServer MySQL SQL' : 'Run state-changing MySQL SQL',
         target: formatAssetTarget(target.asset),
-        command: sql
+        command: sql,
+        policyNote: policyNoteOf(authorization),
+        riskSummaries: authorization.riskSummaries
       }));
       if (!ok) {
         throw new Error('MySQL SQL execution was cancelled.');
@@ -293,11 +348,23 @@ export class JumpServerAgentToolService {
     if (getAssetConnectionKind(target.asset) !== 'redis') {
       throw new Error('A connected JumpServer Redis terminal is required.');
     }
-    if (!isReadOnlyRedisCommand(command)) {
+    // Evaluate the trimmed single-line command, which is exactly what the
+    // executor writes between the ECHO markers (spec D7).
+    const authorization = await this.authorizeCommand({
+      asset: target.asset,
+      kind: 'redis',
+      command
+    });
+    if (!authorization.autoApprove) {
+      // isReadOnlyRedisCommand only picks the wording; it no longer skips confirmation.
       const ok = await this.dependencies.confirm(formatCommandConfirmMessage({
-        action: 'Run state-changing Redis command',
+        action: isReadOnlyRedisCommand(command)
+          ? 'Run JumpServer Redis command'
+          : 'Run state-changing Redis command',
         target: formatAssetTarget(target.asset),
-        command
+        command,
+        policyNote: policyNoteOf(authorization),
+        riskSummaries: authorization.riskSummaries
       }));
       if (!ok) {
         throw new Error('Redis command execution was cancelled.');
@@ -347,10 +414,69 @@ export class JumpServerAgentToolService {
       throw new Error('JumpServer operation was cancelled.');
     }
   }
+
+  private trustOf(asset: CachedJumpServerAsset): AssetCommandTrust {
+    return this.dependencies.resolveAssetTrust?.(asset) ?? 'none';
+  }
+
+  /**
+   * Trust gate for the three command tools. `command` must already be the
+   * exact text the executor will run (normalizeShellCommand / ensureSemicolon
+   * / trimmed Redis command) — never rewrite it after this decision.
+   */
+  private authorizeCommand(options: {
+    asset: CachedJumpServerAsset;
+    kind: 'ssh' | 'mysql' | 'redis';
+    command: string;
+    cwd?: string;
+  }): Promise<AssetCommandAuthorization> {
+    return authorizeAssetCommand({
+      trust: this.trustOf(options.asset),
+      kind: options.kind,
+      command: options.command,
+      cwd: options.cwd,
+      evaluateShellPolicy: this.evaluateShellPolicy,
+      evaluateMysqlPolicy: this.evaluateMysqlPolicy,
+      evaluateRedisPolicy: this.evaluateRedisPolicy
+    });
+  }
+
+  /**
+   * Confirmation gate for the SFTP write family (write / create file /
+   * create directory / rename): only a fully trusted asset skips the prompt,
+   * mirroring At-Terminal's shouldAutoApproveSftpWrite. A connection whose
+   * asset cannot be resolved is treated as untrusted. Deletes never use this
+   * gate — sftpDelete confirms at every trust level.
+   */
+  private async requireSftpWriteConfirm(
+    input: { connectionKey?: string; terminalId?: string },
+    message: string
+  ): Promise<void> {
+    const asset = this.dependencies.sftp.getConnectionAsset(connectionKeyOf(input));
+    if (asset && this.trustOf(asset) === 'full') {
+      return;
+    }
+    await this.requireConfirm(message);
+  }
 }
 
 function connectionKeyOf(input: { connectionKey?: string; terminalId?: string }): string | undefined {
   return input.connectionKey ?? input.terminalId;
+}
+
+/**
+ * Confirmation-dialog policy line (spec §4.4). Only verdict and reason code —
+ * never sourceText, cwd, or parser errors. Untrusted assets carry no verdict,
+ * so their prompts stay policy-free.
+ */
+function policyNoteOf(authorization: AssetCommandAuthorization): string | undefined {
+  if (authorization.action === 'review') {
+    return `Policy: review (${authorization.reasonCode})`;
+  }
+  if (authorization.action === 'deny') {
+    return `Policy: DENY (${authorization.reasonCode}) — approve only if you are certain.`;
+  }
+  return undefined;
 }
 
 export function formatAssetTarget(asset: Pick<CachedJumpServerAsset, 'name' | 'address'> | undefined): string {

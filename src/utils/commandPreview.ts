@@ -30,6 +30,14 @@ export function formatCommandConfirmMessage(options: {
   action: string;
   target: string;
   command: string;
+  /**
+   * Policy verdict line, e.g. `Policy: review (policy.unknown_semantics)`.
+   * Must never carry sourceText, cwd, or parser errors — only the verdict
+   * and reason code (spec §4.4 / D12).
+   */
+  policyNote?: string;
+  /** Redacted evidence summaries from the policy engine, rendered as `- <summary>` lines. */
+  riskSummaries?: readonly string[];
 }): string {
   const preview = truncateCommandPreview(options.command);
   // Scans the whole command, not the preview: the point of the warning is the
@@ -37,5 +45,10 @@ export function formatCommandConfirmMessage(options: {
   const warning = isObviouslyDestructive(options.command)
     ? '\n\nWarning: this command appears destructive.'
     : '';
-  return `${options.action} on ${options.target}?\n\n${preview}${warning}`;
+  const policyLines = [
+    ...(options.policyNote ? [options.policyNote] : []),
+    ...(options.riskSummaries ?? []).map((summary) => `- ${summary}`)
+  ];
+  const policyBlock = policyLines.length > 0 ? `\n\n${policyLines.join('\n')}` : '';
+  return `${options.action} on ${options.target}?\n\n${preview}${warning}${policyBlock}`;
 }

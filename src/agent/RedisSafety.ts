@@ -18,6 +18,12 @@ const READ_ONLY_VERBS = new Set([
   'scan'
 ]);
 
+/**
+ * Hard reject for commands that would park the CLI collector forever
+ * (SUBSCRIBE/MONITOR/BLPOP/…). Runs BEFORE any trust or policy evaluation
+ * and at every trust level, including full: this is an execution-domain
+ * contract, not a policy question (spec D8).
+ */
 export function isBlockingRedisCommand(command: string): boolean {
   if (hasMultiLineRedisPayload(command)) {
     return true;
@@ -36,6 +42,13 @@ export function isBlockingRedisCommand(command: string): boolean {
   return false;
 }
 
+/**
+ * Confirmation-wording selector only ('Run JumpServer Redis command' vs
+ * 'Run state-changing Redis command'). This heuristic no longer grants any
+ * auto-approval: the confirmation gate is authorizeAssetCommand
+ * (src/agent/assetCommandTrust.ts), which under limited trust defers to
+ * the @at-series/command-policy redis evaluator (spec D8).
+ */
 export function isReadOnlyRedisCommand(command: string): boolean {
   if (hasMultiLineRedisPayload(command)) {
     return false;

@@ -58,6 +58,10 @@
   "JumpServer assets refreshed: {ok} succeeded, {fail} failed ({names}).": "JumpServer 资产已刷新：{ok} 台成功，{fail} 台失败（{names}）。",
   "JumpServer assets refreshed: {ok} succeeded.": "JumpServer 资产已刷新：{ok} 台成功。",
   "Connect": "连接",
+  "Untrusted": "不信任",
+  "Limited trust": "有限信任",
+  "Full trust": "完全信任",
+  "Agent command trust": "代理命令信任",
   "Go Up": "返回上一级",
   "Open files from a JumpServer asset": "从 JumpServer 资产打开文件",
   "Files for {name} connect on first refresh": "文件（{name}）将在首次刷新时连接",
@@ -75,5 +79,11 @@
   "Reconnecting...": "正在重新连接…",
   "Disconnected": "已断开连接",
   "Connection disconnected": "连接已断开",
-  "Disconnected after {minutes} minute(s) of inactivity.": "因无操作达 {minutes} 分钟已断开连接。"
+  "Disconnected after {minutes} minute(s) of inactivity.": "因无操作达 {minutes} 分钟已断开连接。",
+  "Current": "当前",
+  "Select trust level for {asset}": "选择 {asset} 的信任级别",
+  "Every agent command asks for confirmation.": "所有代理命令都需要弹窗确认。",
+  "Commands are reviewed by the command policy engine; only an allow verdict skips the prompt.": "命令由命令策略引擎审查，仅判定为 allow 时免确认。",
+  "Agent commands and SFTP writes run without prompts. Raw terminal input still asks.": "代理命令与 SFTP 写入不再弹窗；终端原始输入仍需确认。",
+  "Trust level for {asset} is now {level}.": "{asset} 的信任级别已设为 {level}。"
 }

@@ -307,7 +307,12 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function ensureSemicolon(sql: string): string {
+/**
+ * Exact text the mysql executor sends between the markers. Policy evaluation
+ * (spec D7) must evaluate this same function's output so evaluated text and
+ * executed text can never drift apart.
+ */
+export function ensureSemicolon(sql: string): string {
   const trimmed = sql.trim();
   return trimmed.endsWith(';') ? trimmed : `${trimmed};`;
 }

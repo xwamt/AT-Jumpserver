@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import type { CachedJumpServerAsset } from '../config/schema';
+import type { AssetCommandTrust, CachedJumpServerAsset } from '../config/schema';
 import { getAssetConnectionKind, isDatabaseAsset, type JumpServerConnectionKind } from '../jumpserver/connectionTypes';
 import { t } from '../i18n/t';
 
@@ -18,20 +18,39 @@ export class GroupTreeItem extends vscode.TreeItem {
 }
 
 export class AssetTreeItem extends vscode.TreeItem {
-  constructor(readonly asset: CachedJumpServerAsset) {
+  constructor(readonly asset: CachedJumpServerAsset, readonly trust: AssetCommandTrust = 'none') {
     super(asset.name, vscode.TreeItemCollapsibleState.None);
     const kind = getAssetOpenKind(asset);
     this.id = `asset:${asset.bastionId}/${asset.id}`;
     this.label = asset.name;
     this.contextValue = contextValueForKind(kind);
-    this.description = assetDescription(asset, kind);
-    this.tooltip = `${asset.name}${asset.address ? ` (${asset.address})` : ''}${kind === 'mysql' ? ' - MySQL' : kind === 'redis' ? ' - Redis' : ''}`;
+    this.description = decorateDescription(assetDescription(asset, kind), trust);
+    this.tooltip = `${asset.name}${asset.address ? ` (${asset.address})` : ''}${kind === 'mysql' ? ' - MySQL' : kind === 'redis' ? ' - Redis' : ''}\n${t('Agent command trust')}: ${trustLabel(trust)}`;
     this.command = {
       command: 'jumpserverManager.connect',
       title: t('Connect'),
       arguments: [this]
     };
   }
+}
+
+function trustLabel(trust: AssetCommandTrust): string {
+  if (trust === 'policy') {
+    return t('Limited trust');
+  }
+  if (trust === 'full') {
+    return t('Full trust');
+  }
+  return t('Untrusted');
+}
+
+/** The default level stays undecorated so the tree gains no noise (design D10). */
+function decorateDescription(base: string, trust: AssetCommandTrust): string {
+  if (trust === 'none') {
+    return base;
+  }
+  const label = trustLabel(trust);
+  return base ? `${base} · ${label}` : label;
 }
 
 

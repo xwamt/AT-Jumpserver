@@ -13,6 +13,7 @@
   "atJumpServer.command.refresh.title": "JumpServer: Refresh Assets",
   "atJumpServer.command.connect.title": "JumpServer: Connect",
   "atJumpServer.command.copyHostIp.title": "Copy Host IP",
+  "atJumpServer.command.setAssetTrust.title": "JumpServer: Set Asset Trust Level",
   "atJumpServer.command.sftp.refresh.title": "JumpServer Files: Refresh",
   "atJumpServer.command.sftp.goUp.title": "JumpServer Files: Go Up",
   "atJumpServer.command.sftp.upload.title": "JumpServer Files: Upload",

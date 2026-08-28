@@ -75,7 +75,8 @@ export const AT_JUMPSERVER_TOOL_CATALOG: ToolCatalogEntry[] = [
     name: 'jumpserver_send_terminal_input',
     title: 'JumpServer Send Terminal Input',
     description:
-      'Send raw input to a connected JumpServer terminal (SSH, MySQL CLI, or Redis CLI) after confirmation.',
+      'Send raw input to a connected JumpServer terminal (SSH, MySQL CLI, or Redis CLI) after confirmation. ' +
+      'Always asks for confirmation regardless of the asset trust level.',
     risk: 'exec',
     inputSchema: {
       type: 'object',
@@ -93,7 +94,11 @@ export const AT_JUMPSERVER_TOOL_CATALOG: ToolCatalogEntry[] = [
     name: 'jumpserver_run_terminal_command',
     title: 'JumpServer Run SSH Command',
     description:
-      'Run a non-interactive command through an existing connected JumpServer SSH terminal. Output defaults to 64KB (hard max 256KB). When truncated is true, narrow the command (grep/head/tail) instead of only raising maxOutputBytes.',
+      'Run a non-interactive command through an existing connected JumpServer SSH terminal. ' +
+      'Confirmation follows the per-asset trust level: an untrusted asset always asks; under limited trust ' +
+      '@at-series/command-policy analyzes the command and skips the prompt only for a proven ordinary read ' +
+      '(allow) — review and deny verdicts still ask; a fully trusted asset never asks. ' +
+      'Output defaults to 64KB (hard max 256KB). When truncated is true, narrow the command (grep/head/tail) instead of only raising maxOutputBytes.',
     risk: 'exec',
     inputSchema: {
       type: 'object',
@@ -172,7 +177,8 @@ export const AT_JUMPSERVER_TOOL_CATALOG: ToolCatalogEntry[] = [
   {
     name: 'jumpserver_sftp_write_file',
     title: 'JumpServer SFTP Write File',
-    description: 'Write UTF-8 text to a remote file through JumpServer SFTP after confirmation.',
+    description:
+      'Write UTF-8 text to a remote file through JumpServer SFTP after confirmation unless the asset is set to full trust.',
     risk: 'write',
     inputSchema: {
       type: 'object',
@@ -193,7 +199,8 @@ export const AT_JUMPSERVER_TOOL_CATALOG: ToolCatalogEntry[] = [
   {
     name: 'jumpserver_sftp_create_file',
     title: 'JumpServer SFTP Create File',
-    description: 'Create a remote file through JumpServer SFTP after confirmation.',
+    description:
+      'Create a remote file through JumpServer SFTP after confirmation unless the asset is set to full trust.',
     risk: 'write',
     inputSchema: {
       type: 'object',
@@ -211,7 +218,7 @@ export const AT_JUMPSERVER_TOOL_CATALOG: ToolCatalogEntry[] = [
     name: 'jumpserver_sftp_create_directory',
     title: 'JumpServer SFTP Create Directory',
     description:
-      'Create a remote directory on the JumpServer SFTP session named by connectionKey, or the active session when it is omitted, after confirmation. The confirmation names the target asset and address.',
+      'Create a remote directory on the JumpServer SFTP session named by connectionKey, or the active session when it is omitted, after confirmation unless the asset is set to full trust. The confirmation names the target asset and address.',
     risk: 'write',
     inputSchema: {
       type: 'object',
@@ -223,7 +230,7 @@ export const AT_JUMPSERVER_TOOL_CATALOG: ToolCatalogEntry[] = [
     name: 'jumpserver_sftp_rename',
     title: 'JumpServer SFTP Rename',
     description:
-      'Rename a remote file or directory on the JumpServer SFTP session named by connectionKey, or the active session when it is omitted, after confirmation. The confirmation names the target asset and address.',
+      'Rename a remote file or directory on the JumpServer SFTP session named by connectionKey, or the active session when it is omitted, after confirmation unless the asset is set to full trust. The confirmation names the target asset and address.',
     risk: 'write',
     inputSchema: {
       type: 'object',
@@ -245,7 +252,7 @@ export const AT_JUMPSERVER_TOOL_CATALOG: ToolCatalogEntry[] = [
     name: 'jumpserver_sftp_delete',
     title: 'JumpServer SFTP Delete',
     description:
-      'Delete a remote file or directory on the JumpServer SFTP session named by connectionKey, or the active session when it is omitted, after confirmation. The confirmation names the target asset and address.',
+      'Delete a remote file or directory on the JumpServer SFTP session named by connectionKey, or the active session when it is omitted, after confirmation. The confirmation names the target asset and address. Every delete asks for confirmation, even on a fully trusted asset.',
     risk: 'write',
     inputSchema: {
       type: 'object',
@@ -257,7 +264,11 @@ export const AT_JUMPSERVER_TOOL_CATALOG: ToolCatalogEntry[] = [
     name: 'jumpserver_mysql_execute_sql',
     title: 'JumpServer MySQL Execute SQL',
     description:
-      'Execute SQL through an existing connected JumpServer MySQL CLI terminal. Always include LIMIT on SELECT-style queries. Output defaults to 64KB (hard max 256KB). When truncated is true, tighten LIMIT/WHERE instead of only raising maxOutputBytes.',
+      'Execute SQL through an existing connected JumpServer MySQL CLI terminal. ' +
+      'Confirmation follows the per-asset trust level: an untrusted asset always asks, even for SELECT; ' +
+      'under limited trust @at-series/command-policy analyzes the statement and skips the prompt only for ' +
+      'a proven ordinary read (allow) — review and deny verdicts still ask; a fully trusted asset never asks. ' +
+      'Always include LIMIT on SELECT-style queries. Output defaults to 64KB (hard max 256KB). When truncated is true, tighten LIMIT/WHERE instead of only raising maxOutputBytes.',
     risk: 'exec',
     inputSchema: {
       type: 'object',
@@ -284,8 +295,11 @@ export const AT_JUMPSERVER_TOOL_CATALOG: ToolCatalogEntry[] = [
     title: 'JumpServer Redis Execute Command',
     description:
       'Execute one non-blocking Redis command through an existing connected JumpServer Redis CLI terminal. ' +
+      'Confirmation follows the per-asset trust level: an untrusted asset always asks, even for read-only commands; ' +
+      'under limited trust @at-series/command-policy analyzes the command and skips the prompt only for a ' +
+      'proven ordinary read (allow) — review and deny verdicts still ask; a fully trusted asset never asks. ' +
       'Prefer narrow keys and SCAN over KEYS. Output defaults to 64KB (hard max 256KB). ' +
-      'Blocking commands (SUBSCRIBE/MONITOR/BLPOP/…) are rejected; use jumpserver_send_terminal_input for those.',
+      'Blocking commands (SUBSCRIBE/MONITOR/BLPOP/…) are rejected at every trust level, even full trust; use jumpserver_send_terminal_input for those.',
     risk: 'exec',
     inputSchema: {
       type: 'object',
