@@ -83,6 +83,27 @@ const contextConfigs = [
     bundle: true,
     target: BROWSER_TARGET,
     loader: { '.css': 'css' }
+  }),
+  // The command-policy engine ships as its own CJS bundle that extension.js
+  // loads lazily via require(join(__dirname, 'policy-runtime.js')), mirroring
+  // the mcpRuntime split so dist/extension.js stays free of policy code.
+  // banner + define are both mandatory: web-tree-sitter dereferences
+  // import.meta.url at runtime, and without them there is no build error and
+  // no runtime exception — embedded python payloads (python3 -c) just silently
+  // fail closed to review. test/package.policyBundle.test.ts guards this.
+  esbuild.context({
+    ...common,
+    entryPoints: ['src/policy-runtime/index.ts'],
+    outfile: 'dist/policy-runtime.js',
+    platform: 'node',
+    target: NODE_TARGET,
+    format: 'cjs',
+    banner: {
+      js: 'var __policyRuntimeModuleUrl = require("node:url").pathToFileURL(__filename).href;'
+    },
+    define: {
+      'import.meta.url': '__policyRuntimeModuleUrl'
+    }
   })
 ];
 
@@ -90,8 +111,12 @@ const contexts = await Promise.all(contextConfigs);
 
 if (watch) {
   await Promise.all(contexts.map((context) => context.watch()));
+  const { copyPolicyRuntimeAssets } = await import('./scripts/copy-policy-assets.mjs');
+  await copyPolicyRuntimeAssets();
   console.log('Watching AT JumpServer Terminal bundles...');
 } else {
   await Promise.all(contexts.map((context) => context.rebuild()));
   await Promise.all(contexts.map((context) => context.dispose()));
+  const { copyPolicyRuntimeAssets } = await import('./scripts/copy-policy-assets.mjs');
+  await copyPolicyRuntimeAssets();
 }

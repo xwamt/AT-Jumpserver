@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import * as vscode from 'vscode';
 import { JumpServerAgentToolService } from './agent/JumpServerAgentToolService';
 import { JumpServerConfigManager } from './config/JumpServerConfigManager';
-import type { CachedJumpServerAsset, JumpServerBastion } from './config/schema';
+import type { AssetCommandTrust, CachedJumpServerAsset, JumpServerBastion } from './config/schema';
 import { assetPathsFromNodes, JumpServerClient } from './jumpserver/JumpServerClient';
 import { JumpServerClientPool } from './jumpserver/JumpServerClientPool';
 import { createWebSessionSecretStore } from './jumpserver/webSessionStore';
@@ -108,6 +108,10 @@ export function activate(context: vscode.ExtensionContext): void {
     configManager,
     terminalContext,
     sftp: sftpManager,
+    // Trust is resolved at invoke time, never snapshotted at connect time:
+    // only the stable bastionId/assetId pair is taken from the asset, so a
+    // level changed mid-session applies to the very next MCP call.
+    resolveAssetTrust: (asset) => configManager.resolveAssetTrust(asset.bastionId, asset.id),
     confirm: async (message) => {
       const continueAction = t('Continue');
       // An unanswered modal must resolve before the hub's 120s invoke timeout
@@ -389,6 +393,27 @@ export function activate(context: vscode.ExtensionContext): void {
       }
       await runCommand(async () => {
         await vscode.env.clipboard.writeText(address);
+      });
+    }),
+    vscode.commands.registerCommand('jumpserverManager.setAssetTrust', async (item?: AssetTreeItem) => {
+      if (!item) {
+        return;
+      }
+      await runCommand(async () => {
+        const asset = item.asset;
+        const current = configManager.resolveAssetTrust(asset.bastionId, asset.id);
+        const picked = await vscode.window.showQuickPick(assetTrustQuickPickItems(current), {
+          placeHolder: t('Select trust level for {asset}', { asset: asset.name }),
+          ignoreFocusOut: true
+        });
+        if (!picked) {
+          return;
+        }
+        await configManager.setAssetTrust(asset.bastionId, asset.id, picked.level);
+        treeProvider.refresh();
+        showTimedNotification(
+          t('Trust level for {asset} is now {level}.', { asset: asset.name, level: picked.label })
+        );
       });
     }),
     vscode.commands.registerCommand('jumpserverManager.sftp.refresh', async () => {
@@ -775,6 +800,41 @@ async function createClient(
     password,
     verifyTls: bastion.verifyTls
   }, secrets ? { webSessionStore: createWebSessionSecretStore(secrets, bastionId) } : undefined);
+}
+
+/**
+ * The picked entry carries its `level`; nothing maps a localized label back
+ * to a trust value.
+ */
+function assetTrustQuickPickItems(
+  current: AssetCommandTrust
+): Array<vscode.QuickPickItem & { level: AssetCommandTrust }> {
+  const levels: Array<{ level: AssetCommandTrust; label: string; detail: string }> = [
+    {
+      level: 'none',
+      label: t('Untrusted'),
+      detail: t('Every agent command asks for confirmation.')
+    },
+    {
+      level: 'policy',
+      label: t('Limited trust'),
+      // The npm package name (at-series slash command-policy) must stay out
+      // of this literal: the policy-bundle test greps dist/extension.js for
+      // it to prove the policy runtime is not inlined into the extension.
+      detail: t('Commands are reviewed by the command policy engine; only an allow verdict skips the prompt.')
+    },
+    {
+      level: 'full',
+      label: t('Full trust'),
+      detail: t('Agent commands and SFTP writes run without prompts. Raw terminal input still asks.')
+    }
+  ];
+  return levels.map(({ level, label, detail }) => ({
+    label,
+    detail,
+    description: level === current ? t('Current') : undefined,
+    level
+  }));
 }
 
 async function runCommand(command: () => Promise<void>): Promise<void> {

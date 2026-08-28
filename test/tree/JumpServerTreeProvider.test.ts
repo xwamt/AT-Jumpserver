@@ -132,6 +132,71 @@ describe('JumpServerTreeProvider', () => {
     expect((asset as AssetTreeItem).description).toBe('Linux');
   });
 
+  it('marks non-default trust in the asset description and tooltip', async () => {
+    const provider = new JumpServerTreeProvider({
+      listBastions: async () => [b1Bastion],
+      listCachedAssets: async () => [
+        { ...shared('b1', 'a-full'), id: 'asset-1' },
+        { ...shared('b1', 'b-policy'), id: 'asset-2' },
+        { ...shared('b1', 'c-plain'), id: 'asset-3' }
+      ],
+      listCachedAssetNodes: async () => [],
+      listAssetTrustOverrides: async () => ({ 'b1/asset-1': 'full', 'b1/asset-2': 'policy' })
+    });
+    const [root] = await provider.getChildren();
+    const group = (await provider.getChildren(root))[0] as GroupTreeItem;
+    const [full, policy, plain] = await provider.getChildren(group) as AssetTreeItem[];
+
+    expect(full.description).toBe('10.0.0.10 · Full trust');
+    expect(String(full.tooltip)).toContain('Agent command trust: Full trust');
+    expect(policy.description).toBe('10.0.0.10 · Limited trust');
+    expect(String(policy.tooltip)).toContain('Agent command trust: Limited trust');
+    expect(plain.description).toBe('10.0.0.10');
+    expect(String(plain.tooltip)).toContain('Agent command trust: Untrusted');
+    // Trust never changes identity, menus, or activation.
+    expect(full.id).toBe('asset:b1/asset-1');
+    expect(full.contextValue).toBe(plain.contextValue);
+    expect(full.command).toEqual({ command: 'jumpserverManager.connect', title: 'Connect', arguments: [full] });
+    expect(full.iconPath).toBeUndefined();
+  });
+
+  it('applies trust decorations to assets attached to JumpServer nodes', async () => {
+    const provider = new JumpServerTreeProvider({
+      listBastions: async () => [b1Bastion],
+      listCachedAssetNodes: async () => [
+        { id: 'node-default', name: 'DEFAULT', path: ['DEFAULT'], assetIds: ['asset-1'], bastionId: 'b1', raw: {} }
+      ],
+      listCachedAssets: async () => [{ ...shared('b1', 'web-1'), id: 'asset-1' }],
+      listAssetTrustOverrides: async () => ({ 'b1/asset-1': 'policy' })
+    });
+    const [bastionRoot] = await provider.getChildren();
+    const [defaultNode] = await provider.getChildren(bastionRoot);
+    const [asset] = await provider.getChildren(defaultNode as GroupTreeItem) as AssetTreeItem[];
+
+    expect(asset.description).toBe('10.0.0.10 · Limited trust');
+    expect(String(asset.tooltip)).toContain('Agent command trust: Limited trust');
+  });
+
+  it('renders unchanged when the source has no trust overlay method', async () => {
+    const provider = new JumpServerTreeProvider({
+      listBastions: async () => [b1Bastion],
+      listCachedAssets: async () => assets,
+      listCachedAssetNodes: async () => []
+    });
+    const [bastionRoot] = await provider.getChildren();
+    const ops = (await provider.getChildren(bastionRoot)).find((item) => item.label === 'Ops') as GroupTreeItem;
+    const [asset] = await provider.getChildren(ops) as AssetTreeItem[];
+
+    // Byte-identical to the pre-trust rendering: no suffix, same identity.
+    expect(asset.description).toBe('Linux');
+    expect(asset.id).toBe('asset:b1/asset-3');
+    expect(asset.contextValue).toBe('jumpserverAsset');
+    expect(asset.command).toEqual({ command: 'jumpserverManager.connect', title: 'Connect', arguments: [asset] });
+    expect(asset.iconPath).toBeUndefined();
+    // The tooltip states the (default) trust level on every asset.
+    expect(asset.tooltip).toBe('ops-1\nAgent command trust: Untrusted');
+  });
+
 
   it('marks MySQL, Redis, and unsupported database assets without hiding them', () => {
     const mysql = new AssetTreeItem({
@@ -174,11 +239,11 @@ describe('JumpServerTreeProvider', () => {
     expect(getAssetOpenKind(mysql.asset)).toBe('mysql');
     expect(mysql.contextValue).toBe('jumpserverMysqlAsset');
     expect(mysql.description).toBe('db.example.com - MySQL');
-    expect(mysql.tooltip).toBe('mysql-1 (db.example.com) - MySQL');
+    expect(mysql.tooltip).toBe('mysql-1 (db.example.com) - MySQL\nAgent command trust: Untrusted');
     expect(getAssetOpenKind(redis.asset)).toBe('redis');
     expect(redis.contextValue).toBe('jumpserverRedisAsset');
     expect(redis.description).toBe('redis.example.com - Redis');
-    expect(redis.tooltip).toBe('redis-1 (redis.example.com) - Redis');
+    expect(redis.tooltip).toBe('redis-1 (redis.example.com) - Redis\nAgent command trust: Untrusted');
     expect(getAssetOpenKind(postgresql.asset)).toBe('unsupported');
     expect(postgresql.contextValue).toBe('jumpserverUnsupportedAsset');
   });

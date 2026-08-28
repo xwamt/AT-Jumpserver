@@ -13,6 +13,7 @@
   "atJumpServer.command.refresh.title": "JumpServer: 刷新资产列表",
   "atJumpServer.command.connect.title": "JumpServer: 连接终端",
   "atJumpServer.command.copyHostIp.title": "复制主机 IP",
+  "atJumpServer.command.setAssetTrust.title": "JumpServer: 设置资产信任级别",
   "atJumpServer.command.sftp.refresh.title": "JumpServer 文件: 刷新",
   "atJumpServer.command.sftp.goUp.title": "JumpServer 文件: 返回上一级",
   "atJumpServer.command.sftp.upload.title": "JumpServer 文件: 上传文件",

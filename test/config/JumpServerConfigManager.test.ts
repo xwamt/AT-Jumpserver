@@ -476,6 +476,86 @@ describe('JumpServerConfigManager', () => {
     ]);
   });
 
+  it('defaults every asset to untrusted and persists non-default levels', async () => {
+    const globalState = new MemoryMemento();
+    const manager = new JumpServerConfigManager(globalState, new MemorySecretStore());
+
+    expect(manager.resolveAssetTrust('b1', 'a1')).toBe('none');
+
+    await manager.setAssetTrust('b1', 'a1', 'full');
+    expect(manager.resolveAssetTrust('b1', 'a1')).toBe('full');
+    expect(globalState.data.get('jumpserverManager.assetTrust')).toEqual({ 'b1/a1': 'full' });
+
+    await manager.setAssetTrust('b1', 'a1', 'none');
+    expect(globalState.data.get('jumpserverManager.assetTrust')).toEqual({});
+    expect(manager.resolveAssetTrust('b1', 'a1')).toBe('none');
+  });
+
+  it('keeps trust across an asset cache refresh', async () => {
+    const manager = new JumpServerConfigManager(new MemoryMemento(), new MemorySecretStore());
+    await manager.setAssetTrust('b1', 'a1', 'policy');
+
+    await manager.saveCachedAssets('b1', [asset({ id: 'a1', bastionId: 'b1' })]);
+    await manager.saveCachedAssets('b1', []);
+
+    expect(manager.resolveAssetTrust('b1', 'a1')).toBe('policy');
+  });
+
+  it('tracks the same assetId independently on two bastions', async () => {
+    const globalState = new MemoryMemento();
+    const manager = new JumpServerConfigManager(globalState, new MemorySecretStore());
+
+    await manager.setAssetTrust('b1', 'a1', 'full');
+    await manager.setAssetTrust('b2', 'a1', 'policy');
+
+    expect(manager.resolveAssetTrust('b1', 'a1')).toBe('full');
+    expect(manager.resolveAssetTrust('b2', 'a1')).toBe('policy');
+
+    await manager.setAssetTrust('b1', 'a1', 'none');
+
+    expect(manager.resolveAssetTrust('b1', 'a1')).toBe('none');
+    expect(manager.resolveAssetTrust('b2', 'a1')).toBe('policy');
+    expect(globalState.data.get('jumpserverManager.assetTrust')).toEqual({ 'b2/a1': 'policy' });
+  });
+
+  it('deleteBastion clears only that bastion trust entries', async () => {
+    const manager = new JumpServerConfigManager(new MemoryMemento(), new MemorySecretStore());
+    await manager.saveBastion(bastion({ id: '11111111-1111-1111-1111-111111111111' }));
+    await manager.setAssetTrust('11111111-1111-1111-1111-111111111111', 'a1', 'full');
+    await manager.setAssetTrust('22222222-2222-2222-2222-222222222222', 'a1', 'full');
+
+    await manager.deleteBastion('11111111-1111-1111-1111-111111111111');
+
+    expect(manager.resolveAssetTrust('11111111-1111-1111-1111-111111111111', 'a1')).toBe('none');
+    expect(manager.resolveAssetTrust('22222222-2222-2222-2222-222222222222', 'a1')).toBe('full');
+  });
+
+  it('deleteSettings clears the whole trust overlay', async () => {
+    const globalState = new MemoryMemento();
+    const manager = new JumpServerConfigManager(globalState, new MemorySecretStore());
+    await manager.setAssetTrust('b1', 'a1', 'full');
+
+    await manager.deleteSettings();
+
+    expect(globalState.data.get('jumpserverManager.assetTrust')).toBeUndefined();
+  });
+
+  it('lists overrides optionally filtered by bastion', async () => {
+    const manager = new JumpServerConfigManager(new MemoryMemento(), new MemorySecretStore());
+    await manager.setAssetTrust('b1', 'a1', 'full');
+    await manager.setAssetTrust('b2', 'a1', 'policy');
+
+    await expect(manager.listAssetTrustOverrides()).resolves.toEqual({ 'b1/a1': 'full', 'b2/a1': 'policy' });
+    await expect(manager.listAssetTrustOverrides('b2')).resolves.toEqual({ 'b2/a1': 'policy' });
+  });
+
+  it('resolves trust from a corrupt overlay as none', () => {
+    const globalState = new MemoryMemento();
+    globalState.data.set('jumpserverManager.assetTrust', { 'b1/a1': 'yes', junk: 42 });
+    const manager = new JumpServerConfigManager(globalState, new MemorySecretStore());
+    expect(manager.resolveAssetTrust('b1', 'a1')).toBe('none');
+  });
+
   it('drops corrupt cached rows when listing after bastions already exist', async () => {
     const globalState = new MemoryMemento();
     const existing = bastion();

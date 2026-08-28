@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  assetTrustKey,
   bastionDisplayName,
+  parseAssetCommandTrust,
+  parseAssetTrustOverlay,
   parseCachedJumpServerAsset,
   parseCachedJumpServerNode,
   parseJumpServerBastion,
@@ -132,6 +135,32 @@ describe('JumpServer config schema', () => {
       assetIds: ['asset-1'],
       raw: { id: 'node-middleware' }
     });
+  });
+
+  it('parses the three trust levels and falls back to none', () => {
+    expect(parseAssetCommandTrust('none')).toBe('none');
+    expect(parseAssetCommandTrust('policy')).toBe('policy');
+    expect(parseAssetCommandTrust('full')).toBe('full');
+    expect(parseAssetCommandTrust('on')).toBe('none');
+    expect(parseAssetCommandTrust(true)).toBe('none');
+    expect(parseAssetCommandTrust(undefined)).toBe('none');
+  });
+
+  it('builds the overlay key from bastionId and assetId', () => {
+    expect(assetTrustKey('b1', 'a1')).toBe('b1/a1');
+  });
+
+  it('drops overlay entries whose value is not policy or full', () => {
+    expect(parseAssetTrustOverlay({
+      'b1/a1': 'full',
+      'b1/a2': 'policy',
+      'b1/a3': 'none',
+      'b1/a4': 'yes',
+      'b1/a5': 1
+    })).toEqual({ 'b1/a1': 'full', 'b1/a2': 'policy' });
+    expect(parseAssetTrustOverlay(undefined)).toEqual({});
+    expect(parseAssetTrustOverlay([])).toEqual({});
+    expect(parseAssetTrustOverlay('junk')).toEqual({});
   });
 
   it('removes credential-like fields from raw asset metadata', () => {

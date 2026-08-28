@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TerminalOutputBuffer } from '../../src/agent/TerminalOutputBuffer';
 import {
+  ensureSemicolon,
   MAX_TIMEOUT_MS,
   MysqlCliExecutor,
+  normalizeShellCommand,
   RedisCliExecutor,
   ShellTerminalExecutor,
   START_MARKER_GRACE_MS,
@@ -429,6 +431,44 @@ describe('TerminalExecutors', () => {
       expect(redisResult.timedOut).toBe(true);
       expect(redisResult.error).toContain('did not start executing');
     });
+  });
+
+  // Anchors for spec D7 (evaluated text ≡ executed text): the policy evaluator
+  // is fed normalizeShellCommand(command) / ensureSemicolon(sql), so the
+  // executors must embed exactly those functions' output. If wrapShellCommand
+  // or the mysql executor body drifts, these fail.
+  it('embeds exactly the normalized command that policy evaluation sees', () => {
+    const command = '  # Purpose: check\n uptime \n df -h ';
+    const normalized = normalizeShellCommand(command);
+    const wrapped = wrapShellCommand(command, undefined, 'testid');
+    expect(normalized).toBe('uptime; df -h');
+    expect(wrapped).toContain(`eval '${normalized.replaceAll("'", "'\\''")}'`);
+  });
+
+  it('mysql executor sends exactly ensureSemicolon(sql) between the markers', async () => {
+    const sql = '  SELECT 1 ';
+    expect(ensureSemicolon(sql)).toBe('SELECT 1;');
+    const output = new TerminalOutputBuffer();
+    const write = vi.fn((_input: string) => {
+      output.append('| __JMS_SQL_START_abc__ |\n');
+      output.append('| 1 |\n');
+      output.append('| __JMS_SQL_END_abc__ |\n');
+    });
+    const executor = new MysqlCliExecutor({ idFactory: () => 'abc' });
+
+    await executor.execute({
+      terminalId: 'terminal-1',
+      assetId: 'mysql-1',
+      assetName: 'mysql-1',
+      sql,
+      write,
+      output,
+      timeoutMs: 1000,
+      maxOutputBytes: 1024
+    });
+
+    const payload = write.mock.calls[0][0];
+    expect(payload.split('\n')[1]).toBe(ensureSemicolon(sql));
   });
 
   it('ignores prompt-prefixed ECHO typing and strips redis-cli redraw noise', async () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { CachedJumpServerAsset } from '../../src/config/schema';
+import type { AssetCommandTrust, CachedJumpServerAsset } from '../../src/config/schema';
 import { JumpServerAgentToolService, SFTP_MCP_READ_MAX_FILE_BYTES } from '../../src/agent/JumpServerAgentToolService';
 import { TerminalContextRegistry } from '../../src/terminal/TerminalContext';
 
@@ -458,6 +458,75 @@ describe('JumpServerAgentToolService', () => {
     expect(sftp.listDirectory).toHaveBeenCalledWith('/data', 'terminal-prod', { updateCurrentPath: false });
   });
 
+  it('fully trusted assets skip sftp write confirmations but still confirm deletes', async () => {
+    const confirm = vi.fn(async () => true);
+    const service = serviceWith({ confirm, ...withTrust('full'), sftp: sftpMockWithAsset() });
+
+    await service.sftpWriteFile({ path: '/tmp/f', content: 'x' });
+    await service.sftpCreateFile({ path: '/tmp/g' });
+    await service.sftpCreateDirectory({ path: '/tmp/d' });
+    await service.sftpRename({ oldPath: '/tmp/f', newPath: '/tmp/f2' });
+    expect(confirm).not.toHaveBeenCalled();
+
+    await service.sftpDelete({ path: '/tmp/g' });
+    expect(confirm).toHaveBeenCalledOnce();
+  });
+
+  it('untrusted and policy-trusted assets still confirm sftp writes', async () => {
+    for (const level of ['none', 'policy'] as const) {
+      const confirm = vi.fn(async () => true);
+      const service = serviceWith({ confirm, ...withTrust(level), sftp: sftpMockWithAsset() });
+      await service.sftpWriteFile({ path: '/tmp/f', content: 'x' });
+      expect(confirm).toHaveBeenCalledOnce();
+    }
+  });
+
+  it('an sftp connection without a resolvable asset stays untrusted', async () => {
+    const confirm = vi.fn(async () => true);
+    const service = serviceWith({
+      confirm,
+      ...withTrust('full'),
+      sftp: { getConnectionAsset: () => undefined }
+    });
+
+    await service.sftpWriteFile({ path: '/tmp/f', content: 'x' });
+
+    expect(confirm).toHaveBeenCalledOnce();
+  });
+
+  it('send_terminal_input confirms even under full trust', async () => {
+    const confirm = vi.fn(async () => true);
+    const service = serviceWith({ confirm, ...withTrust('full'), terminalContext: sshTerminal() });
+
+    await service.sendTerminalInput({ input: 'echo hi\n' });
+
+    expect(confirm).toHaveBeenCalledOnce();
+  });
+
+  it('reads the trust resolver at invoke time, not at connect time', async () => {
+    const levels: AssetCommandTrust[] = ['none', 'full'];
+    const confirm = vi.fn(async () => true);
+    const service = serviceWith({
+      confirm,
+      resolveAssetTrust: () => levels.shift() ?? 'full',
+      sftp: sftpMockWithAsset()
+    });
+
+    await service.sftpWriteFile({ path: '/tmp/f', content: 'x' });
+    await service.sftpWriteFile({ path: '/tmp/f', content: 'x' });
+
+    expect(confirm).toHaveBeenCalledOnce();
+  });
+
+  it('defaults to untrusted when no resolver is injected', async () => {
+    const confirm = vi.fn(async () => true);
+    const service = serviceWith({ confirm, sftp: sftpMockWithAsset() });
+
+    await service.sftpWriteFile({ path: '/tmp/f', content: 'x' });
+
+    expect(confirm).toHaveBeenCalledOnce();
+  });
+
   it('names the target asset and address in every SFTP write confirmation', async () => {
     const confirm = vi.fn(async () => true);
     const sftp = {
@@ -557,6 +626,25 @@ describe('JumpServerAgentToolService', () => {
   });
 });
 
+function withTrust(level: AssetCommandTrust) {
+  return { resolveAssetTrust: () => level };
+}
+
+function sftpMockWithAsset() {
+  return { getConnectionAsset: () => asset({ id: 'a1', bastionId: 'b1' }) };
+}
+
+function sshTerminal(): TerminalContextRegistry {
+  const terminalContext = new TerminalContextRegistry();
+  terminalContext.setActive({
+    terminalId: 'terminal-1',
+    asset: asset({ id: 'ssh-1', name: 'web-1', protocolNames: ['ssh'] }),
+    connected: true,
+    write: vi.fn()
+  });
+  return terminalContext;
+}
+
 function serviceWith(overrides: Record<string, unknown>) {
   const terminalContext = (overrides.terminalContext as TerminalContextRegistry) ?? new TerminalContextRegistry();
   if (!overrides.terminalContext) {
@@ -596,7 +684,10 @@ function serviceWith(overrides: Record<string, unknown>) {
       getConnectionAsset: () => undefined,
       ...(overrides.sftp as object)
     } as never,
-    confirm: (overrides.confirm as never) ?? vi.fn(async () => true)
+    confirm: (overrides.confirm as never) ?? vi.fn(async () => true),
+    resolveAssetTrust: overrides.resolveAssetTrust as
+      | ((target: CachedJumpServerAsset) => AssetCommandTrust)
+      | undefined
   });
 }
 

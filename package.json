@@ -79,6 +79,10 @@
         "icon": "$(copy)"
       },
       {
+        "command": "jumpserverManager.setAssetTrust",
+        "title": "%atJumpServer.command.setAssetTrust.title%"
+      },
+      {
         "command": "jumpserverManager.sftp.refresh",
         "title": "%atJumpServer.command.sftp.refresh.title%",
         "icon": "$(refresh)"
@@ -201,6 +205,11 @@
           "group": "3_copy@1"
         },
         {
+          "command": "jumpserverManager.setAssetTrust",
+          "when": "view == jumpserverManager.assets && (viewItem == jumpserverAsset || viewItem == jumpserverMysqlAsset || viewItem == jumpserverRedisAsset)",
+          "group": "2_manage@1"
+        },
+        {
           "command": "jumpserverManager.sftp.download",
           "when": "view == jumpserverManager.sftpFiles && viewItem == jumpserverSftpFile",
           "group": "transfer@2"
@@ -240,6 +249,12 @@
           "when": "view == jumpserverManager.sftpFiles && (viewItem == jumpserverSftpFile || viewItem == jumpserverSftpDirectory)",
           "group": "3_copy@1"
         }
+      ],
+      "commandPalette": [
+        {
+          "command": "jumpserverManager.setAssetTrust",
+          "when": "false"
+        }
       ]
     },
     "configuration": {
@@ -274,8 +289,9 @@
   },
   "scripts": {
     "copy:hub": "node scripts/copy-hub.mjs",
+    "copy:policy-assets": "node scripts/copy-policy-assets.mjs",
     "sync:l10n": "node scripts/sync-l10n-aliases.mjs",
-    "build": "npm run sync:l10n && node esbuild.config.mjs && npm run copy:hub",
+    "build": "npm run sync:l10n && node esbuild.config.mjs && npm run copy:hub && npm run copy:policy-assets",
     "probe:sftp": "node tools/probe-jumpserver-sftp.mjs",
     "watch": "node esbuild.config.mjs --watch",
     "typecheck": "tsc --noEmit",
@@ -284,6 +300,7 @@
     "package": "npm run build && npx @vscode/vsce package --no-dependencies --allow-missing-repository --no-rewrite-relative-links"
   },
   "dependencies": {
+    "@at-series/command-policy": "0.1.1",
     "@at-series/mcp-hub": "^0.3.2",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/addon-web-links": "^0.11.0",

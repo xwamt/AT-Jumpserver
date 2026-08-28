@@ -1,5 +1,5 @@
 import type { JumpServerConfigManager } from '../config/JumpServerConfigManager';
-import { bastionDisplayName, type CachedJumpServerAsset } from '../config/schema';
+import { bastionDisplayName, type AssetCommandTrust, type CachedJumpServerAsset } from '../config/schema';
 import { getAssetConnectionKind } from '../jumpserver/connectionTypes';
 import type { JumpServerSftpManager } from '../sftp/JumpServerSftpManager';
 import type { JumpServerSftpEntry } from '../sftp/SftpTypes';
@@ -17,6 +17,12 @@ export interface JumpServerAgentToolServiceDependencies {
     | 'getConnectionAsset'
   >;
   confirm(message: string): Promise<boolean>;
+  /**
+   * Per-asset command trust resolver, provided by the trust-mode design.
+   * Read at every invoke, never snapshotted; absent means every asset is
+   * untrusted ('none', the strictest level).
+   */
+  resolveAssetTrust?: (asset: CachedJumpServerAsset) => AssetCommandTrust;
   shellExecutor?: ShellTerminalExecutor;
   mysqlExecutor?: MysqlCliExecutor;
 }
@@ -196,13 +202,13 @@ export class JumpServerAgentToolService {
     content: string;
     overwrite?: boolean;
   }) {
-    await this.requireConfirm(`Write JumpServer SFTP file ${input.path} on ${this.sftpTarget(input)}?`);
+    await this.requireSftpWriteConfirm(input, `Write JumpServer SFTP file ${input.path} on ${this.sftpTarget(input)}?`);
     await this.dependencies.sftp.writeFile(input.path, Buffer.from(input.content, 'utf8'), connectionKeyOf(input));
     return { path: input.path, bytesWritten: Buffer.byteLength(input.content, 'utf8') };
   }
 
   async sftpCreateFile(input: { connectionKey?: string; terminalId?: string; path: string; content?: string }) {
-    await this.requireConfirm(`Create JumpServer SFTP file ${input.path} on ${this.sftpTarget(input)}?`);
+    await this.requireSftpWriteConfirm(input, `Create JumpServer SFTP file ${input.path} on ${this.sftpTarget(input)}?`);
     if (input.content === undefined) {
       await this.dependencies.sftp.createFile(input.path, connectionKeyOf(input));
     } else {
@@ -212,13 +218,14 @@ export class JumpServerAgentToolService {
   }
 
   async sftpCreateDirectory(input: { connectionKey?: string; terminalId?: string; path: string }) {
-    await this.requireConfirm(`Create JumpServer SFTP directory ${input.path} on ${this.sftpTarget(input)}?`);
+    await this.requireSftpWriteConfirm(input, `Create JumpServer SFTP directory ${input.path} on ${this.sftpTarget(input)}?`);
     await this.dependencies.sftp.mkdir(input.path, connectionKeyOf(input));
     return { path: input.path };
   }
 
   async sftpRename(input: { connectionKey?: string; terminalId?: string; oldPath: string; newPath: string }) {
-    await this.requireConfirm(
+    await this.requireSftpWriteConfirm(
+      input,
       `Rename JumpServer SFTP path ${input.oldPath} to ${input.newPath} on ${this.sftpTarget(input)}?`
     );
     await this.dependencies.sftp.rename(input.oldPath, input.newPath, connectionKeyOf(input));
@@ -346,6 +353,28 @@ export class JumpServerAgentToolService {
     if (!await this.dependencies.confirm(message)) {
       throw new Error('JumpServer operation was cancelled.');
     }
+  }
+
+  private trustOf(asset: CachedJumpServerAsset): AssetCommandTrust {
+    return this.dependencies.resolveAssetTrust?.(asset) ?? 'none';
+  }
+
+  /**
+   * Confirmation gate for the SFTP write family (write / create file /
+   * create directory / rename): only a fully trusted asset skips the prompt,
+   * mirroring At-Terminal's shouldAutoApproveSftpWrite. A connection whose
+   * asset cannot be resolved is treated as untrusted. Deletes never use this
+   * gate — sftpDelete confirms at every trust level.
+   */
+  private async requireSftpWriteConfirm(
+    input: { connectionKey?: string; terminalId?: string },
+    message: string
+  ): Promise<void> {
+    const asset = this.dependencies.sftp.getConnectionAsset(connectionKeyOf(input));
+    if (asset && this.trustOf(asset) === 'full') {
+      return;
+    }
+    await this.requireConfirm(message);
   }
 }
 

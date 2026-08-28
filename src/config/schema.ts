@@ -113,6 +113,38 @@ export function parseCachedJumpServerNodes(value: unknown): CachedJumpServerNode
   return cachedJumpServerNodeListSchema.parse(value);
 }
 
+export const ASSET_COMMAND_TRUST_LEVELS = ['none', 'policy', 'full'] as const;
+export type AssetCommandTrust = (typeof ASSET_COMMAND_TRUST_LEVELS)[number];
+
+export function parseAssetCommandTrust(value: unknown): AssetCommandTrust {
+  return ASSET_COMMAND_TRUST_LEVELS.includes(value as AssetCommandTrust)
+    ? (value as AssetCommandTrust)
+    : 'none';
+}
+
+/** Composite overlay key. bastionId / assetId are UUIDs, so neither contains '/'. */
+export function assetTrustKey(bastionId: string, assetId: string): string {
+  return `${bastionId}/${assetId}`;
+}
+
+/**
+ * Defensively parse the whole trust overlay: entries whose value is not
+ * 'policy' | 'full' are dropped ('none' is never persisted; corrupt entries
+ * fall back to untrusted, mirroring the drop-row policy of parseCachedRows).
+ */
+export function parseAssetTrustOverlay(value: unknown): Record<string, 'policy' | 'full'> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {};
+  }
+  const result: Record<string, 'policy' | 'full'> = {};
+  for (const [key, trust] of Object.entries(value)) {
+    if (trust === 'policy' || trust === 'full') {
+      result[key] = trust;
+    }
+  }
+  return result;
+}
+
 export function sanitizeCachedAssetRaw(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return {};

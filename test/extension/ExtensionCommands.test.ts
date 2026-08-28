@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as vscode from 'vscode';
 
 const terminalPanelMock = vi.hoisted(() => ({
@@ -1038,6 +1038,12 @@ describe('extension command wiring', () => {
     expect(jumpServerClientMock.JumpServerClient).toHaveBeenCalledTimes(2);
   });
 
+  it('registers the set asset trust command', () => {
+    activate(contextWithSettings());
+
+    expect(vscode.commands.registerCommand).toHaveBeenCalledWith('jumpserverManager.setAssetTrust', expect.any(Function));
+  });
+
   it('shares the bastion client with the SFTP session factory', async () => {
     let createSession: ((asset: CachedJumpServerAsset) => Promise<unknown>) | undefined;
     sftpManagerMock.JumpServerSftpManager.mockImplementation((options: {
@@ -1070,5 +1076,119 @@ describe('extension command wiring', () => {
     await createSession?.(sshAsset());
 
     expect(jumpServerClientMock.JumpServerClient).toHaveBeenCalledTimes(1);
+  });
+});
+
+type AssetCommandTrust = 'none' | 'policy' | 'full';
+
+type TrustQuickPickItem = { label: string; description?: string; level: AssetCommandTrust };
+
+describe('setAssetTrust command', () => {
+  // The trust storage API belongs to JumpServerConfigManager (sibling storage
+  // task). The command reaches it defensively, so the tests provide it on the
+  // prototype -- and restore whatever was there in case the real methods have
+  // already landed.
+  const prototype = JumpServerConfigManager.prototype as unknown as {
+    resolveAssetTrust?: (bastionId: string, assetId: string) => AssetCommandTrust;
+    setAssetTrust?: (bastionId: string, assetId: string, trust: AssetCommandTrust) => Promise<void>;
+  };
+  const originalResolveAssetTrust = prototype.resolveAssetTrust;
+  const originalSetAssetTrust = prototype.setAssetTrust;
+  const resolveAssetTrust = vi.fn<(bastionId: string, assetId: string) => AssetCommandTrust>();
+  const setAssetTrust = vi.fn(async () => {});
+
+  beforeEach(() => {
+    resolveAssetTrust.mockReset().mockReturnValue('none');
+    setAssetTrust.mockReset().mockResolvedValue(undefined);
+    prototype.resolveAssetTrust = resolveAssetTrust;
+    prototype.setAssetTrust = setAssetTrust;
+  });
+
+  afterEach(() => {
+    if (originalResolveAssetTrust) {
+      prototype.resolveAssetTrust = originalResolveAssetTrust;
+    } else {
+      delete prototype.resolveAssetTrust;
+    }
+    if (originalSetAssetTrust) {
+      prototype.setAssetTrust = originalSetAssetTrust;
+    } else {
+      delete prototype.setAssetTrust;
+    }
+  });
+
+  function assetsTreeDataProvider(): {
+    onDidChangeTreeData: (listener: (event: unknown) => void) => { dispose(): void };
+  } {
+    const call = vi.mocked(vscode.window.createTreeView).mock.calls.find(
+      ([viewId]) => viewId === 'jumpserverManager.assets'
+    );
+    return (call?.[1] as unknown as {
+      treeDataProvider: { onDidChangeTreeData: (listener: (event: unknown) => void) => { dispose(): void } };
+    }).treeDataProvider;
+  }
+
+  function lastQuickPickItems(): TrustQuickPickItem[] {
+    return vi.mocked(vscode.window.showQuickPick).mock.calls.at(-1)?.[0] as unknown as TrustQuickPickItem[];
+  }
+
+  it('writes the picked level and refreshes the tree', async () => {
+    activate(contextWithBastions([prodBastion()]));
+    const refreshed = vi.fn();
+    assetsTreeDataProvider().onDidChangeTreeData(refreshed);
+    vi.mocked(vscode.window.showQuickPick).mockImplementationOnce(async (items) =>
+      (items as unknown as TrustQuickPickItem[]).find((item) => item.level === 'full') as never
+    );
+
+    await registeredCommand('jumpserverManager.setAssetTrust')(new AssetTreeItem(sshAsset()));
+
+    expect(setAssetTrust).toHaveBeenCalledWith(PROD_BASTION_ID, 'server-1', 'full');
+    expect(refreshed).toHaveBeenCalled();
+    expect(notificationsMock.showTimedNotification).toHaveBeenCalledWith(
+      'Trust level for uat-service is now Full trust.'
+    );
+  });
+
+  it('does nothing when the QuickPick is dismissed', async () => {
+    activate(contextWithBastions([prodBastion()]));
+    const refreshed = vi.fn();
+    assetsTreeDataProvider().onDidChangeTreeData(refreshed);
+    vi.mocked(vscode.window.showQuickPick).mockResolvedValueOnce(undefined);
+
+    await registeredCommand('jumpserverManager.setAssetTrust')(new AssetTreeItem(sshAsset()));
+
+    expect(vscode.window.showQuickPick).toHaveBeenCalledTimes(1);
+    expect(setAssetTrust).not.toHaveBeenCalled();
+    expect(refreshed).not.toHaveBeenCalled();
+    expect(notificationsMock.showTimedNotification).not.toHaveBeenCalled();
+  });
+
+  it('does nothing when invoked without a tree item', async () => {
+    activate(contextWithBastions([prodBastion()]));
+
+    await registeredCommand('jumpserverManager.setAssetTrust')(undefined);
+
+    expect(vscode.window.showQuickPick).not.toHaveBeenCalled();
+    expect(setAssetTrust).not.toHaveBeenCalled();
+  });
+
+  it('marks the current level in the QuickPick and names the asset in the placeholder', async () => {
+    resolveAssetTrust.mockReturnValue('policy');
+    activate(contextWithBastions([prodBastion()]));
+    vi.mocked(vscode.window.showQuickPick).mockResolvedValueOnce(undefined);
+
+    await registeredCommand('jumpserverManager.setAssetTrust')(new AssetTreeItem(sshAsset()));
+
+    expect(resolveAssetTrust).toHaveBeenCalledWith(PROD_BASTION_ID, 'server-1');
+    const items = lastQuickPickItems();
+    expect(items.map((item) => item.level)).toEqual(['none', 'policy', 'full']);
+    expect(items.map((item) => item.label)).toEqual(['Untrusted', 'Limited trust', 'Full trust']);
+    expect(items.find((item) => item.level === 'policy')?.description).toBe('Current');
+    for (const item of items.filter((entry) => entry.level !== 'policy')) {
+      expect(item.description ?? '').not.toContain('Current');
+    }
+    expect(vi.mocked(vscode.window.showQuickPick).mock.calls.at(-1)?.[1]).toMatchObject({
+      placeHolder: 'Select trust level for uat-service'
+    });
   });
 });

@@ -23,6 +23,7 @@ describe('AT JumpServer Terminal manifest', () => {
       'jumpserverManager.refresh',
       'jumpserverManager.connect',
       'jumpserverManager.copyHostIp',
+      'jumpserverManager.setAssetTrust',
       'jumpserverManager.sftp.refresh',
       'jumpserverManager.sftp.goUp',
       'jumpserverManager.sftp.upload',
@@ -144,9 +145,42 @@ describe('AT JumpServer Terminal manifest', () => {
 
     expect(assetMenus.map((item: { command: string }) => item.command)).toEqual([
       'jumpserverManager.connect',
-      'jumpserverManager.copyHostIp'
+      'jumpserverManager.copyHostIp',
+      'jumpserverManager.setAssetTrust'
     ]);
     expect(JSON.stringify(manifest)).not.toContain('jumpserverManager.sftp.open');
+  });
+
+  it('offers Set Asset Trust on connectable assets only, hidden from the palette', () => {
+    expect(manifest.contributes.commands).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        command: 'jumpserverManager.setAssetTrust',
+        title: '%atJumpServer.command.setAssetTrust.title%'
+      })
+    ]));
+
+    const menu = manifest.contributes.menus['view/item/context'].find(
+      (item: { command: string }) => item.command === 'jumpserverManager.setAssetTrust'
+    );
+    expect(menu).toMatchObject({ group: '2_manage@1' });
+    expect(menu.when).toContain('view == jumpserverManager.assets');
+    expect(menu.when).toContain('viewItem == jumpserverAsset');
+    expect(menu.when).toContain('viewItem == jumpserverMysqlAsset');
+    expect(menu.when).toContain('viewItem == jumpserverRedisAsset');
+    // An unsupported asset has no MCP execution surface; trust would be noise.
+    expect(menu.when).not.toContain('jumpserverUnsupportedAsset');
+
+    const palette = manifest.contributes.menus.commandPalette.find(
+      (item: { command: string }) => item.command === 'jumpserverManager.setAssetTrust'
+    );
+    expect(palette).toEqual({ command: 'jumpserverManager.setAssetTrust', when: 'false' });
+  });
+
+  it('titles Set Asset Trust in both nls languages', () => {
+    const english = JSON.parse(readFileSync(join(__dirname, '..', 'package.nls.json'), 'utf8'));
+    const chinese = JSON.parse(readFileSync(join(__dirname, '..', 'package.nls.zh-cn.json'), 'utf8'));
+    expect(english['atJumpServer.command.setAssetTrust.title']).toBe('JumpServer: Set Asset Trust Level');
+    expect(chinese['atJumpServer.command.setAssetTrust.title']).toBe('JumpServer: 设置资产信任级别');
   });
 
   it('shows bastion actions when the tree item is a JumpServer bastion', () => {

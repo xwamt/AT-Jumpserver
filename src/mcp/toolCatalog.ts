@@ -75,7 +75,8 @@ export const AT_JUMPSERVER_TOOL_CATALOG: ToolCatalogEntry[] = [
     name: 'jumpserver_send_terminal_input',
     title: 'JumpServer Send Terminal Input',
     description:
-      'Send raw input to a connected JumpServer terminal (SSH, MySQL CLI, or Redis CLI) after confirmation.',
+      'Send raw input to a connected JumpServer terminal (SSH, MySQL CLI, or Redis CLI) after confirmation. ' +
+      'Always asks for confirmation regardless of the asset trust level.',
     risk: 'exec',
     inputSchema: {
       type: 'object',
@@ -172,7 +173,8 @@ export const AT_JUMPSERVER_TOOL_CATALOG: ToolCatalogEntry[] = [
   {
     name: 'jumpserver_sftp_write_file',
     title: 'JumpServer SFTP Write File',
-    description: 'Write UTF-8 text to a remote file through JumpServer SFTP after confirmation.',
+    description:
+      'Write UTF-8 text to a remote file through JumpServer SFTP after confirmation unless the asset is set to full trust.',
     risk: 'write',
     inputSchema: {
       type: 'object',
@@ -193,7 +195,8 @@ export const AT_JUMPSERVER_TOOL_CATALOG: ToolCatalogEntry[] = [
   {
     name: 'jumpserver_sftp_create_file',
     title: 'JumpServer SFTP Create File',
-    description: 'Create a remote file through JumpServer SFTP after confirmation.',
+    description:
+      'Create a remote file through JumpServer SFTP after confirmation unless the asset is set to full trust.',
     risk: 'write',
     inputSchema: {
       type: 'object',
@@ -211,7 +214,7 @@ export const AT_JUMPSERVER_TOOL_CATALOG: ToolCatalogEntry[] = [
     name: 'jumpserver_sftp_create_directory',
     title: 'JumpServer SFTP Create Directory',
     description:
-      'Create a remote directory on the JumpServer SFTP session named by connectionKey, or the active session when it is omitted, after confirmation. The confirmation names the target asset and address.',
+      'Create a remote directory on the JumpServer SFTP session named by connectionKey, or the active session when it is omitted, after confirmation unless the asset is set to full trust. The confirmation names the target asset and address.',
     risk: 'write',
     inputSchema: {
       type: 'object',
@@ -223,7 +226,7 @@ export const AT_JUMPSERVER_TOOL_CATALOG: ToolCatalogEntry[] = [
     name: 'jumpserver_sftp_rename',
     title: 'JumpServer SFTP Rename',
     description:
-      'Rename a remote file or directory on the JumpServer SFTP session named by connectionKey, or the active session when it is omitted, after confirmation. The confirmation names the target asset and address.',
+      'Rename a remote file or directory on the JumpServer SFTP session named by connectionKey, or the active session when it is omitted, after confirmation unless the asset is set to full trust. The confirmation names the target asset and address.',
     risk: 'write',
     inputSchema: {
       type: 'object',
@@ -245,7 +248,7 @@ export const AT_JUMPSERVER_TOOL_CATALOG: ToolCatalogEntry[] = [
     name: 'jumpserver_sftp_delete',
     title: 'JumpServer SFTP Delete',
     description:
-      'Delete a remote file or directory on the JumpServer SFTP session named by connectionKey, or the active session when it is omitted, after confirmation. The confirmation names the target asset and address.',
+      'Delete a remote file or directory on the JumpServer SFTP session named by connectionKey, or the active session when it is omitted, after confirmation. The confirmation names the target asset and address. Every delete asks for confirmation, even on a fully trusted asset.',
     risk: 'write',
     inputSchema: {
       type: 'object',
