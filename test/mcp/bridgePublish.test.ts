@@ -128,7 +128,7 @@ describe('BridgeServer FsBridgePublisher', () => {
 
       // Idle intervals with the same connectedTargets must not touch disk:
       // the hub's fs.watch would fire on every rewrite of an unchanged record.
-      await vi.advanceTimersByTimeAsync(3 * 30_000);
+      await vi.advanceTimersByTimeAsync(30_000);
       expect(heartbeat).not.toHaveBeenCalled();
 
       // A target change is written on the very next tick.
@@ -142,7 +142,7 @@ describe('BridgeServer FsBridgePublisher', () => {
 
       // Unchanged again: silent until the forced-write interval elapses, then
       // exactly one safety write goes out even though nothing changed.
-      await vi.advanceTimersByTimeAsync(2 * 30_000);
+      await vi.advanceTimersByTimeAsync(30_000);
       expect(heartbeat).toHaveBeenCalledTimes(1);
       await vi.advanceTimersByTimeAsync(BRIDGE_HEARTBEAT_FORCE_WRITE_INTERVAL_MS);
       expect(heartbeat).toHaveBeenCalledTimes(2);

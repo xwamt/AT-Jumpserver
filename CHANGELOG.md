@@ -4,6 +4,45 @@
 
 ---
 
+## [v0.2.0] - 2026-08-31
+
+**命令策略体系集成、全链路性能大幅提速与 0.2.0 正式发布！⚡️**
+
+本版本正式引入 **AT Series 命令策略与资产信任体系**，对 AI Agent 及终端操作实现精细化安全守护；同时对 JumpServer 连接会话、SFTP 传输协议、MCP Bridge 心跳机制及前端终端渲染进行了全链路深度性能优化，大幅降低操作延迟与系统资源开销。
+
+### 🌟 核心特性与功能亮点
+
+#### 1. 命令策略与资产信任体系 (Command Policy & Asset Trust)
+- **命令策略运行时集成**：深度集成 `@at-series/command-policy`，为 JumpServer 运维操作提供统一的规则校验与命令拦截引擎。
+- **资产信任覆盖层 (Asset Trust Overlay)**：支持区分受信任资产与普通资产，细化安全防御粒度。
+- **执行工具安全门禁 (Tool Trust Gating)**：
+  - 对 `jumpserver_ssh_execute_command`、`jumpserver_mysql_execute_sql` 和 `jumpserver_redis_execute_command` 三大执行工具统一接入策略判断。
+  - 只读及白名单安全操作自动放行，敏感写操作与高危指令强制二次确认，兼顾 AI 自动化效率与生产安全底线。
+
+#### 2. JumpServer 会话与连接全链路提速 (Connection & Session Performance)
+- **HTTP 连接池复用 (Keep-Alive Agent)**：REST API 全面启用持久连接复用，消除频繁创建 TLS 握手开销。
+- **KoKo 会话持久化与并行连接**：优化 KoKo WebSocket 握手流程，持久化认证会话，连接耗时从数秒级优化至毫秒级。
+- **并发请求去重与防抖**：合并处理中的 in-flight 资产详情与组织请求，避免短时间重复查询。
+- **及时断开与套接字垃圾回收**：及时清理丢弃无效与超时的 in-flight 套接字，防止资源泄露。
+
+#### 3. SFTP 传输与文件操作深度优化 (SFTP Performance & Protocol Enhancements)
+- **大文件分块上传与流控**：SFTP 上传支持动态分块传输，提升大文件传输吞吐并降低内存占用。
+- **指令执行串行化**：严格保证底层 SFTP 指令的时序安全性，杜绝并发调用导致的协议错乱。
+- **工作目录隔离保护**：修复 MCP 文件浏览操作意外改变 SFTP 当前工作目录 (`cwd`) 的问题。
+- **草稿流复用与旁路刷新**：远程文件编辑直接复用预览阶段已拉取的字节流，支持缓存旁路（Cache-Bypass）手动强制刷新。
+
+#### 4. MCP Bridge 与心跳优化 (MCP Bridge & Hub Synchronization)
+- **MCP Hub 依赖升级**：全面升级至 `@at-series/mcp-hub@0.3.3`。
+- **空闲同步与心跳防抖**：目标无变更时跳过冗余 Hub 同步；优化 Bridge 强制写盘心跳机制（1分钟保活周期），避免触发无谓的文件监听重绘。
+- **过期 Bridge 自动 GC**：自动检测并清理失效的 stale bridge 实例与残留数据。
+
+#### 5. UI 与终端渲染性能优化 (UI & Terminal Rendering Optimization)
+- **精简资产解析缓存**：移除无用的资产 Raw Cache，配置保存改为完全非阻塞异步处理。
+- **增量 Marker 扫描**：命令输出截获算法升级为增量扫描匹配，大幅降低长输出场景下的 CPU 占用。
+- **CSS 斑马纹渲染**：使用原生 CSS zebra 替代复杂 DOM 计算，显著提升资产列表与终端滚动流畅度。
+
+---
+
 ## [v0.1.9] - 2026-08-21
 
 **多堡垒管理与连接加速发布！🚀**

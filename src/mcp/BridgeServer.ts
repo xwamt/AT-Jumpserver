@@ -45,7 +45,7 @@ const BRIDGE_HEARTBEAT_INTERVAL_MS = 30_000;
  * a safety net for consumers that read the timestamp instead of probing
  * `/health`.
  */
-export const BRIDGE_HEARTBEAT_FORCE_WRITE_INTERVAL_MS = 5 * 60_000;
+export const BRIDGE_HEARTBEAT_FORCE_WRITE_INTERVAL_MS = 60_000;
 
 /** Deadline for a client to deliver a whole request; not a response deadline. */
 const BRIDGE_REQUEST_TIMEOUT_MS = 30_000;
