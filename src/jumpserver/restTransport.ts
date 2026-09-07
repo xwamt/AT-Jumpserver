@@ -3,6 +3,8 @@ import { request as httpsRequest, type Agent as HttpsAgent, type RequestOptions 
 
 export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 
+export const JUMPSERVER_CLIENT_USER_AGENT = 'AT-JumpServer/1.0';
+
 const NULL_BODY_STATUSES = new Set([204, 205, 304]);
 
 /**
@@ -122,6 +124,9 @@ function toOutgoingHeaders(headers: HeadersInit | undefined, body: Buffer | unde
       : Object.entries(headers ?? {});
   for (const [name, value] of entries) {
     record[name] = value;
+  }
+  if (!Object.keys(record).some((name) => name.toLowerCase() === 'user-agent')) {
+    record['User-Agent'] = JUMPSERVER_CLIENT_USER_AGENT;
   }
   if (body && !Object.keys(record).some((name) => name.toLowerCase() === 'content-length')) {
     record['content-length'] = String(body.byteLength);

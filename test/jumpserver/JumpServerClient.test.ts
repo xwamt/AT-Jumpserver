@@ -1452,6 +1452,40 @@ describe('JumpServerClient REST flow', () => {
     );
   });
 
+  it('sends an AT-JumpServer User-Agent header on REST calls for AWS WAF compatibility', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ token: 'bearer-1' }))
+      .mockResolvedValueOnce(jsonResponse({ id: 'user-1' }));
+    const client = new JumpServerClient({
+      baseUrl: 'https://jumpserver.example.com',
+      orgId: '',
+      username: 'alan',
+      password: 'secret',
+      verifyTls: true
+    }, fetchMock);
+
+    await client.getUserProfile();
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      'https://jumpserver.example.com/api/v1/authentication/auth/',
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          'User-Agent': 'AT-JumpServer/1.0'
+        })
+      })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      'https://jumpserver.example.com/api/v1/users/profile/',
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          'User-Agent': 'AT-JumpServer/1.0'
+        })
+      })
+    );
+  });
+
   it('retries auth as form-urlencoded when JSON does not return a token', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(jsonResponse({ detail: 'Unsupported media type' }, { status: 415 }))

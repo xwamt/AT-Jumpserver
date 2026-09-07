@@ -69,6 +69,30 @@ describe('createJumpServerFetch', () => {
     ]);
   });
 
+  it('sends a User-Agent so AWS WAF NoUserAgent_HEADER does not block the request', async () => {
+    const server = await serveHttp((req, res) => {
+      expect(req.headers['user-agent']).toBe('AT-JumpServer/1.0');
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{}');
+    });
+
+    const response = await createJumpServerFetch({ verifyTls: true })(`${server.url}/api/v1/ping/`);
+    expect(response.status).toBe(200);
+  });
+
+  it('preserves caller-supplied User-Agent when present', async () => {
+    const server = await serveHttp((req, res) => {
+      expect(req.headers['user-agent']).toBe('Custom-Agent/2.0');
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{}');
+    });
+
+    const response = await createJumpServerFetch({ verifyTls: true })(`${server.url}/api/v1/ping/`, {
+      headers: { 'User-Agent': 'Custom-Agent/2.0' }
+    });
+    expect(response.status).toBe(200);
+  });
+
   it('sends requests through a caller-provided keep-alive agent', async () => {
     const server = await serveHttps((_req, res) => {
       res.writeHead(200, { 'content-type': 'application/json' });

@@ -4,7 +4,7 @@ import { log } from '../utils/logger';
 import { apiErrorMessageFromPayload, classifyRestFailure, JumpServerApiError } from './apiError';
 import { buildSelfAssetListPath, pageSignature, rewritePaginationRef, throttleWaitMs } from './pagination';
 import { GLOBAL_ORG_ID, type JumpServerOrg } from './orgs';
-import { createJumpServerFetch, type FetchLike } from './restTransport';
+import { createJumpServerFetch, type FetchLike, JUMPSERVER_CLIENT_USER_AGENT } from './restTransport';
 import { buildOrigin } from './urls';
 import { Agent as HttpsAgent } from 'node:https';
 import WebSocket from 'ws';
@@ -82,6 +82,7 @@ export interface JumpServerWebSessionStore {
 export const ASSET_DETAIL_CACHE_LIMIT = 64;
 
 export { classifyRestFailure, JumpServerApiError } from './apiError';
+export { JUMPSERVER_CLIENT_USER_AGENT } from './restTransport';
 export { buildOrigin } from './urls';
 
 export function rfc1123Date(now = new Date()): string {
@@ -1339,7 +1340,8 @@ export class JumpServerClient {
     const headers: Record<string, string> = {
       Authorization: `Bearer ${this.authToken}`,
       Accept: 'application/json',
-      Date: rfc1123Date()
+      Date: rfc1123Date(),
+      'User-Agent': JUMPSERVER_CLIENT_USER_AGENT
     };
     if (this.orgId) {
       headers['X-JMS-ORG'] = this.orgId;
@@ -1532,6 +1534,9 @@ export class JumpServerClient {
     }
     if (!hasHeader(headers, 'Date')) {
       headers.Date = rfc1123Date();
+    }
+    if (!hasHeader(headers, 'User-Agent')) {
+      headers['User-Agent'] = JUMPSERVER_CLIENT_USER_AGENT;
     }
     const response = await withDeadline(
       (signal) => this.fetchImpl(url, { ...init, headers, signal }),
