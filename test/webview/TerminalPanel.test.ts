@@ -477,7 +477,7 @@ describe('TerminalPanel rendering helpers', () => {
 
     const lastInput = sessionInputs[sessionInputs.length - 1] as any;
     expect(lastInput.onTokenReady).toBeDefined();
-    lastInput.onTokenReady('tok-active-1', 'ssh');
+    lastInput.onTokenReady('tok-active-1', { reusable: true, kind: 'ssh' });
 
     await flushPromises();
 

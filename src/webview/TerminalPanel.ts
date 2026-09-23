@@ -331,10 +331,25 @@ export class TerminalPanel {
       asset: this.asset,
       connectionKind: this.connectionKind,
       client: this.jumpServerClient,
-      onTokenReady: (tokenId) => {
-        if (generation === this.connectionGeneration) {
+      onTokenReady: (tokenId, info) => {
+        if (generation === this.connectionGeneration && info?.reusable) {
           this.currentTokenId = tokenId;
         }
+      },
+      resolveInputAccount: async (asset) => {
+        const username = await vscode.window.showInputBox({
+          prompt: `Enter username for @INPUT account on ${asset.name}`,
+          ignoreFocusOut: true
+        });
+        if (!username) {
+          return undefined;
+        }
+        const password = await vscode.window.showInputBox({
+          prompt: `Enter password for ${username} on ${asset.name}`,
+          password: true,
+          ignoreFocusOut: true
+        });
+        return { username, password };
       },
       events: {
         output: (data) => {

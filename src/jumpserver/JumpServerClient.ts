@@ -552,7 +552,7 @@ export function buildSftpConnectionTokenPayload(input: {
       asset: input.assetId,
       account: input.account.alias,
       protocol: 'sftp',
-      connect_method: input.connectMethod || 'sftp',
+      connect_method: input.connectMethod || 'web_sftp',
       connect_options: DEFAULT_SFTP_CONNECT_OPTIONS
     };
     if (input.account.alias === '@INPUT') {
@@ -568,7 +568,7 @@ export function buildSftpConnectionTokenPayload(input: {
     protocol: 'sftp',
     input_username: input.account.username,
     input_secret: '',
-    connect_method: input.connectMethod || 'sftp',
+    connect_method: input.connectMethod || 'web_sftp',
     connect_options: DEFAULT_SFTP_CONNECT_OPTIONS
   };
 }
@@ -754,6 +754,7 @@ export class JumpServerClient {
   private webSessionRestore: Promise<void> | undefined;
   private webSessionInflight: Promise<void> | undefined;
   private readonly kokoBearerHandshake: boolean;
+  private bastionId?: string;
   private readonly ticketCache = new Map<string, { ticket: string; tokenId: string; expiresAt: number }>();
   private readonly ticketInflight = new Map<string, Promise<string>>();
   /** Django warmup share of the most recent openKoko*WebSocket call. */
@@ -766,9 +767,10 @@ export class JumpServerClient {
       sleep?: (ms: number) => Promise<void>;
       webSessionStore?: JumpServerWebSessionStore;
       kokoBearerHandshake?: boolean;
+      bastionId?: string;
     } = {}
   ) {
-    const { sleep, webSessionStore, kokoBearerHandshake, ...timeouts } = options;
+    const { sleep, webSessionStore, kokoBearerHandshake, bastionId, ...timeouts } = options;
     if (fetchImpl) {
       this.fetchImpl = fetchImpl;
     } else {
@@ -781,9 +783,18 @@ export class JumpServerClient {
     this.sleep = sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.orgId = settings.orgId;
     this.kokoBearerHandshake = Boolean(kokoBearerHandshake);
+    this.bastionId = bastionId;
     if (webSessionStore) {
       this.attachWebSessionStore(webSessionStore);
     }
+  }
+
+  getBastionId(): string | undefined {
+    return this.bastionId;
+  }
+
+  setBastionId(bastionId: string): void {
+    this.bastionId = bastionId;
   }
 
   /**
@@ -1253,7 +1264,7 @@ export class JumpServerClient {
     }
   }
 
-  async getConnectMethods(protocol?: string): Promise<Record<string, ConnectMethod[]>> {
+  async getConnectMethods(): Promise<Record<string, ConnectMethod[]>> {
     const now = Date.now();
     if (this.connectMethodsCache && this.connectMethodsCache.expiresAt > now) {
       return this.connectMethodsCache.methods;
@@ -1655,7 +1666,7 @@ export class JumpServerClient {
       }
     }
 
-    const caps = await detectKokoCapabilities(this);
+    const caps = await detectKokoCapabilities(this, this.bastionId);
 
     if (caps.cookieLess) {
       if (this.kokoBearerHandshake) {

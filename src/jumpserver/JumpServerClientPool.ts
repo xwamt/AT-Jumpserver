@@ -9,6 +9,8 @@ interface CachedClient {
 
 export interface JumpServerClientAcquireOptions {
   webSessionStore?: JumpServerWebSessionStore;
+  bastionId?: string;
+  kokoBearerHandshake?: boolean;
 }
 
 /**
@@ -24,7 +26,11 @@ export class JumpServerClientPool {
       settings: JumpServerSettingsWithPassword,
       options?: JumpServerClientAcquireOptions
     ) => JumpServerClient = (settings, options) =>
-      new JumpServerClient(settings, undefined, { webSessionStore: options?.webSessionStore })
+      new JumpServerClient(settings, undefined, {
+        webSessionStore: options?.webSessionStore,
+        bastionId: options?.bastionId,
+        kokoBearerHandshake: options?.kokoBearerHandshake
+      })
   ) {}
 
   acquire(
@@ -36,6 +42,9 @@ export class JumpServerClientPool {
     const cached = this.entries.get(bastionId);
     if (cached && cached.identity === identity) {
       cached.client.setOrgId(settings.orgId);
+      if (typeof (cached.client as any).setBastionId === 'function' && !(cached.client as any).getBastionId?.()) {
+        (cached.client as any).setBastionId(bastionId);
+      }
       // A cached client may predate the store (the asset refresh path has no
       // SecretStorage in reach); the first caller that has one hands it over.
       if (options?.webSessionStore) {
@@ -47,6 +56,9 @@ export class JumpServerClientPool {
     // A replaced client would otherwise keep its keep-alive sockets open.
     disposeClient(cached?.client);
     const client = this.factory(settings, options);
+    if (typeof (client as any).setBastionId === 'function' && !(client as any).getBastionId?.()) {
+      (client as any).setBastionId(bastionId);
+    }
     this.entries.set(bastionId, { client, identity });
     log.info(`JumpServer client created for bastion ${bastionId}`);
     return client;

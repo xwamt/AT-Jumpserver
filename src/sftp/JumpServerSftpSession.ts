@@ -10,6 +10,7 @@ import {
   type SftpCommand
 } from './SftpProtocol';
 import type { JumpServerSftpEntry, SftpListDirectoryOptions, SftpUploadProgress } from './SftpTypes';
+import { log } from '../utils/logger';
 
 /**
  * `ws` queues whatever it is handed. A whole file goes out as one frame, so a
@@ -133,9 +134,13 @@ export class JumpServerSftpSession {
     }
     const account = resolveFirstUsableAccount(detail);
     let tokenId: string | undefined;
+    let fromReusable = false;
     if (typeof this.input.getReusableTokenId === 'function') {
       try {
         tokenId = await this.input.getReusableTokenId();
+        if (tokenId) {
+          fromReusable = true;
+        }
       } catch {
         tokenId = undefined;
       }
@@ -144,13 +149,33 @@ export class JumpServerSftpSession {
       const token = await this.input.client.createConnectionToken({
         assetId: this.input.asset.id,
         account,
-        protocol: 'sftp'
+        protocol: 'sftp',
+        connectMethod: 'web_sftp'
       });
       tokenId = token.id;
     }
-    const endpoint = await this.input.client.getSmartEndpoint(tokenId);
+    let endpoint = await this.input.client.getSmartEndpoint(tokenId);
     this.throwIfDisposedDuringConnect();
-    const socket = await this.input.client.openKokoSftpWebSocket({ endpoint, tokenId });
+    let socket: KokoWebSocket;
+    try {
+      socket = await this.input.client.openKokoSftpWebSocket({ endpoint, tokenId });
+    } catch (wsError) {
+      if (fromReusable && !this.disposed) {
+        log.warn(`Reused connection token ${tokenId} failed for SFTP handshake; retrying with dedicated token`);
+        const token = await this.input.client.createConnectionToken({
+          assetId: this.input.asset.id,
+          account,
+          protocol: 'sftp',
+          connectMethod: 'web_sftp'
+        });
+        tokenId = token.id;
+        endpoint = await this.input.client.getSmartEndpoint(tokenId);
+        this.throwIfDisposedDuringConnect();
+        socket = await this.input.client.openKokoSftpWebSocket({ endpoint, tokenId });
+      } else {
+        throw wsError;
+      }
+    }
     if (this.disposed) {
       // dispose() ran while the handshake was in flight and had no socket to
       // close; the one that just arrived is ours to kill or it leaks.

@@ -67,7 +67,8 @@ describe('JumpServerSftpSession', () => {
     expect(fakeClient.createConnectionToken).toHaveBeenCalledWith({
       assetId: 'asset-1',
       account: { kind: 'managed', id: 'account-1', username: 'root', hasSecret: true },
-      protocol: 'sftp'
+      protocol: 'sftp',
+      connectMethod: 'web_sftp'
     });
   });
 

@@ -33,13 +33,39 @@ describe('connectionTypes', () => {
     expect(getAssetConnectionKind({ category: 'database', type: 'redis', platform: 'Redis6+' })).toBe('redis');
   });
 
-  it('keeps non-Redis databases unsupported', () => {
+  it('detects PostgreSQL, RDP, VNC, Kubernetes, and Web assets correctly (P0-2)', () => {
     expect(getAssetConnectionKind({
       category: 'database',
       type: 'postgresql',
       platform: 'PostgreSQL',
       protocolNames: ['postgresql']
-    })).toBe('unsupported');
+    })).toBe('postgresql');
+
+    expect(getAssetConnectionKind({
+      category: 'host',
+      type: 'server',
+      platform: 'Windows',
+      protocolNames: ['rdp']
+    })).toBe('rdp');
+
+    expect(getAssetConnectionKind({
+      category: 'host',
+      type: 'server',
+      platform: 'VNC',
+      protocolNames: ['vnc']
+    })).toBe('vnc');
+
+    expect(getAssetConnectionKind({
+      category: 'k8s',
+      type: 'kubernetes',
+      protocolNames: ['k8s']
+    })).toBe('k8s');
+
+    expect(getAssetConnectionKind({
+      category: 'web',
+      type: 'web',
+      protocolNames: ['web']
+    })).toBe('web');
   });
 
   it('does not treat SSH hosts with redis in their name as Redis assets', () => {

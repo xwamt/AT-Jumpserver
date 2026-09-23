@@ -92,6 +92,7 @@ export class JumpServerSession {
     client: JumpServerSessionClient;
     events: TerminalEvents;
     onTokenReady?(tokenId: string, info?: { reusable: boolean; kind?: string }): void;
+    resolveInputAccount?(asset: JumpServerSessionAsset): Promise<{ username: string; password?: string } | undefined>;
   }) {}
 
   async connect(): Promise<void> {
@@ -122,26 +123,46 @@ export class JumpServerSession {
             .catch(() => undefined);
         }
       }
+
+      // Parallelize connect-methods query with getAssetDetail to save a serial REST round-trip (P1-1)
+      const connectMethodsPromise = typeof client.getConnectMethods === 'function'
+        ? client.getConnectMethods().catch(() => undefined)
+        : undefined;
+
       const detail = await step(() => client.getAssetDetail(this.input.asset.id), (ms) => {
         timings.detail = ms;
       });
       if (this.disposed) {
         return;
       }
-      const protocol = connectionKindProtocol(this.input.connectionKind);
       const protocolNames = extractProtocolNames(detail).map((name) => name.toLowerCase());
+      let protocol = connectionKindProtocol(this.input.connectionKind);
       if (!protocolNames.includes(protocol)) {
-        throw new Error(`Selected asset does not expose ${connectionKindLabel(this.input.connectionKind)} protocol.`);
+        if (protocol === 'mysql' && protocolNames.includes('mariadb')) {
+          protocol = 'mariadb' as JumpServerConnectionProtocol;
+        } else if ((protocol === 'k8s' || protocol === 'kubernetes') && (protocolNames.includes('k8s') || protocolNames.includes('kubernetes'))) {
+          protocol = (protocolNames.includes('k8s') ? 'k8s' : 'kubernetes') as JumpServerConnectionProtocol;
+        } else {
+          throw new Error(`Selected asset does not expose ${connectionKindLabel(this.input.connectionKind)} protocol.`);
+        }
       }
       const account = resolveFirstUsableAccount(detail);
+      if (account.kind === 'alias' && account.alias === '@INPUT' && typeof this.input.resolveInputAccount === 'function') {
+        const credentials = await this.input.resolveInputAccount(this.input.asset);
+        if (credentials) {
+          account.inputUsername = credentials.username;
+          account.inputSecret = credentials.password;
+        }
+      }
 
       let connectMethod: string | undefined;
-      if (typeof client.getConnectMethods === 'function') {
+      const methodsDict = connectMethodsPromise ? await connectMethodsPromise : undefined;
+      if (methodsDict) {
         try {
-          const methodsDict = await client.getConnectMethods();
-          const selected = selectConnectMethod(methodsDict, { protocol });
+          const preferred = (protocol === 'mysql' || protocol === 'redis') ? 'db_client' : 'web_cli';
+          const selected = selectConnectMethod(methodsDict, { protocol, preferred });
           if (selected) {
-            if (selected.type === 'web') {
+            if (selected.type === 'web' || selected.value === 'db_client') {
               connectMethod = selected.value;
             } else if (selected.type === 'native') {
               throw new Error(
@@ -177,17 +198,20 @@ export class JumpServerSession {
       });
       // Whichever of the pair loses the race must not surface as an unhandled
       // rejection while the other one is still being awaited.
-      endpointPromise.catch(() => undefined);
       const token = await tokenPromise;
-      let isReusable = false;
       if (!token.personalCredentialId && typeof client.markTokenReusable === 'function') {
-        try {
-          isReusable = await client.markTokenReusable(token.id);
-        } catch {
-          isReusable = false;
-        }
+        client.markTokenReusable(token.id)
+          .then((isReusable) => {
+            if (!this.disposed) {
+              this.input.onTokenReady?.(token.id, { reusable: Boolean(isReusable), kind: this.input.connectionKind });
+            }
+          })
+          .catch(() => {
+            if (!this.disposed) {
+              this.input.onTokenReady?.(token.id, { reusable: false, kind: this.input.connectionKind });
+            }
+          });
       }
-      this.input.onTokenReady?.(token.id, { reusable: isReusable, kind: this.input.connectionKind });
       const endpoint = await endpointPromise;
       if (this.disposed) {
         return;

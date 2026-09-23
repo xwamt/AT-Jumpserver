@@ -28,5 +28,6 @@
   "atJumpServer.command.uninstallAtSeriesMcpConfig.title": "Uninstall AT Series MCP Config",
   "atJumpServer.command.disconnect.title": "JumpServer: Disconnect",
   "atJumpServer.command.reconnect.title": "JumpServer: Reconnect",
-  "atJumpServer.configuration.title": "AT JumpServer Terminal"
+  "atJumpServer.configuration.title": "AT JumpServer Terminal",
+  "atJumpServer.configuration.kokoBearerHandshake.description": "Directly attach Authorization: Bearer on KoKo 5.0 WebSocket handshake (experimental, falls back to ticket on 401)."
 }

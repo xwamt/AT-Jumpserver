@@ -808,13 +808,24 @@ async function createClient(
   // skip a second REST + KoKo login on the same bastion.
   const pool = clientPool ?? new JumpServerClientPool();
   clientPool = pool;
-  return pool.acquire(bastionId, {
-    baseUrl: bastion.baseUrl,
-    orgId: bastion.orgId,
-    username: bastion.username,
-    password,
-    verifyTls: bastion.verifyTls
-  }, secrets ? { webSessionStore: createWebSessionSecretStore(secrets, bastionId) } : undefined);
+  const kokoBearerHandshake = vscode.workspace
+    .getConfiguration('jumpserverManager')
+    .get<boolean>('kokoBearerHandshake', false);
+  return pool.acquire(
+    bastionId,
+    {
+      baseUrl: bastion.baseUrl,
+      orgId: bastion.orgId,
+      username: bastion.username,
+      password,
+      verifyTls: bastion.verifyTls
+    },
+    {
+      ...(secrets ? { webSessionStore: createWebSessionSecretStore(secrets, bastionId) } : {}),
+      bastionId,
+      kokoBearerHandshake
+    }
+  );
 }
 
 /**

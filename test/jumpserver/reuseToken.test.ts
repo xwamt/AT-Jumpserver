@@ -171,4 +171,72 @@ describe('A3: connection-token reuse for SFTP', () => {
     await session.connect();
     expect(markTokenReusable).not.toHaveBeenCalled();
   });
+
+  it('Step 6 (P0-1): when markTokenReusable returns false (400), onTokenReady sends reusable=false', async () => {
+    const socket = new FakeSocket();
+    const markTokenReusable = vi.fn().mockResolvedValue(false);
+    const createConnectionToken = vi.fn().mockResolvedValue({ id: 'token-unreusable' });
+    const onTokenReady = vi.fn();
+
+    const client = {
+      getAssetDetail: vi.fn().mockResolvedValue(assetDetail('ssh')),
+      createConnectionToken,
+      markTokenReusable,
+      getSmartEndpoint: vi.fn().mockResolvedValue({ host: 'koko.example.com', https_port: 443 }),
+      openKokoWebSocket: vi.fn().mockResolvedValue(socket)
+    };
+
+    const session = new JumpServerSession({
+      asset: { id: 'asset-1', name: 'server-1' },
+      connectionKind: 'ssh',
+      client: client as any,
+      events: { output: vi.fn(), status: vi.fn(), error: vi.fn() },
+      onTokenReady
+    });
+
+    await session.connect();
+    // Allow the background promise to settle
+    await new Promise((r) => setTimeout(r, 10));
+    expect(onTokenReady).toHaveBeenCalledWith('token-unreusable', { reusable: false, kind: 'ssh' });
+  });
+
+  it('Step 7 (P0-1): when reused token fails during SFTP handshake, session falls back to createConnectionToken and retries', async () => {
+    const socket = new FakeSocket();
+    const createConnectionToken = vi.fn().mockResolvedValue({ id: 'sftp-token-fallback' });
+    let attempts = 0;
+    const openKokoSftpWebSocket = vi.fn().mockImplementation(async ({ tokenId }) => {
+      attempts++;
+      if (attempts === 1) {
+        throw new Error('KoKo 401: Token invalid or expired');
+      }
+      setTimeout(() => {
+        socket.emit('message', JSON.stringify({ id: 'init', type: 'CONNECT', data: '{}' }));
+      }, 5);
+      return socket;
+    });
+
+    const sftpClient = {
+      getAssetDetail: vi.fn().mockResolvedValue(assetDetail('sftp')),
+      createConnectionToken,
+      getSmartEndpoint: vi.fn().mockResolvedValue({ host: 'koko.example.com', https_port: 443 }),
+      openKokoSftpWebSocket
+    };
+
+    const sftpSession = new JumpServerSftpSession({
+      asset: { id: 'asset-1', name: 'server-1' },
+      client: sftpClient as any,
+      getReusableTokenId: () => 'terminal-token-dead'
+    });
+
+    await sftpSession.connect();
+
+    expect(openKokoSftpWebSocket).toHaveBeenCalledTimes(2);
+    expect(openKokoSftpWebSocket).toHaveBeenNthCalledWith(1, expect.objectContaining({ tokenId: 'terminal-token-dead' }));
+    expect(openKokoSftpWebSocket).toHaveBeenNthCalledWith(2, expect.objectContaining({ tokenId: 'sftp-token-fallback' }));
+    expect(createConnectionToken).toHaveBeenCalledTimes(1);
+    expect(createConnectionToken).toHaveBeenCalledWith(expect.objectContaining({
+      protocol: 'sftp',
+      connectMethod: 'web_sftp'
+    }));
+  });
 });

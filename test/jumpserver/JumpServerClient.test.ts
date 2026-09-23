@@ -286,7 +286,7 @@ describe('JumpServerClient pure helpers', () => {
       protocol: 'sftp',
       input_username: 'root',
       input_secret: '',
-      connect_method: 'sftp',
+      connect_method: 'web_sftp',
       connect_options: DEFAULT_SFTP_CONNECT_OPTIONS
     });
   });

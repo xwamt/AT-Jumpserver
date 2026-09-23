@@ -281,6 +281,11 @@
           "type": "number",
           "default": 60,
           "minimum": 0
+        },
+        "jumpserverManager.kokoBearerHandshake": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "%atJumpServer.configuration.kokoBearerHandshake.description%"
         }
       }
     }

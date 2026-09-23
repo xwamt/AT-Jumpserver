@@ -28,5 +28,6 @@
   "atJumpServer.command.uninstallAtSeriesMcpConfig.title": "卸载 AT Series MCP 配置",
   "atJumpServer.command.disconnect.title": "JumpServer: 断开连接",
   "atJumpServer.command.reconnect.title": "JumpServer: 重新连接",
-  "atJumpServer.configuration.title": "AT JumpServer 终端"
+  "atJumpServer.configuration.title": "AT JumpServer 终端",
+  "atJumpServer.configuration.kokoBearerHandshake.description": "在 KoKo 5.0 WebSocket 握手时直接附带 Authorization: Bearer 头（实验性，遇 401 自动回退至 ticket 认证）。"
 }
