@@ -5,6 +5,7 @@ import { extractProtocolNames, resolveFirstUsableAccount, type KokoWebSocket } f
 import { connectionKindLabel, connectionKindProtocol, type JumpServerConnectionKind } from './connectionTypes';
 import type { JumpServerAccountRef, JumpServerConnectionProtocol, TerminalEvents } from './types';
 import { selectConnectMethod, type ConnectMethod } from './connectMethods';
+import { detectKokoCapabilities, isKokoCookieLess } from './kokoCapability';
 
 /**
  * How often the client pings KoKo once the socket is bound. A bastion sits
@@ -32,6 +33,7 @@ export const TERMINAL_SEND_HIGH_WATER_BYTES = 1024 * 1024;
 export interface JumpServerSessionAsset {
   id: string;
   name: string;
+  bastionId?: string;
 }
 
 export interface JumpServerSessionClient {
@@ -55,6 +57,8 @@ export interface JumpServerSessionClient {
   }): Promise<KokoWebSocket>;
   getConnectMethods?(protocol?: string): Promise<Record<string, ConnectMethod[]>>;
   markTokenReusable?(tokenId: string): Promise<boolean>;
+  getClientVersions?(): Promise<string[]>;
+  getBaseUrl?(): string;
 }
 
 export class JumpServerSession {
@@ -101,7 +105,22 @@ export class JumpServerSession {
       // asset detail, so it overlaps the whole REST leg below. A failure is
       // ignored here: openKokoWebSocket still has its own warmup fallback.
       if (typeof client.ensureWebSession === 'function') {
-        client.ensureWebSession().catch(() => undefined);
+        const cached = isKokoCookieLess(this.input.asset.bastionId);
+        if (cached === true) {
+          // Detected as 5.0 cookie-less: do not initiate web session form login
+        } else if (cached === false || typeof client.getClientVersions !== 'function') {
+          // Known legacy (or mock client without capability probe): fire-and-forget
+          client.ensureWebSession().catch(() => undefined);
+        } else {
+          // Probe capability; only warm web session if not cookie-less
+          detectKokoCapabilities(client as any, this.input.asset.bastionId)
+            .then((caps) => {
+              if (!caps.cookieLess && !this.disposed) {
+                client.ensureWebSession?.().catch(() => undefined);
+              }
+            })
+            .catch(() => undefined);
+        }
       }
       const detail = await step(() => client.getAssetDetail(this.input.asset.id), (ms) => {
         timings.detail = ms;

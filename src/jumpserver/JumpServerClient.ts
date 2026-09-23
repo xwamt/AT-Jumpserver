@@ -1,5 +1,6 @@
 import type { CachedJumpServerAsset, CachedJumpServerNode } from '../config/schema';
 import type { JumpServerAccountRef, JumpServerAliasAccount, JumpServerManagedAccountRef, JumpServerConnectionProtocol, JumpServerEndpoint, JumpServerSettingsWithPassword } from './types';
+export type { JumpServerEndpoint };
 import { log } from '../utils/logger';
 import { apiErrorMessageFromPayload, classifyRestFailure, JumpServerApiError } from './apiError';
 import { buildSelfAssetListPath, pageSignature, rewritePaginationRef, throttleWaitMs } from './pagination';
@@ -7,6 +8,7 @@ import { GLOBAL_ORG_ID, type JumpServerOrg } from './orgs';
 import { createJumpServerFetch, type FetchLike, JUMPSERVER_CLIENT_USER_AGENT } from './restTransport';
 import { buildOrigin } from './urls';
 import { type ConnectMethod, normalizeConnectMethods } from './connectMethods';
+import { detectKokoCapabilities } from './kokoCapability';
 import { Agent as HttpsAgent } from 'node:https';
 import WebSocket from 'ws';
 /**
@@ -146,11 +148,11 @@ export interface JumpServerCookie {
   secure: boolean;
 }
 
-export function resolveJumpServerUrl(baseUrl: string, pathOrUrl: string): string {
+export function resolveJumpServerUrl(baseUrl: string, pathOrUrl: string, allowedOrigins: string[] = []): string {
   const origin = buildOrigin(baseUrl);
   const url = pathOrUrl.startsWith('http') ? pathOrUrl : `${origin}${pathOrUrl}`;
   const target = new URL(url);
-  if (target.origin !== origin) {
+  if (target.origin !== origin && !allowedOrigins.includes(target.origin)) {
     throw new Error(`Refusing cross-origin JumpServer request to ${target.origin} (expected ${origin}).`);
   }
   return url;
@@ -277,11 +279,23 @@ export function buildKokoConnectUrl(baseUrl: string, tokenId: string, timestamp 
   return `${origin}/koko/connect/?disableautohash=false&token=${encodeURIComponent(tokenId)}&_=${timestamp}`;
 }
 
+export function buildKokoBaseUrl(baseUrl: string, endpoint: JumpServerEndpoint): string {
+  const parsed = new URL(baseUrl);
+  const protocol = parsed.protocol;
+  const host = endpoint.host || parsed.hostname;
+  const port = parsed.protocol === 'https:' ? endpoint.https_port : endpoint.http_port;
+  const authority = port && !((protocol === 'https:' && port === 443) || (protocol === 'http:' && port === 80))
+    ? `${host}:${port}`
+    : host;
+  return `${protocol}//${authority}`;
+}
+
 export function buildKokoWsUrl(
   baseUrl: string,
   endpoint: JumpServerEndpoint,
   tokenId: string,
-  timestamp = Date.now()
+  timestamp = Date.now(),
+  ticket?: string
 ): string {
   const parsed = new URL(baseUrl);
   const scheme = parsed.protocol === 'https:' ? 'wss' : 'ws';
@@ -290,14 +304,16 @@ export function buildKokoWsUrl(
   const authority = port && !((scheme === 'wss' && port === 443) || (scheme === 'ws' && port === 80))
     ? `${host}:${port}`
     : host;
-  return `${scheme}://${authority}/koko/ws/terminal/?disableautohash=false&token=${encodeURIComponent(tokenId)}&_=${timestamp}`;
+  const ticketParam = ticket ? `&ticket=${encodeURIComponent(ticket)}` : '';
+  return `${scheme}://${authority}/koko/ws/terminal/?disableautohash=false&token=${encodeURIComponent(tokenId)}&_=${timestamp}${ticketParam}`;
 }
 
 export function buildKokoSftpWsUrl(
   baseUrl: string,
   endpoint: JumpServerEndpoint,
   tokenId: string,
-  timestamp = Date.now()
+  timestamp = Date.now(),
+  ticket?: string
 ): string {
   const parsed = new URL(baseUrl);
   const scheme = parsed.protocol === 'https:' ? 'wss' : 'ws';
@@ -306,7 +322,8 @@ export function buildKokoSftpWsUrl(
   const authority = port && !((scheme === 'wss' && port === 443) || (scheme === 'ws' && port === 80))
     ? `${host}:${port}`
     : host;
-  return `${scheme}://${authority}/koko/ws/sftp/?token=${encodeURIComponent(tokenId)}&_=${timestamp}`;
+  const ticketParam = ticket ? `&ticket=${encodeURIComponent(ticket)}` : '';
+  return `${scheme}://${authority}/koko/ws/sftp/?token=${encodeURIComponent(tokenId)}&_=${timestamp}${ticketParam}`;
 }
 
 export function parseCsrfMiddlewareToken(html: string): string {
@@ -736,6 +753,9 @@ export class JumpServerClient {
   private webSessionStore: JumpServerWebSessionStore | undefined;
   private webSessionRestore: Promise<void> | undefined;
   private webSessionInflight: Promise<void> | undefined;
+  private readonly kokoBearerHandshake: boolean;
+  private readonly ticketCache = new Map<string, { ticket: string; tokenId: string; expiresAt: number }>();
+  private readonly ticketInflight = new Map<string, Promise<string>>();
   /** Django warmup share of the most recent openKoko*WebSocket call. */
   private lastWarmupMs = 0;
 
@@ -745,9 +765,10 @@ export class JumpServerClient {
     options: Partial<JumpServerTimeouts> & {
       sleep?: (ms: number) => Promise<void>;
       webSessionStore?: JumpServerWebSessionStore;
+      kokoBearerHandshake?: boolean;
     } = {}
   ) {
-    const { sleep, webSessionStore, ...timeouts } = options;
+    const { sleep, webSessionStore, kokoBearerHandshake, ...timeouts } = options;
     if (fetchImpl) {
       this.fetchImpl = fetchImpl;
     } else {
@@ -759,6 +780,7 @@ export class JumpServerClient {
     this.timeouts = { ...DEFAULT_JUMPSERVER_TIMEOUTS, ...timeouts };
     this.sleep = sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.orgId = settings.orgId;
+    this.kokoBearerHandshake = Boolean(kokoBearerHandshake);
     if (webSessionStore) {
       this.attachWebSessionStore(webSessionStore);
     }
@@ -780,6 +802,148 @@ export class JumpServerClient {
   setOrgId(orgId: string): void {
     this.orgId = orgId;
     this.connectMethodsCache = undefined;
+    this.ticketCache.clear();
+  }
+
+  invalidateTicket(tokenId: string, kind: 'terminal' | 'sftp'): void {
+    this.ticketCache.delete(`${tokenId}:${kind}`);
+  }
+
+  async createKokoConnectTicket(input: {
+    endpoint: JumpServerEndpoint;
+    tokenId: string;
+    orgId?: string;
+  }): Promise<{ ticket: string; tokenId: string; expiresIn: number }> {
+    await this.ensureAuthToken();
+    const kokoBase = buildKokoBaseUrl(this.settings.baseUrl, input.endpoint);
+    const kokoOrigin = buildOrigin(kokoBase);
+    const url = `${kokoBase}/koko/api/connect-ticket/`;
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${this.authToken}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+      Referer: `${kokoOrigin}/`,
+      Origin: kokoOrigin,
+      'User-Agent': JUMPSERVER_CLIENT_USER_AGENT,
+      'X-TZ': Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai'
+    };
+    const orgId = input.orgId ?? this.orgId;
+    if (orgId) {
+      headers['X-JMS-ORG'] = orgId;
+    }
+    const body = JSON.stringify({
+      token_id: input.tokenId,
+      org_id: orgId || ''
+    });
+
+    const response = await this.request(
+      url,
+      {
+        method: 'POST',
+        headers,
+        body
+      },
+      false,
+      'request',
+      [kokoOrigin]
+    );
+
+    if (response.status === 404) {
+      throw new JumpServerApiError('KoKo connect-ticket endpoint not found (HTTP 404)', {
+        statusCode: 404,
+        method: 'POST',
+        path: logRoute(url),
+        reason: 'not-found'
+      });
+    }
+
+    if (!response.ok) {
+      throw new JumpServerApiError(`KoKo connect-ticket failed with HTTP ${response.status}`, {
+        statusCode: response.status,
+        method: 'POST',
+        path: logRoute(url),
+        reason: classifyRestFailure(response.status)
+      });
+    }
+
+    const payload = (await response.json()) as { ticket?: unknown; token_id?: unknown; expires_in?: unknown };
+    if (!payload.ticket) {
+      throw new JumpServerApiError('KoKo connect-ticket response did not include ticket.', {
+        statusCode: response.status,
+        method: 'POST',
+        path: logRoute(url),
+        reason: 'unexpected-status'
+      });
+    }
+
+    return {
+      ticket: String(payload.ticket),
+      tokenId: String(payload.token_id || input.tokenId),
+      expiresIn: typeof payload.expires_in === 'number' ? payload.expires_in : 1800
+    };
+  }
+
+  async getOrCreateKokoConnectTicket(
+    endpoint: JumpServerEndpoint,
+    tokenId: string,
+    kind: 'terminal' | 'sftp'
+  ): Promise<string> {
+    const cacheKey = `${tokenId}:${kind}`;
+    const cached = this.ticketCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.ticket;
+    }
+
+    const inflight = this.ticketInflight.get(cacheKey);
+    if (inflight) {
+      return inflight;
+    }
+
+    const promise = (async () => {
+      const res = await this.createKokoConnectTicket({ endpoint, tokenId });
+      const ttlMs = res.expiresIn ? Math.min(25 * 60, res.expiresIn - 300) * 1000 : 25 * 60 * 1000;
+      this.ticketCache.set(cacheKey, {
+        ticket: res.ticket,
+        tokenId,
+        expiresAt: Date.now() + Math.max(60_000, ttlMs)
+      });
+      return res.ticket;
+    })().finally(() => {
+      this.ticketInflight.delete(cacheKey);
+    });
+
+    this.ticketInflight.set(cacheKey, promise);
+    return promise;
+  }
+
+  getBaseUrl(): string {
+    return this.settings.baseUrl;
+  }
+
+  async getClientVersions(): Promise<string[]> {
+    await this.ensureAuthToken();
+    const response = await this.request(
+      '/api/v1/settings/client/versions/',
+      this.withRestHeaders({ method: 'GET' }),
+      false
+    );
+    if (!response.ok) {
+      const err = new JumpServerApiError(`Client versions request failed with HTTP ${response.status}`, {
+        statusCode: response.status,
+        method: 'GET',
+        path: '/api/v1/settings/client/versions/',
+        reason: classifyRestFailure(response.status)
+      });
+      throw err;
+    }
+    const data = await response.json();
+    if (Array.isArray(data)) {
+      return data.map(String);
+    }
+    if (data && typeof data === 'object' && Array.isArray((data as any).data)) {
+      return (data as any).data.map(String);
+    }
+    return [];
   }
 
   /** Closes the keep-alive sockets. The client must not be used afterwards. */
@@ -1449,41 +1613,81 @@ export class JumpServerClient {
     timestamp?: number;
     webSocketFactory?: WebSocketFactory;
   }): Promise<KokoWebSocket> {
+    this.lastWarmupMs = 0;
     // A restored or in-flight web session is about to make the cookie-first
     // handshake below possible; starting a second form login instead would
     // waste the one already running.
     await this.webSessionRestore;
     await this.webSessionInflight?.catch(() => undefined);
-    this.lastWarmupMs = 0;
-    const open = () => {
+
+    const open = (options?: { ticket?: string; bearerToken?: string; useCookie?: boolean }) => {
       const url = input.kind === 'sftp'
-        ? buildKokoSftpWsUrl(this.settings.baseUrl, input.endpoint, input.tokenId, input.timestamp)
-        : buildKokoWsUrl(this.settings.baseUrl, input.endpoint, input.tokenId);
+        ? buildKokoSftpWsUrl(this.settings.baseUrl, input.endpoint, input.tokenId, input.timestamp, options?.ticket)
+        : buildKokoWsUrl(this.settings.baseUrl, input.endpoint, input.tokenId, undefined, options?.ticket);
       const factory = input.webSocketFactory ?? this.timedWebSocketFactory();
+      const headers: Record<string, string> = {
+        'Cache-Control': 'no-cache',
+        Pragma: 'no-cache',
+        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+        'User-Agent': input.kind === 'sftp' ? 'AT JumpServer SFTP' : 'AT JumpServer Terminal'
+      };
+      if (options?.useCookie) {
+        headers.Cookie = this.cookieHeader();
+      }
+      if (options?.bearerToken) {
+        headers.Authorization = `Bearer ${options.bearerToken}`;
+      }
       return factory(url, {
         origin: buildOrigin(this.settings.baseUrl),
-        headers: {
-          Cookie: this.cookieHeader(),
-          'Cache-Control': 'no-cache',
-          Pragma: 'no-cache',
-          'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-          'User-Agent': input.kind === 'sftp' ? 'AT JumpServer SFTP' : 'AT JumpServer Terminal'
-        },
+        headers,
         rejectUnauthorized: this.settings.verifyTls,
         // Same-authority handshakes resume the REST agent's warm TLS session.
         agent: kokoWsAgentForEndpoint(this.settings.baseUrl, input.endpoint, this.agent)
       });
     };
+
     if (this.hasWebSessionCookie()) {
       try {
         log.info(`KoKo ${input.kind} websocket with cached session`);
-        return await open();
+        return await open({ useCookie: true });
       } catch {
-        log.info(`KoKo ${input.kind} websocket handshake failed; warming up`);
+        log.info(`KoKo ${input.kind} websocket handshake failed; probing capability / warming up`);
       }
     }
+
+    const caps = await detectKokoCapabilities(this);
+
+    if (caps.cookieLess) {
+      if (this.kokoBearerHandshake) {
+        try {
+          const bearer = await this.ensureAuthToken();
+          return await open({ bearerToken: bearer });
+        } catch (error: any) {
+          log.warn(`KoKo WS Bearer handshake failed (${error?.message ?? String(error)}); retrying without Bearer`);
+        }
+      }
+
+      try {
+        const ticket = await this.getOrCreateKokoConnectTicket(input.endpoint, input.tokenId, input.kind);
+        try {
+          return await open({ ticket });
+        } catch (wsError: any) {
+          const is401 = wsError instanceof Error && /401/.test(wsError.message);
+          if (is401) {
+            log.info(`KoKo ticket WS handshake returned 401; refreshing ticket`);
+            this.invalidateTicket(input.tokenId, input.kind);
+            const freshTicket = await this.getOrCreateKokoConnectTicket(input.endpoint, input.tokenId, input.kind);
+            return await open({ ticket: freshTicket });
+          }
+          throw wsError;
+        }
+      } catch (ticketError: any) {
+        log.warn(`KoKo ticket handshake failed (${ticketError?.message ?? String(ticketError)}); falling back to cookie authentication`);
+      }
+    }
+
     await this.warmupKokoConnectPage(input.tokenId);
-    return open();
+    return open({ useCookie: true });
   }
 
   cookieHeader(): string {
@@ -1682,9 +1886,10 @@ export class JumpServerClient {
     pathOrUrl: string,
     init: RequestInit = {},
     requireOk = true,
-    budget: JumpServerTimeoutBudget = 'request'
+    budget: JumpServerTimeoutBudget = 'request',
+    allowedOrigins: string[] = []
   ): Promise<Response> {
-    const url = resolveJumpServerUrl(this.settings.baseUrl, pathOrUrl);
+    const url = resolveJumpServerUrl(this.settings.baseUrl, pathOrUrl, allowedOrigins);
     const headers = headersToRecord(init.headers);
     const cookieHeader = cookiesForUrl(this.cookies, url);
     if (cookieHeader && !hasHeader(headers, 'Cookie')) {

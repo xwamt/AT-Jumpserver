@@ -33,6 +33,7 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createJumpServerFetch } from '../../src/jumpserver/restTransport';
 import { defaultWebSocketFactory, JumpServerClient } from '../../src/jumpserver/JumpServerClient';
+import { clearKokoCapabilityCache, detectKokoCapabilities } from '../../src/jumpserver/kokoCapability';
 
 type Generation = 'legacy' | 'v5';
 
@@ -49,6 +50,7 @@ interface MockBastion {
 const openServers: http.Server[] = [];
 
 afterEach(async () => {
+  clearKokoCapabilityCache();
   await Promise.all(
     openServers.splice(0).map(
       (server) =>
@@ -121,6 +123,12 @@ async function startMockBastion(generation: Generation): Promise<MockBastion> {
           ],
           originals: []
         });
+      }
+      if (url.pathname === '/api/v1/settings/client/versions/') {
+        if (generation === 'v5') {
+          return json(res, 200, ['4.0.0', '4.1.0', '5.0.0']);
+        }
+        return json(res, 404, { detail: 'Not Found' });
       }
 
       // --- Django form login ---------------------------------------------------------
@@ -269,7 +277,10 @@ function makeClient(bastion: MockBastion): JumpServerClient {
 
 async function connectWithPlugin(bastion: MockBastion): Promise<JumpServerClient> {
   const client = makeClient(bastion);
-  await client.ensureWebSession();
+  const caps = await detectKokoCapabilities(client, bastion.url);
+  if (!caps.cookieLess) {
+    await client.ensureWebSession();
+  }
   const endpoint = await client.getSmartEndpointForAsset('asset-1');
   await client.openKokoWebSocket({ endpoint, tokenId: 'token-1', cols: 80, rows: 24 });
   return client;
@@ -394,8 +405,8 @@ describe('KoKo 5.0 behaviour', () => {
     await bastion.close();
   });
 
-  it('leaves the ticket endpoint unused: the plugin still logs in and sends a cookie', async () => {
-    const bastion = await startMockBastion('v5');
+  it('on legacy bastions (4.x / 3.x), the plugin leaves the ticket endpoint unused and connects via cookie', async () => {
+    const bastion = await startMockBastion('legacy');
 
     const client = await connectWithPlugin(bastion);
 
@@ -403,6 +414,17 @@ describe('KoKo 5.0 behaviour', () => {
     expect(bastion.loginHits).toEqual({ get: 1, post: 1 });
     expect(bastion.wsUpgrades.at(-1)!.url).not.toContain('ticket=');
     expect(bastion.wsUpgrades.at(-1)!.cookie).toContain('sessionid=');
+    client.dispose();
+    await bastion.close();
+  });
+
+  it('on 5.0 bastions, the plugin connects via connect-ticket and ticket query parameter without cookie form login', async () => {
+    const bastion = await startMockBastion('v5');
+
+    const client = await connectWithPlugin(bastion);
+
+    expect(bastion.ticketHits).toBeGreaterThanOrEqual(1);
+    expect(bastion.wsUpgrades.at(-1)!.url).toContain('ticket=');
     client.dispose();
     await bastion.close();
   });

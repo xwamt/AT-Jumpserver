@@ -594,4 +594,46 @@ describe('JumpServerSession dispose during an in-flight connect', () => {
     );
     expect(events.status).toHaveBeenCalledWith('Opening KoKo terminal');
   });
+
+  it('B1 Step 6: skips ensureWebSession when server is detected as 5.0', async () => {
+    const ensureWebSession = vi.fn().mockResolvedValue(undefined);
+    const getClientVersions = vi.fn().mockResolvedValue(['5.0.0']);
+    const fakeClient = {
+      ...client(socket, 'ssh'),
+      ensureWebSession,
+      getClientVersions
+    };
+
+    const session = new JumpServerSession({
+      asset: { id: 'asset-50', name: 'v5-server', bastionId: 'b-v5' },
+      connectionKind: 'ssh',
+      client: fakeClient as any,
+      events
+    });
+
+    await session.connect();
+    expect(ensureWebSession).not.toHaveBeenCalled();
+  });
+
+  it('B1 Step 6: invokes ensureWebSession on legacy versions (4.x / 3.x)', async () => {
+    const ensureWebSession = vi.fn().mockResolvedValue(undefined);
+    const getClientVersions = vi.fn().mockRejectedValue({ statusCode: 404 });
+    const fakeClient = {
+      ...client(socket, 'ssh'),
+      ensureWebSession,
+      getClientVersions
+    };
+
+    const session = new JumpServerSession({
+      asset: { id: 'asset-legacy', name: 'v4-server', bastionId: 'b-v4' },
+      connectionKind: 'ssh',
+      client: fakeClient as any,
+      events
+    });
+
+    await session.connect();
+    // Wait for the async capability promise to finish
+    await new Promise((r) => setTimeout(r, 10));
+    expect(ensureWebSession).toHaveBeenCalledTimes(1);
+  });
 });

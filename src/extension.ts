@@ -8,6 +8,7 @@ import { assetPathsFromNodes, JumpServerClient } from './jumpserver/JumpServerCl
 import { JumpServerClientPool } from './jumpserver/JumpServerClientPool';
 import { createWebSessionSecretStore } from './jumpserver/webSessionStore';
 import { resolveOrgContext } from './jumpserver/orgContext';
+import { detectKokoCapabilities, isKokoCookieLess } from './jumpserver/kokoCapability';
 import { confirmWithTimeout } from './mcp/confirmTimeout';
 import type { McpRuntimeHandle } from './mcp/mcpRuntime';
 import { assertTextFileEditable, DEFAULT_SFTP_EDIT_MAX_BYTES } from './sftp/SftpFileGuards';
@@ -775,7 +776,20 @@ async function prefetchAssetDetail(
     }
     const warmups: Array<Promise<unknown>> = [client.getAssetDetail(asset.id)];
     if (typeof client.ensureWebSession === 'function') {
-      warmups.push(client.ensureWebSession());
+      const cached = isKokoCookieLess(asset.bastionId);
+      if (cached === true) {
+        // Detected as 5.0 cookie-less: skip ensureWebSession
+      } else if (cached === false || typeof (client as any).getClientVersions !== 'function') {
+        warmups.push(client.ensureWebSession());
+      } else {
+        warmups.push(
+          detectKokoCapabilities(client, asset.bastionId).then((caps) => {
+            if (!caps.cookieLess) {
+              return client.ensureWebSession?.();
+            }
+          })
+        );
+      }
     }
     await Promise.all(warmups);
   } catch (error) {
