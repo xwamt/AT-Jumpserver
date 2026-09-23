@@ -34,6 +34,7 @@ export type JumpServerSftpTreeState =
 
 interface ManagedConnection {
   asset: CachedJumpServerAsset;
+  terminalId?: string;
   session: JumpServerSftpSessionLike | undefined;
   /** A connect in flight; concurrent callers share it instead of opening a second websocket. */
   sessionPromise: Promise<JumpServerSftpSessionLike> | undefined;
@@ -47,7 +48,7 @@ export class JumpServerSftpManager {
   private readonly transfers: TransferService;
 
   constructor(private readonly options: {
-    createSession(asset: CachedJumpServerAsset): JumpServerSftpSessionLike | Promise<JumpServerSftpSessionLike>;
+    createSession(asset: CachedJumpServerAsset, connectionKey?: string): JumpServerSftpSessionLike | Promise<JumpServerSftpSessionLike>;
     reporter?: TransferReporter;
   }) {
     this.transfers = new TransferService(options.reporter);
@@ -60,7 +61,7 @@ export class JumpServerSftpManager {
       this.connections.delete(terminalId);
     }
     if (!this.connections.has(terminalId)) {
-      this.connections.set(terminalId, { asset, session: undefined, sessionPromise: undefined, rootPath: undefined, snapshot: undefined });
+      this.connections.set(terminalId, { asset, terminalId, session: undefined, sessionPromise: undefined, rootPath: undefined, snapshot: undefined });
     }
     this.activeTerminalId = terminalId;
   }
@@ -252,7 +253,7 @@ export class JumpServerSftpManager {
       return connection.sessionPromise;
     }
     const sessionPromise = (async () => {
-      const session = await this.options.createSession(connection.asset);
+      const session = await this.options.createSession(connection.asset, connection.terminalId);
       try {
         await session.connect();
       } catch (error) {

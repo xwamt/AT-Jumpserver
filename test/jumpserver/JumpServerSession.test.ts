@@ -96,7 +96,7 @@ describe('JumpServerSession', () => {
 
     expect(fakeClient.createConnectionToken).toHaveBeenCalledWith({
       assetId: 'asset-1',
-      account: { id: 'account-1', alias: 'account-alias-1', username: 'root', hasSecret: true },
+      account: { kind: 'managed', id: 'account-1', alias: 'account-alias-1', username: 'root', hasSecret: true },
       protocol: 'ssh'
     });
     expect(socket.sent.at(-1)).toBe(JSON.stringify({
@@ -180,7 +180,7 @@ describe('JumpServerSession', () => {
 
     expect(fakeClient.createConnectionToken).toHaveBeenCalledWith({
       assetId: 'redis-1',
-      account: { id: 'account-1', alias: 'account-alias-1', username: 'root', hasSecret: true },
+      account: { kind: 'managed', id: 'account-1', alias: 'account-alias-1', username: 'root', hasSecret: true },
       protocol: 'redis'
     });
     expect(fakeClient.openKokoWebSocket).toHaveBeenCalledWith({
@@ -210,7 +210,7 @@ describe('JumpServerSession', () => {
 
     expect(fakeClient.createConnectionToken).toHaveBeenCalledWith({
       assetId: 'mysql-1',
-      account: { id: 'account-1', alias: 'account-alias-1', username: 'root', hasSecret: true },
+      account: { kind: 'managed', id: 'account-1', alias: 'account-alias-1', username: 'root', hasSecret: true },
       protocol: 'mysql'
     });
     expect(fakeClient.openKokoWebSocket).toHaveBeenCalledWith({
@@ -538,5 +538,60 @@ describe('JumpServerSession dispose during an in-flight connect', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('selects connect_method from connect-methods when available (mstsc for rdp, web_cli for ssh)', async () => {
+    const fakeClientRdp = {
+      ...client(socket, 'rdp'),
+      getConnectMethods: vi.fn().mockResolvedValue({
+        rdp: [{ component: 'lion', type: 'web', endpoint_protocol: 'http', value: 'mstsc', label: 'RDP Web' }]
+      })
+    };
+    const sessionRdp = new JumpServerSession({
+      asset: { id: 'asset-rdp', name: 'windows-1' },
+      connectionKind: 'rdp',
+      client: fakeClientRdp,
+      events
+    });
+    await sessionRdp.connect();
+    expect(fakeClientRdp.createConnectionToken).toHaveBeenCalledWith(
+      expect.objectContaining({ protocol: 'rdp', connectMethod: 'mstsc' })
+    );
+
+    const fakeClientSsh = {
+      ...client(socket, 'ssh'),
+      getConnectMethods: vi.fn().mockResolvedValue({
+        ssh: [{ component: 'koko', type: 'web', endpoint_protocol: 'http', value: 'web_cli', label: 'Web CLI' }]
+      })
+    };
+    const sessionSsh = new JumpServerSession({
+      asset: { id: 'asset-ssh', name: 'linux-1' },
+      connectionKind: 'ssh',
+      client: fakeClientSsh,
+      events
+    });
+    await sessionSsh.connect();
+    expect(fakeClientSsh.createConnectionToken).toHaveBeenCalledWith(
+      expect.objectContaining({ protocol: 'ssh', connectMethod: 'web_cli' })
+    );
+  });
+
+  it('falls back to existing protocol string heuristics when connect-methods fails with 500', async () => {
+    const fakeClient = {
+      ...client(socket, 'ssh'),
+      getConnectMethods: vi.fn().mockRejectedValue(new Error('HTTP 500 Internal Server Error'))
+    };
+    const session = new JumpServerSession({
+      asset: { id: 'asset-1', name: 'web-1' },
+      connectionKind: 'ssh',
+      client: fakeClient,
+      events
+    });
+
+    await expect(session.connect()).resolves.toBeUndefined();
+    expect(fakeClient.createConnectionToken).toHaveBeenCalledWith(
+      expect.objectContaining({ protocol: 'ssh' })
+    );
+    expect(events.status).toHaveBeenCalledWith('Opening KoKo terminal');
   });
 });

@@ -1,5 +1,6 @@
-export type JumpServerConnectionKind = 'ssh' | 'mysql' | 'redis' | 'unsupported';
-export type JumpServerConnectionProtocol = 'ssh' | 'mysql' | 'redis';
+import type { JumpServerConnectionProtocol } from './types';
+export type { JumpServerConnectionProtocol };
+export type JumpServerConnectionKind = 'ssh' | 'mysql' | 'redis' | 'sftp' | 'rdp' | 'unsupported' | (string & {});
 
 export interface AssetLikeForConnection {
   name?: string;
@@ -60,12 +61,21 @@ export function connectionKindLabel(kind: JumpServerConnectionKind): string {
   if (kind === 'ssh') {
     return 'SSH';
   }
-  return 'Unsupported';
+  if (kind === 'sftp') {
+    return 'SFTP';
+  }
+  if (kind === 'rdp') {
+    return 'RDP';
+  }
+  if (kind === 'unsupported' || !kind) {
+    return 'Unsupported';
+  }
+  return String(kind).toUpperCase();
 }
 
 export function connectionKindProtocol(kind: JumpServerConnectionKind): JumpServerConnectionProtocol {
-  if (kind === 'ssh' || kind === 'mysql' || kind === 'redis') {
-    return kind;
+  if (kind && kind !== 'unsupported') {
+    return kind as JumpServerConnectionProtocol;
   }
   throw new Error('Unsupported JumpServer asset type.');
 }

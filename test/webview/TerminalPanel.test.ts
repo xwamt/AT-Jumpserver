@@ -467,4 +467,33 @@ describe('TerminalPanel rendering helpers', () => {
     expect(dropHostB.panel.dispose).toHaveBeenCalled();
     expect(keepHost.panel.dispose).not.toHaveBeenCalled();
   });
+
+  it('exposes reusable token for active connected session and clears on disconnect', async () => {
+    const host = createPanel();
+    vi.mocked(vscode.window.createWebviewPanel).mockReturnValue(host.panel);
+
+    const assetItem = asset('tok-asset');
+    const panel = TerminalPanel.open(extensionContext(), assetItem, jumpServerClient());
+
+    const lastInput = sessionInputs[sessionInputs.length - 1] as any;
+    expect(lastInput.onTokenReady).toBeDefined();
+    lastInput.onTokenReady('tok-active-1', 'ssh');
+
+    await flushPromises();
+
+    // Query by terminalId
+    expect(TerminalPanel.getReusableToken(panel.getTerminalId())).toBe('tok-active-1');
+    // Query by asset
+    expect(TerminalPanel.getReusableToken(undefined, assetItem)).toBe('tok-active-1');
+    // Query by asset.id
+    expect(TerminalPanel.getReusableToken(assetItem.id)).toBe('tok-active-1');
+    // Unknown id
+    expect(TerminalPanel.getReusableToken('unknown-id')).toBeUndefined();
+
+    // Disconnect clears token
+    panel.disconnect();
+    expect(TerminalPanel.getReusableToken(panel.getTerminalId())).toBeUndefined();
+    expect(TerminalPanel.getReusableToken(undefined, assetItem)).toBeUndefined();
+  });
 });
+

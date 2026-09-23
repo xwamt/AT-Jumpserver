@@ -78,9 +78,10 @@ export function activate(context: vscode.ExtensionContext): void {
   const terminalContext = new TerminalContextRegistry();
   const treeProvider = new JumpServerTreeProvider(configManager);
   const sftpManager = new JumpServerSftpManager({
-    createSession: async (asset) => new JumpServerSftpSession({
+    createSession: async (asset, connectionKey) => new JumpServerSftpSession({
       asset,
-      client: await createClient(configManager, asset.bastionId, context.secrets)
+      client: await createClient(configManager, asset.bastionId, context.secrets),
+      getReusableTokenId: () => TerminalPanel.getReusableToken(connectionKey, asset)
     }),
     reporter: new VscodeTransferReporter()
   });

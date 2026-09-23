@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { extractProtocolNames, resolveFirstUsableAccount, type KokoWebSocket } from '../jumpserver/JumpServerClient';
-import type { JumpServerConnectionProtocol } from '../jumpserver/types';
+import type { JumpServerAccountRef, JumpServerConnectionProtocol } from '../jumpserver/types';
 import {
   decodeSftpRaw,
   encodeSftpRaw,
@@ -63,8 +63,9 @@ export interface JumpServerSftpSessionClient {
   getAssetDetail(assetId: string): Promise<Record<string, any>>;
   createConnectionToken(input: {
     assetId: string;
-    account: { id: string; alias?: string; username: string; hasSecret?: boolean };
+    account: JumpServerAccountRef;
     protocol: JumpServerConnectionProtocol;
+    connectMethod?: string;
   }): Promise<{ id: string }>;
   getSmartEndpoint(tokenId: string): Promise<Record<string, any>>;
   openKokoSftpWebSocket(input: { endpoint: Record<string, any>; tokenId: string }): Promise<KokoWebSocket>;
@@ -121,6 +122,7 @@ export class JumpServerSftpSession {
   constructor(private readonly input: {
     asset: JumpServerSftpSessionAsset;
     client: JumpServerSftpSessionClient;
+    getReusableTokenId?: () => string | undefined | Promise<string | undefined>;
   }) {}
 
   async connect(): Promise<void> {
@@ -130,14 +132,25 @@ export class JumpServerSftpSession {
       throw new Error('Selected asset does not expose SFTP protocol.');
     }
     const account = resolveFirstUsableAccount(detail);
-    const token = await this.input.client.createConnectionToken({
-      assetId: this.input.asset.id,
-      account,
-      protocol: 'sftp'
-    });
-    const endpoint = await this.input.client.getSmartEndpoint(token.id);
+    let tokenId: string | undefined;
+    if (typeof this.input.getReusableTokenId === 'function') {
+      try {
+        tokenId = await this.input.getReusableTokenId();
+      } catch {
+        tokenId = undefined;
+      }
+    }
+    if (!tokenId) {
+      const token = await this.input.client.createConnectionToken({
+        assetId: this.input.asset.id,
+        account,
+        protocol: 'sftp'
+      });
+      tokenId = token.id;
+    }
+    const endpoint = await this.input.client.getSmartEndpoint(tokenId);
     this.throwIfDisposedDuringConnect();
-    const socket = await this.input.client.openKokoSftpWebSocket({ endpoint, tokenId: token.id });
+    const socket = await this.input.client.openKokoSftpWebSocket({ endpoint, tokenId });
     if (this.disposed) {
       // dispose() ran while the handshake was in flight and had no socket to
       // close; the one that just arrived is ours to kill or it leaks.

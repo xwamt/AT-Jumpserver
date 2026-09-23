@@ -108,6 +108,7 @@ export class TerminalPanel {
   private readonly terminalId = randomUUID();
   private readonly connectionKind: JumpServerConnectionKind;
   private session: JumpServerSession;
+  private currentTokenId: string | undefined;
   private connected = false;
   private disposed = false;
   private connectionGeneration = 0;
@@ -165,6 +166,36 @@ export class TerminalPanel {
     return TerminalPanel.active;
   }
 
+  static getReusableToken(connectionKey?: string, asset?: CachedJumpServerAsset): string | undefined {
+    if (connectionKey) {
+      for (const panel of TerminalPanel.panels) {
+        if (panel.terminalId === connectionKey && panel.connected && panel.currentTokenId) {
+          return panel.currentTokenId;
+        }
+      }
+    }
+    if (asset) {
+      for (const panel of TerminalPanel.panels) {
+        if (
+          panel.connected &&
+          panel.currentTokenId &&
+          panel.asset.id === asset.id &&
+          panel.asset.bastionId === asset.bastionId
+        ) {
+          return panel.currentTokenId;
+        }
+      }
+    }
+    if (connectionKey) {
+      for (const panel of TerminalPanel.panels) {
+        if (panel.asset.id === connectionKey && panel.connected && panel.currentTokenId) {
+          return panel.currentTokenId;
+        }
+      }
+    }
+    return undefined;
+  }
+
   getTerminalId(): string {
     return this.terminalId;
   }
@@ -204,6 +235,7 @@ export class TerminalPanel {
       if (generation !== this.connectionGeneration) {
         return;
       }
+      this.currentTokenId = undefined;
       this.connected = false;
       this.terminalContext?.markDisconnected(this.terminalId);
       this.clearIdleDisconnect();
@@ -213,6 +245,7 @@ export class TerminalPanel {
 
   async reconnect(): Promise<void> {
     const generation = ++this.connectionGeneration;
+    this.currentTokenId = undefined;
     try {
       this.postStatus(t('Reconnecting...'));
       this.session.dispose();
@@ -229,6 +262,7 @@ export class TerminalPanel {
       if (generation !== this.connectionGeneration) {
         return;
       }
+      this.currentTokenId = undefined;
       this.connected = false;
       this.terminalContext?.markDisconnected(this.terminalId);
       this.clearIdleDisconnect();
@@ -238,6 +272,7 @@ export class TerminalPanel {
 
   disconnect(reason?: string): void {
     this.connectionGeneration++;
+    this.currentTokenId = undefined;
     this.clearIdleDisconnect();
     this.session.dispose();
     this.connected = false;
@@ -280,6 +315,7 @@ export class TerminalPanel {
       this.pendingOutputBytes = 0;
       this.clearIdleDisconnect();
       this.connectionGeneration++;
+      this.currentTokenId = undefined;
       this.session.dispose();
       this.connected = false;
       this.terminalContext?.clearIfActive(this.terminalId);
@@ -295,6 +331,11 @@ export class TerminalPanel {
       asset: this.asset,
       connectionKind: this.connectionKind,
       client: this.jumpServerClient,
+      onTokenReady: (tokenId) => {
+        if (generation === this.connectionGeneration) {
+          this.currentTokenId = tokenId;
+        }
+      },
       events: {
         output: (data) => {
           // The context buffer feeds MCP marker detection, so it must never be
@@ -361,6 +402,7 @@ export class TerminalPanel {
 
   private handleSessionStatus(message: string, generation: number): void {
     if (message.startsWith('Disconnected') && generation === this.connectionGeneration) {
+      this.currentTokenId = undefined;
       this.connected = false;
       this.terminalContext?.markDisconnected(this.terminalId);
       this.clearIdleDisconnect();

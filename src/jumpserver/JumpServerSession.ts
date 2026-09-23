@@ -3,7 +3,8 @@ import { UserVisibleError } from '../utils/errors';
 import { log } from '../utils/logger';
 import { extractProtocolNames, resolveFirstUsableAccount, type KokoWebSocket } from './JumpServerClient';
 import { connectionKindLabel, connectionKindProtocol, type JumpServerConnectionKind } from './connectionTypes';
-import type { JumpServerConnectionProtocol, TerminalEvents } from './types';
+import type { JumpServerAccountRef, JumpServerConnectionProtocol, TerminalEvents } from './types';
+import { selectConnectMethod, type ConnectMethod } from './connectMethods';
 
 /**
  * How often the client pings KoKo once the socket is bound. A bastion sits
@@ -37,24 +38,14 @@ export interface JumpServerSessionClient {
   getAssetDetail(assetId: string): Promise<Record<string, any>>;
   createConnectionToken(input: {
     assetId: string;
-    account: { id: string; alias?: string; username: string; hasSecret?: boolean };
+    account: JumpServerAccountRef;
     protocol: JumpServerConnectionProtocol;
-  }): Promise<{ id: string }>;
+    connectMethod?: string;
+  }): Promise<{ id: string; personalCredentialId?: string }>;
   getSmartEndpoint(tokenId: string): Promise<Record<string, any>>;
-  /**
-   * Endpoint lookup keyed by asset id, which the session can start while the
-   * connection token is still being minted. Optional so older clients and
-   * existing test doubles keep working; without it the session falls back to
-   * the serial token-based lookup above.
-   */
   getSmartEndpointForAsset?(assetId: string): Promise<Record<string, any>>;
-  /**
-   * Django form login that produces the KoKo web-session cookies. It needs no
-   * connection token, so the session fires it in parallel with everything else.
-   */
   ensureWebSession?(): Promise<void>;
   hasWebSession?(): boolean;
-  /** How much of the last openKokoWebSocket call was Django warmup, in ms. */
   lastKokoWarmupMs?(): number;
   openKokoWebSocket(input: {
     endpoint: Record<string, any>;
@@ -62,6 +53,8 @@ export interface JumpServerSessionClient {
     cols: number;
     rows: number;
   }): Promise<KokoWebSocket>;
+  getConnectMethods?(protocol?: string): Promise<Record<string, ConnectMethod[]>>;
+  markTokenReusable?(tokenId: string): Promise<boolean>;
 }
 
 export class JumpServerSession {
@@ -94,6 +87,7 @@ export class JumpServerSession {
     connectionKind: JumpServerConnectionKind;
     client: JumpServerSessionClient;
     events: TerminalEvents;
+    onTokenReady?(tokenId: string, info?: { reusable: boolean; kind?: string }): void;
   }) {}
 
   async connect(): Promise<void> {
@@ -122,11 +116,40 @@ export class JumpServerSession {
       }
       const account = resolveFirstUsableAccount(detail);
 
+      let connectMethod: string | undefined;
+      if (typeof client.getConnectMethods === 'function') {
+        try {
+          const methodsDict = await client.getConnectMethods();
+          const selected = selectConnectMethod(methodsDict, { protocol });
+          if (selected) {
+            if (selected.type === 'web') {
+              connectMethod = selected.value;
+            } else if (selected.type === 'native') {
+              throw new Error(
+                `Connection method '${selected.value}' (${selected.label}) requires a native client, which is not supported in the embedded terminal.`
+              );
+            } else if (selected.type === 'applet' || selected.type === 'virtual_app') {
+              throw new Error(
+                `Connection method '${selected.value}' (${selected.label}) requires ${selected.type}, which is not supported in the embedded terminal.`
+              );
+            } else {
+              connectMethod = selected.value;
+            }
+          }
+        } catch (error) {
+          if (error instanceof Error && error.message.includes('not supported in the embedded terminal')) {
+            throw error;
+          }
+          log.warn(`connect-methods query failed; falling back to protocol heuristics: ${String(error)}`);
+        }
+      }
+
       this.input.events.status('Creating connection token');
       const tokenPromise = step(() => client.createConnectionToken({
         assetId: this.input.asset.id,
         account,
-        protocol
+        protocol,
+        ...(connectMethod ? { connectMethod } : {})
       }), (ms) => {
         timings.token = ms;
       });
@@ -137,6 +160,15 @@ export class JumpServerSession {
       // rejection while the other one is still being awaited.
       endpointPromise.catch(() => undefined);
       const token = await tokenPromise;
+      let isReusable = false;
+      if (!token.personalCredentialId && typeof client.markTokenReusable === 'function') {
+        try {
+          isReusable = await client.markTokenReusable(token.id);
+        } catch {
+          isReusable = false;
+        }
+      }
+      this.input.onTokenReady?.(token.id, { reusable: isReusable, kind: this.input.connectionKind });
       const endpoint = await endpointPromise;
       if (this.disposed) {
         return;

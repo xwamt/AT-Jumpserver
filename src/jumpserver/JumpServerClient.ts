@@ -1,11 +1,12 @@
 import type { CachedJumpServerAsset, CachedJumpServerNode } from '../config/schema';
-import type { JumpServerAccountRef, JumpServerConnectionProtocol, JumpServerEndpoint, JumpServerSettingsWithPassword } from './types';
+import type { JumpServerAccountRef, JumpServerAliasAccount, JumpServerManagedAccountRef, JumpServerConnectionProtocol, JumpServerEndpoint, JumpServerSettingsWithPassword } from './types';
 import { log } from '../utils/logger';
 import { apiErrorMessageFromPayload, classifyRestFailure, JumpServerApiError } from './apiError';
 import { buildSelfAssetListPath, pageSignature, rewritePaginationRef, throttleWaitMs } from './pagination';
 import { GLOBAL_ORG_ID, type JumpServerOrg } from './orgs';
 import { createJumpServerFetch, type FetchLike, JUMPSERVER_CLIENT_USER_AGENT } from './restTransport';
 import { buildOrigin } from './urls';
+import { type ConnectMethod, normalizeConnectMethods } from './connectMethods';
 import { Agent as HttpsAgent } from 'node:https';
 import WebSocket from 'ws';
 /**
@@ -428,28 +429,65 @@ export function resolveFirstUsableAccount(detail: Record<string, any>): JumpServ
     : Array.isArray(detail.accounts)
       ? detail.accounts
       : [];
-  const preferred = accounts.find((account) => account?.has_secret === true && !String(account?.alias ?? '').startsWith('@')) ?? accounts[0];
-  if (preferred) {
-    const id = preferred.id ? String(preferred.id) : '';
-    const alias = preferred.alias ? String(preferred.alias) : undefined;
-    const username = String(preferred.username || preferred.name || alias || '');
-    if (id && username) {
-      return {
-        id,
-        alias,
-        username,
-        hasSecret: typeof preferred.has_secret === 'boolean' ? preferred.has_secret : undefined
-      };
+
+  const preferred = accounts.find((account) => account?.has_secret === true && !String(account?.alias ?? '').startsWith('@'));
+  if (preferred && preferred.id) {
+    const res: JumpServerManagedAccountRef = {
+      kind: 'managed',
+      id: String(preferred.id),
+      username: String(preferred.username || preferred.name || preferred.alias || ''),
+      hasSecret: typeof preferred.has_secret === 'boolean' ? preferred.has_secret : undefined
+    };
+    if (preferred.alias) {
+      res.alias = String(preferred.alias);
     }
+    return res;
   }
+
+  const managedFallback = accounts.find((account) => !String(account?.alias ?? '').startsWith('@') && account?.id);
+  if (managedFallback && managedFallback.id) {
+    const res: JumpServerManagedAccountRef = {
+      kind: 'managed',
+      id: String(managedFallback.id),
+      username: String(managedFallback.username || managedFallback.name || managedFallback.alias || ''),
+      hasSecret: typeof managedFallback.has_secret === 'boolean' ? managedFallback.has_secret : undefined
+    };
+    if (managedFallback.alias) {
+      res.alias = String(managedFallback.alias);
+    }
+    return res;
+  }
+
+  const aliasAccount = accounts.find((account) => String(account?.alias ?? '').startsWith('@'));
+  if (aliasAccount && aliasAccount.alias) {
+    return {
+      kind: 'alias',
+      alias: String(aliasAccount.alias).toUpperCase() as JumpServerAliasAccount,
+      id: aliasAccount.id ? String(aliasAccount.id) : undefined,
+      username: aliasAccount.username ? String(aliasAccount.username) : undefined,
+      hasSecret: typeof aliasAccount.has_secret === 'boolean' ? aliasAccount.has_secret : undefined
+    };
+  }
+
   throw new Error('No usable JumpServer account was returned for this asset.');
 }
 
+
+export function currentOsParam(): string {
+  if (process.platform === 'win32') {
+    return 'windows';
+  }
+  if (process.platform === 'darwin') {
+    return 'macos';
+  }
+  return 'linux';
+}
 
 export function buildConnectionTokenPayload(input: {
   assetId: string;
   account: JumpServerAccountRef;
   protocol: JumpServerConnectionProtocol;
+  connectMethod?: string;
 }): Record<string, unknown> {
   if (input.protocol === 'mysql') {
     return buildMysqlConnectionTokenPayload(input);
@@ -460,13 +498,29 @@ export function buildConnectionTokenPayload(input: {
   if (input.protocol === 'sftp') {
     return buildSftpConnectionTokenPayload(input);
   }
+
+  if (input.account.kind === 'alias') {
+    const payload: Record<string, unknown> = {
+      asset: input.assetId,
+      account: input.account.alias,
+      protocol: input.protocol,
+      connect_method: input.connectMethod || 'web_cli',
+      connect_options: DEFAULT_CONNECT_OPTIONS
+    };
+    if (input.account.alias === '@INPUT') {
+      payload.input_username = input.account.inputUsername || input.account.username || '';
+      payload.input_secret = input.account.inputSecret || '';
+    }
+    return payload;
+  }
+
   return {
     asset: input.assetId,
     account: input.account.id,
     protocol: input.protocol,
     input_username: input.account.username,
     input_secret: '',
-    connect_method: 'web_cli',
+    connect_method: input.connectMethod || 'web_cli',
     connect_options: DEFAULT_CONNECT_OPTIONS
   };
 }
@@ -474,14 +528,30 @@ export function buildConnectionTokenPayload(input: {
 export function buildSftpConnectionTokenPayload(input: {
   assetId: string;
   account: JumpServerAccountRef;
+  connectMethod?: string;
 }): Record<string, unknown> {
+  if (input.account.kind === 'alias') {
+    const payload: Record<string, unknown> = {
+      asset: input.assetId,
+      account: input.account.alias,
+      protocol: 'sftp',
+      connect_method: input.connectMethod || 'sftp',
+      connect_options: DEFAULT_SFTP_CONNECT_OPTIONS
+    };
+    if (input.account.alias === '@INPUT') {
+      payload.input_username = input.account.inputUsername || input.account.username || '';
+      payload.input_secret = input.account.inputSecret || '';
+    }
+    return payload;
+  }
+
   return {
     asset: input.assetId,
     account: input.account.id,
     protocol: 'sftp',
     input_username: input.account.username,
     input_secret: '',
-    connect_method: 'sftp',
+    connect_method: input.connectMethod || 'sftp',
     connect_options: DEFAULT_SFTP_CONNECT_OPTIONS
   };
 }
@@ -489,14 +559,30 @@ export function buildSftpConnectionTokenPayload(input: {
 export function buildMysqlConnectionTokenPayload(input: {
   assetId: string;
   account: JumpServerAccountRef;
+  connectMethod?: string;
 }): Record<string, unknown> {
+  if (input.account.kind === 'alias') {
+    const payload: Record<string, unknown> = {
+      asset: input.assetId,
+      account: input.account.alias,
+      protocol: 'mysql',
+      connect_method: input.connectMethod || 'db_client',
+      connect_options: DEFAULT_MYSQL_CONNECT_OPTIONS
+    };
+    if (input.account.alias === '@INPUT') {
+      payload.input_username = input.account.inputUsername || input.account.username || '';
+      payload.input_secret = input.account.inputSecret || '';
+    }
+    return payload;
+  }
+
   return {
     asset: input.assetId,
     account: input.account.alias || input.account.id,
     protocol: 'mysql',
     input_username: input.account.username,
     input_secret: '',
-    connect_method: 'db_client',
+    connect_method: input.connectMethod || 'db_client',
     connect_options: DEFAULT_MYSQL_CONNECT_OPTIONS
   };
 }
@@ -504,14 +590,30 @@ export function buildMysqlConnectionTokenPayload(input: {
 export function buildRedisConnectionTokenPayload(input: {
   assetId: string;
   account: JumpServerAccountRef;
+  connectMethod?: string;
 }): Record<string, unknown> {
+  if (input.account.kind === 'alias') {
+    const payload: Record<string, unknown> = {
+      asset: input.assetId,
+      account: input.account.alias,
+      protocol: 'redis',
+      connect_method: input.connectMethod || 'db_client',
+      connect_options: DEFAULT_REDIS_CONNECT_OPTIONS
+    };
+    if (input.account.alias === '@INPUT') {
+      payload.input_username = input.account.inputUsername || input.account.username || '';
+      payload.input_secret = input.account.inputSecret || '';
+    }
+    return payload;
+  }
+
   return {
     asset: input.assetId,
     account: input.account.alias || input.account.id,
     protocol: 'redis',
     input_username: input.account.username,
     input_secret: '',
-    connect_method: 'db_client',
+    connect_method: input.connectMethod || 'db_client',
     connect_options: DEFAULT_REDIS_CONNECT_OPTIONS
   };
 }
@@ -624,6 +726,8 @@ export class JumpServerClient {
   private restAuthEncoding: 'json' | 'form' | undefined;
   private smartEndpoint: JumpServerEndpoint | undefined;
   private cookies: JumpServerCookie[] = [];
+  private connectMethodsCache: { methods: Record<string, ConnectMethod[]>; expiresAt: number } | undefined;
+  private connectMethodsInflight: Promise<Record<string, ConnectMethod[]>> | undefined;
   private readonly fetchImpl: FetchLike;
   private readonly agent: HttpsAgent | undefined;
   private readonly timeouts: JumpServerTimeouts;
@@ -675,6 +779,7 @@ export class JumpServerClient {
 
   setOrgId(orgId: string): void {
     this.orgId = orgId;
+    this.connectMethodsCache = undefined;
   }
 
   /** Closes the keep-alive sockets. The client must not be used afterwards. */
@@ -984,20 +1089,73 @@ export class JumpServerClient {
     }
   }
 
-  async createConnectionToken(input: { assetId: string; account: JumpServerAccountRef; protocol: JumpServerConnectionProtocol }): Promise<{ id: string }> {
+  async getConnectMethods(protocol?: string): Promise<Record<string, ConnectMethod[]>> {
+    const now = Date.now();
+    if (this.connectMethodsCache && this.connectMethodsCache.expiresAt > now) {
+      return this.connectMethodsCache.methods;
+    }
+    if (this.connectMethodsInflight) {
+      return this.connectMethodsInflight;
+    }
+    this.connectMethodsInflight = (async () => {
+      await this.ensureAuthToken();
+      const os = currentOsParam();
+      const response = await this.authenticatedRequest(
+        `/api/v1/terminal/components/connect-methods/?os=${os}`
+      );
+      const json = await response.json();
+      const methods = normalizeConnectMethods(json);
+      this.connectMethodsCache = {
+        methods,
+        expiresAt: Date.now() + 30_000
+      };
+      return methods;
+    })().finally(() => {
+      this.connectMethodsInflight = undefined;
+    });
+    return this.connectMethodsInflight;
+  }
+
+  async markTokenReusable(tokenId: string): Promise<boolean> {
+    try {
+      await this.ensureAuthToken();
+      const response = await this.authenticatedRequest(
+        `/api/v1/authentication/connection-token/${encodeURIComponent(tokenId)}/reuse/`,
+        {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ is_reusable: true })
+        }
+      );
+      return response.ok;
+    } catch (error) {
+      log.debug(`markTokenReusable failed: ${String(error)}`);
+      return false;
+    }
+  }
+
+  async createConnectionToken(input: {
+    assetId: string;
+    account: JumpServerAccountRef;
+    protocol: JumpServerConnectionProtocol;
+    connectMethod?: string;
+  }): Promise<{ id: string; personalCredentialId?: string }> {
     await this.ensureAuthToken();
     const response = await this.authenticatedRequest('/api/v1/authentication/connection-token/', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(buildConnectionTokenPayload(input))
     });
-    const body = await response.json() as { id?: unknown };
+    const body = await response.json() as { id?: unknown; personal_credential_id?: unknown };
     if (!body.id) {
       throw new Error(input.protocol === 'mysql'
         ? 'JumpServer MySQL connection-token response did not include id.'
         : 'JumpServer connection-token response did not include id.');
     }
-    return { id: String(body.id) };
+    return {
+      id: String(body.id),
+      personalCredentialId: body.personal_credential_id ? String(body.personal_credential_id) : undefined
+    };
   }
 
   async getSmartEndpoint(tokenId: string): Promise<JumpServerEndpoint> {

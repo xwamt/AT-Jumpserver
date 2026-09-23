@@ -66,7 +66,7 @@ describe('JumpServerSftpSession', () => {
     await expect(list).resolves.toEqual([{ name: 'app', path: '/home/root/app', type: 'directory' }]);
     expect(fakeClient.createConnectionToken).toHaveBeenCalledWith({
       assetId: 'asset-1',
-      account: { id: 'account-1', username: 'root', hasSecret: true },
+      account: { kind: 'managed', id: 'account-1', username: 'root', hasSecret: true },
       protocol: 'sftp'
     });
   });
