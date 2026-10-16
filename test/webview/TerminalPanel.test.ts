@@ -250,6 +250,28 @@ describe('TerminalPanel rendering helpers', () => {
     expect(session.resize).toHaveBeenCalledWith(42, 132);
   });
 
+  it('handles reconnect message from webview by calling panel.reconnect', () => {
+    const session = { write: vi.fn(), resize: vi.fn() };
+    const reconnect = vi.fn().mockResolvedValue(undefined);
+
+    expect(handleTerminalMessage({ type: 'reconnect' }, session, { reconnect })).toBe(true);
+    expect(reconnect).toHaveBeenCalledTimes(1);
+    expect(session.write).not.toHaveBeenCalled();
+  });
+
+  it('renders a reconnect button in the terminal header', () => {
+    const body = renderTerminalBody({
+      scrollback: 1000,
+      fontSize: 14,
+      fontFamily: 'monospace',
+      semanticHighlight: true,
+      idleDisconnectMinutes: 60
+    });
+
+    expect(body).toContain('id="reconnect-btn"');
+    expect(body).toContain('class="terminal-reconnect-btn"');
+  });
+
   it('formats terminal notices as red terminal output', () => {
     expect(formatTerminalNotice('Connection disconnected')).toBe(
       '\r\n\x1b[31mConnection disconnected\x1b[0m\r\n'

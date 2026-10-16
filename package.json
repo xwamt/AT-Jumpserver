@@ -2,7 +2,7 @@
   "name": "at-jumpserver-terminal",
   "displayName": "%atJumpServer.displayName%",
   "description": "%atJumpServer.description%",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publisher": "local",
   "icon": "media/at-terminal-icon.png",
   "l10n": "./l10n",
@@ -146,7 +146,8 @@
       },
       {
         "command": "jumpserverManager.reconnect",
-        "title": "%atJumpServer.command.reconnect.title%"
+        "title": "%atJumpServer.command.reconnect.title%",
+        "icon": "$(sync)"
       }
     ],
     "menus": {
@@ -247,6 +248,13 @@
           "command": "jumpserverManager.sftp.copyPath",
           "when": "view == jumpserverManager.sftpFiles && (viewItem == jumpserverSftpFile || viewItem == jumpserverSftpDirectory)",
           "group": "3_copy@1"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "jumpserverManager.reconnect",
+          "when": "jumpserverTerminalActive",
+          "group": "navigation"
         }
       ],
       "commandPalette": [

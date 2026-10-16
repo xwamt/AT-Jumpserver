@@ -76,6 +76,7 @@
   "Verify TLS": "验证 TLS 证书",
   "Starting...": "正在启动…",
   "JumpServer {kind}: {name}": "JumpServer {kind}：{name}",
+  "Reconnect": "重新连接",
   "Reconnecting...": "正在重新连接…",
   "Disconnected": "已断开连接",
   "Connection disconnected": "连接已断开",

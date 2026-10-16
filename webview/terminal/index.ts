@@ -98,6 +98,14 @@ const resizeObserver = new ResizeObserver(() => {
 resizeObserver.observe(container);
 window.addEventListener('resize', () => scheduleFit());
 
+const reconnectBtn = document.querySelector<HTMLButtonElement>('#reconnect-btn');
+if (reconnectBtn) {
+  reconnectBtn.addEventListener('click', () => {
+    reconnectBtn.disabled = true;
+    vscode.postMessage({ type: 'reconnect' });
+  });
+}
+
 window.addEventListener('message', (event: MessageEvent) => {
   const message = event.data as { type?: string; payload?: unknown };
   writeTerminalOutputMessage(message, term, { semanticHighlight: container.dataset.semanticHighlight === 'true' });
@@ -112,6 +120,9 @@ window.addEventListener('message', (event: MessageEvent) => {
     status.classList.toggle('terminal-status--connected', statusClass === 'connected');
     status.classList.toggle('terminal-status--disconnected', statusClass === 'disconnected');
     status.classList.toggle('terminal-status--connecting', statusClass === 'connecting');
+    if (reconnectBtn) {
+      reconnectBtn.disabled = statusClass === 'connecting';
+    }
   }
 });
 

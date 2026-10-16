@@ -2,7 +2,7 @@
 
 AT JumpServer Terminal is a VS Code / Cursor extension for opening browser-style JumpServer SSH, MySQL, and Redis terminal sessions from the editor.
 
-**Current version: 0.2.0**
+**Current version: 0.2.1**
 
 ## Supported In This Version
 

@@ -1752,3 +1752,63 @@ describe('JumpServerClient REST TLS verification', () => {
   });
 });
 
+describe('JumpServerClient CSRF and Referer header defense', () => {
+  it('attaches Referer and Origin headers to requests', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response('', { status: 404 }));
+    const client = new JumpServerClient({
+      baseUrl: 'https://jumpserver.example.com',
+      orgId: '',
+      username: 'alan',
+      password: 'secret',
+      verifyTls: true
+    }, fetchMock);
+
+    await client.healthCheck();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, init] = fetchMock.mock.calls[0];
+    const headers = (init as RequestInit).headers as Record<string, string>;
+    expect(headers.Referer).toBe('https://jumpserver.example.com/');
+    expect(headers.Origin).toBe('https://jumpserver.example.com');
+  });
+
+  it('does not send session cookies when Bearer Authorization header is present', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('', {
+        status: 200,
+        headers: { 'set-cookie': 'sessionid=sess-123; Path=/' }
+      }))
+      .mockResolvedValueOnce(jsonResponse({ token: 'bearer-token-abc' }))
+      .mockResolvedValueOnce(jsonResponse({ id: 'conn-token-1' }));
+
+    const client = new JumpServerClient({
+      baseUrl: 'https://jumpserver.example.com',
+      orgId: '',
+      username: 'alan',
+      password: 'secret',
+      verifyTls: true
+    }, fetchMock);
+
+    // Warm up a session cookie into client.cookies
+    await client.healthCheck();
+
+    // Now make an authenticated request which uses Authorization: Bearer
+    const token = await client.createConnectionToken({
+      assetId: 'asset-1',
+      account: { id: 'acc-1', username: 'root' },
+      protocol: 'ssh'
+    });
+    expect(token.id).toBe('conn-token-1');
+
+    // Inspect the createConnectionToken call headers
+    const connectionTokenCall = fetchMock.mock.calls.find(([url]) =>
+      String(url).includes('/api/v1/authentication/connection-token/')
+    );
+    expect(connectionTokenCall).toBeDefined();
+    const headers = (connectionTokenCall![1] as RequestInit).headers as Record<string, string>;
+    expect(headers.Authorization).toBe('Bearer bearer-token-abc');
+    expect(headers.Cookie).toBeUndefined();
+    expect(headers.Referer).toBe('https://jumpserver.example.com/');
+    expect(headers.Origin).toBe('https://jumpserver.example.com');
+  });
+});
+

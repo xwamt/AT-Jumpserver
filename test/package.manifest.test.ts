@@ -8,7 +8,7 @@ describe('AT JumpServer Terminal manifest', () => {
   it('declares JumpServer terminal, SFTP file commands, and MCP install command', () => {
     expect(manifest.name).toBe('at-jumpserver-terminal');
     expect(manifest.displayName).toBe('%atJumpServer.displayName%');
-    expect(manifest.version).toBe('0.2.0');
+    expect(manifest.version).toBe('0.2.1');
     expect(manifest.contributes.viewsContainers.activitybar[0].id).toBe('jumpserverManager');
     expect(manifest.contributes.viewsContainers.activitybar[0].icon).toBe('media/at-terminal-activity.svg');
 
@@ -180,7 +180,7 @@ describe('AT JumpServer Terminal manifest', () => {
     const english = JSON.parse(readFileSync(join(__dirname, '..', 'package.nls.json'), 'utf8'));
     const chinese = JSON.parse(readFileSync(join(__dirname, '..', 'package.nls.zh-cn.json'), 'utf8'));
     expect(english['atJumpServer.command.setAssetTrust.title']).toBe('JumpServer: Set Asset Trust Level');
-    expect(chinese['atJumpServer.command.setAssetTrust.title']).toBe('JumpServer: 设置资产信任级别');
+    expect(chinese['atJumpServer.command.setAssetTrust.title']).toBe('设置信任模式');
   });
 
   it('shows bastion actions when the tree item is a JumpServer bastion', () => {

@@ -56,6 +56,69 @@ body {
 .terminal-status-text {
   color: var(--vscode-foreground);
   font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminal-reconnect-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 8px;
+  margin-left: 6px;
+  border-radius: 3px;
+  border: 1px solid var(--vscode-button-border, transparent);
+  background: var(--vscode-button-secondaryBackground, rgba(255, 255, 255, 0.08));
+  color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+  font: 11px var(--vscode-font-family);
+  font-weight: 500;
+  cursor: pointer;
+  outline: none;
+  transition: background-color 0.15s ease, opacity 0.15s ease;
+  flex: 0 0 auto;
+}
+
+.terminal-reconnect-btn:hover:not(:disabled) {
+  background: var(--vscode-button-secondaryHoverBackground, rgba(255, 255, 255, 0.15));
+}
+
+.terminal-reconnect-btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.terminal-reconnect-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.terminal-status--disconnected .terminal-reconnect-btn {
+  background: var(--vscode-button-background, #007acc);
+  color: var(--vscode-button-foreground, #ffffff);
+  border-color: var(--vscode-button-border, transparent);
+}
+
+.terminal-status--disconnected .terminal-reconnect-btn:hover:not(:disabled) {
+  background: var(--vscode-button-hoverBackground, #0062a3);
+}
+
+.terminal-reconnect-icon {
+  flex-shrink: 0;
+  display: block;
+}
+
+.terminal-status--connecting .terminal-reconnect-icon {
+  animation: terminal-spin 1s linear infinite;
+}
+
+@keyframes terminal-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .terminal-host {

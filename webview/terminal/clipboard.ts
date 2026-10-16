@@ -108,7 +108,13 @@ export function resolveTerminalStatusClass(payload: string): 'connected' | 'disc
     return 'connected';
   }
   const lowerPayload = payload.toLowerCase();
-  if (lowerPayload.includes('disconnected')) {
+  if (
+    lowerPayload.includes('disconnect') ||
+    lowerPayload.includes('failed') ||
+    lowerPayload.includes('error') ||
+    lowerPayload.includes('unavailable') ||
+    lowerPayload.includes('rejected')
+  ) {
     return 'disconnected';
   }
   return 'connecting';

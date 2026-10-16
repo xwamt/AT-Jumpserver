@@ -13,7 +13,8 @@ import { t } from '../i18n/t';
 type TerminalMessage =
   | { type: 'ready'; rows: number; cols: number }
   | { type: 'input'; payload: string }
-  | { type: 'resize'; rows: number; cols: number };
+  | { type: 'resize'; rows: number; cols: number }
+  | { type: 'reconnect' };
 
 interface TerminalSessionLike {
   write(data: string): void;
@@ -67,6 +68,12 @@ export function renderTerminalBody(settings: TerminalSettings): string {
   <header class="terminal-status terminal-status--connecting" id="status" role="status" aria-live="polite">
     <span class="terminal-status-dot"></span>
     <span class="terminal-status-text">${escapeAttr(t('Starting...'))}</span>
+    <button id="reconnect-btn" class="terminal-reconnect-btn" type="button" title="${escapeAttr(t('Reconnect'))}" aria-label="${escapeAttr(t('Reconnect'))}">
+      <svg class="terminal-reconnect-icon" viewBox="0 0 16 16" width="12" height="12" fill="currentColor">
+        <path d="M13.65 2.35A7.958 7.958 0 0 0 8 0a8 8 0 1 0 8 8h-2a6 6 0 1 1-1.76-4.24l-2.48 2.48H16V0l-2.35 2.35z"/>
+      </svg>
+      <span class="terminal-reconnect-label">${escapeAttr(t('Reconnect'))}</span>
+    </button>
     <span class="terminal-host">xterm.js</span>
   </header>
   <section id="terminal" class="terminal-surface" data-scrollback="${escapeAttr(settings.scrollback)}" data-font-size="${escapeAttr(settings.fontSize)}" data-font-family="${escapeAttr(settings.fontFamily)}" data-semantic-highlight="${escapeAttr(settings.semanticHighlight)}"></section>
@@ -78,7 +85,15 @@ export function formatTerminalNotice(message: string): string {
   return `\r\n\x1b[31m${message}\x1b[0m\r\n`;
 }
 
-export function handleTerminalMessage(message: TerminalMessage, session: TerminalSessionLike): boolean {
+export function handleTerminalMessage(
+  message: TerminalMessage,
+  session: TerminalSessionLike,
+  panel?: { reconnect(): Promise<void> }
+): boolean {
+  if (message.type === 'reconnect') {
+    void panel?.reconnect();
+    return true;
+  }
   if (message.type === 'input' && typeof message.payload === 'string') {
     session.write(message.payload);
     return true;
@@ -157,6 +172,7 @@ export class TerminalPanel {
     );
     terminal.bind();
     terminal.publishContext();
+    void vscode.commands.executeCommand('setContext', 'jumpserverTerminalActive', true);
     void terminal.connect();
     return terminal;
   }
@@ -175,6 +191,7 @@ export class TerminalPanel {
     }
     TerminalPanel.panels.clear();
     TerminalPanel.active = undefined;
+    void vscode.commands.executeCommand('setContext', 'jumpserverTerminalActive', false);
   }
 
   static disposeSessionsForBastion(bastionId: string): string[] {
@@ -252,7 +269,7 @@ export class TerminalPanel {
   private bind(): void {
     this.panel.webview.onDidReceiveMessage((message: TerminalMessage) => {
       try {
-        if (handleTerminalMessage(message, this.session)) {
+        if (handleTerminalMessage(message, this.session, this)) {
           this.markActivity();
         }
       } catch (error) {
@@ -267,6 +284,10 @@ export class TerminalPanel {
       if (event.webviewPanel.active) {
         TerminalPanel.active = this;
         this.publishContext();
+        void vscode.commands.executeCommand('setContext', 'jumpserverTerminalActive', true);
+      } else if (TerminalPanel.active === this) {
+        TerminalPanel.active = undefined;
+        void vscode.commands.executeCommand('setContext', 'jumpserverTerminalActive', false);
       }
     });
 
@@ -286,6 +307,7 @@ export class TerminalPanel {
       TerminalPanel.panels.delete(this);
       if (TerminalPanel.active === this) {
         TerminalPanel.active = undefined;
+        void vscode.commands.executeCommand('setContext', 'jumpserverTerminalActive', false);
       }
     });
   }

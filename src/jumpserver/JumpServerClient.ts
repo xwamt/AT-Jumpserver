@@ -1529,8 +1529,18 @@ export class JumpServerClient {
     const url = resolveJumpServerUrl(this.settings.baseUrl, pathOrUrl);
     const headers = headersToRecord(init.headers);
     const cookieHeader = cookiesForUrl(this.cookies, url);
-    if (cookieHeader && !hasHeader(headers, 'Cookie')) {
+    if (cookieHeader && !hasHeader(headers, 'Cookie') && !hasHeader(headers, 'Authorization')) {
       headers.Cookie = cookieHeader;
+    }
+    if (!hasHeader(headers, 'Referer')) {
+      headers.Referer = resolveJumpServerUrl(this.settings.baseUrl, '/');
+    }
+    if (!hasHeader(headers, 'Origin')) {
+      headers.Origin = buildOrigin(this.settings.baseUrl);
+    }
+    const csrfCookie = this.cookies.find((candidate) => candidate.name === 'csrftoken');
+    if (csrfCookie && !hasHeader(headers, 'X-CSRFToken')) {
+      headers['X-CSRFToken'] = csrfCookie.value;
     }
     if (!hasHeader(headers, 'Date')) {
       headers.Date = rfc1123Date();
