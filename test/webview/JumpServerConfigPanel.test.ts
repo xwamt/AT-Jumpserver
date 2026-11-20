@@ -2,6 +2,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as vscode from 'vscode';
 import { parseJumpServerBastion } from '../../src/config/schema';
 import {
+  clearKokoCapabilityCache,
+  detectKokoCapabilities,
+  isKokoCookieLess
+} from '../../src/jumpserver/kokoCapability';
+import {
   createConfigAssets,
   JumpServerConfigPanel,
   renderJumpServerConfigBody
@@ -18,7 +23,8 @@ function createPanel() {
       onDidReceiveMessage: vi.fn((listener: (message: unknown) => void) => {
         messageListeners.push(listener);
         return { dispose: vi.fn() };
-      })
+      }),
+      postMessage: vi.fn()
     },
     dispose: vi.fn(),
     onDidDispose: vi.fn()
@@ -342,5 +348,170 @@ describe('JumpServerConfigPanel', () => {
     const disposeOrder = vi.mocked(panelHost.panel.dispose).mock.invocationCallOrder[0];
     const refreshOrder = vi.mocked(vscode.commands.executeCommand).mock.invocationCallOrder[0];
     expect(disposeOrder).toBeLessThan(refreshOrder);
+  });
+
+  it('clears the cached KoKo capability for the saved bastion after editing', async () => {
+    clearKokoCapabilityCache();
+    await detectKokoCapabilities(
+      { getClientVersions: async () => ['5.0.0'] },
+      FIXED_BASTION_ID
+    );
+    expect(isKokoCookieLess(FIXED_BASTION_ID)).toBe(true);
+
+    const panelHost = createPanel();
+    vi.spyOn(vscode.window, 'createWebviewPanel').mockReturnValue(panelHost.panel);
+    await JumpServerConfigPanel.open(
+      extensionContext(),
+      { getBastion: async () => undefined, saveBastion: async () => undefined },
+      { mode: 'edit', bastionId: FIXED_BASTION_ID },
+      idFactory
+    );
+
+    await panelHost.fireMessage({
+      type: 'save',
+      payload: {
+        displayName: 'prod',
+        bastionId: FIXED_BASTION_ID,
+        baseUrl: 'https://legacy.example.com/',
+        orgId: '',
+        username: 'alan',
+        password: '',
+        verifyTls: true
+      }
+    });
+
+    expect(isKokoCookieLess(FIXED_BASTION_ID)).toBeUndefined();
+  });
+
+  it('shows password keep-blank hint only in edit mode and renders Test Connection button', () => {
+    const addHtml = renderJumpServerConfigBody();
+    expect(addHtml).not.toContain('Leave blank to keep current password');
+    expect(addHtml).toContain('id="testBtn"');
+    expect(addHtml).toContain('Test Connection');
+
+    const editHtml = renderJumpServerConfigBody({
+      id: FIXED_BASTION_ID,
+      name: 'prod',
+      baseUrl: 'https://jumpserver.example.com',
+      orgId: '',
+      username: 'alan',
+      verifyTls: true,
+      updatedAt: 1
+    });
+    expect(editHtml).toContain('Leave blank to keep current password');
+  });
+
+  it('tests connection without saving or closing the panel and detects accessible orgs', async () => {
+    const panelHost = createPanel();
+    const saveBastion = vi.fn();
+    const client = {
+      healthCheck: vi.fn(async () => ({ ok: true })),
+      ensureAuthToken: vi.fn(async () => 'token-1'),
+      getUserProfile: vi.fn(async () => ({ username: 'alan' })),
+      listAccessibleOrgs: vi.fn(async () => [{ id: 'org-1', name: 'Default' }, { id: 'org-2', name: 'Prod' }]),
+      dispose: vi.fn()
+    };
+    const clientFactory = vi.fn(() => client);
+    vi.spyOn(vscode.window, 'createWebviewPanel').mockReturnValue(panelHost.panel);
+
+    await JumpServerConfigPanel.open(
+      extensionContext(),
+      { getBastion: async () => undefined, saveBastion },
+      { mode: 'add' },
+      idFactory,
+      clientFactory
+    );
+
+    await panelHost.fireMessage({
+      type: 'test',
+      payload: {
+        displayName: 'Prod',
+        bastionId: '',
+        baseUrl: 'https://jms.prod.example.com',
+        orgId: '',
+        username: 'alan',
+        password: 'secret',
+        verifyTls: true
+      }
+    });
+
+    expect(clientFactory).toHaveBeenCalledWith({
+      baseUrl: 'https://jms.prod.example.com',
+      orgId: '',
+      username: 'alan',
+      password: 'secret',
+      verifyTls: true
+    });
+    expect(client.healthCheck).toHaveBeenCalledTimes(1);
+    expect(client.ensureAuthToken).toHaveBeenCalledTimes(1);
+    expect(client.getUserProfile).toHaveBeenCalledTimes(1);
+    expect(client.listAccessibleOrgs).toHaveBeenCalledTimes(1);
+    expect(client.dispose).toHaveBeenCalledTimes(1);
+    expect(saveBastion).not.toHaveBeenCalled();
+    expect(panelHost.panel.dispose).not.toHaveBeenCalled();
+    expect(panelHost.panel.webview.postMessage).toHaveBeenCalledWith({
+      type: 'testResult',
+      ok: true,
+      message: 'Connection succeeded as alan. Accessible organizations: Default, Prod.'
+    });
+  });
+
+  it('reuses stored password during edit-mode connection test and reports auth failures inline', async () => {
+    const panelHost = createPanel();
+    const getPassword = vi.fn(async () => 'stored-secret');
+    const client = {
+      healthCheck: vi.fn(async () => ({ ok: true })),
+      ensureAuthToken: vi.fn(async () => {
+        throw new Error('401 Invalid credentials');
+      }),
+      getUserProfile: vi.fn(),
+      listAccessibleOrgs: vi.fn(),
+      dispose: vi.fn()
+    };
+    const clientFactory = vi.fn(() => client);
+    vi.spyOn(vscode.window, 'createWebviewPanel').mockReturnValue(panelHost.panel);
+
+    await JumpServerConfigPanel.open(
+      extensionContext(),
+      {
+        getBastion: async () => ({
+          id: FIXED_BASTION_ID,
+          name: 'Prod',
+          baseUrl: 'https://jms.prod.example.com',
+          orgId: 'org-1',
+          username: 'alan',
+          verifyTls: true,
+          updatedAt: 1
+        }),
+        saveBastion: async () => undefined,
+        getPassword
+      },
+      { mode: 'edit', bastionId: FIXED_BASTION_ID },
+      idFactory,
+      clientFactory
+    );
+
+    await panelHost.fireMessage({
+      type: 'test',
+      payload: {
+        displayName: 'Prod',
+        bastionId: FIXED_BASTION_ID,
+        baseUrl: 'https://jms.prod.example.com',
+        orgId: 'org-1',
+        username: 'alan',
+        password: '',
+        verifyTls: true
+      }
+    });
+
+    expect(getPassword).toHaveBeenCalledWith(FIXED_BASTION_ID);
+    expect(clientFactory).toHaveBeenCalledWith(expect.objectContaining({ password: 'stored-secret' }));
+    expect(client.dispose).toHaveBeenCalledTimes(1);
+    expect(panelHost.panel.dispose).not.toHaveBeenCalled();
+    expect(panelHost.panel.webview.postMessage).toHaveBeenCalledWith({
+      type: 'testResult',
+      ok: false,
+      message: expect.stringContaining('401 Invalid credentials')
+    });
   });
 });

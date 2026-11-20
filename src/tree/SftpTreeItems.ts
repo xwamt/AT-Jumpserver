@@ -4,9 +4,12 @@ import type { JumpServerSftpEntry } from '../sftp/SftpTypes';
 import { t } from '../i18n/t';
 
 export class SftpPlaceholderTreeItem extends vscode.TreeItem {
-  constructor(label: string) {
+  constructor(label: string, command?: vscode.Command) {
     super(label, vscode.TreeItemCollapsibleState.None);
     this.contextValue = 'jumpserverSftpPlaceholder';
+    if (command) {
+      this.command = command;
+    }
   }
 }
 
@@ -39,5 +42,12 @@ export class SftpFileTreeItem extends vscode.TreeItem {
     this.contextValue = disconnected ? 'jumpserverSftpDisconnectedFile' : 'jumpserverSftpFile';
     this.description = entry.size === undefined ? undefined : formatFileSize(entry.size);
     this.tooltip = entry.path;
+    if (!disconnected) {
+      this.command = {
+        command: 'jumpserverManager.sftp.preview',
+        title: t('Preview'),
+        arguments: [this]
+      };
+    }
   }
 }

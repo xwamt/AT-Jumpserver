@@ -181,4 +181,18 @@ describe('JumpServerClientPool', () => {
     expect(lines).toContain('JumpServer client created for bastion bastion-1');
     expect(lines).toContain('JumpServer client reused for bastion bastion-1');
   });
+
+  it('rebuilds and disposes the client when kokoBearerHandshake changes', () => {
+    const { pool, constructed } = poolWithStubs();
+
+    const first = pool.acquire('bastion-1', settings(), { kokoBearerHandshake: false });
+    const same = pool.acquire('bastion-1', settings(), { kokoBearerHandshake: false });
+    const rebuilt = pool.acquire('bastion-1', settings(), { kokoBearerHandshake: true });
+
+    expect(same).toBe(first);
+    expect(rebuilt).not.toBe(first);
+    expect(constructed).toHaveLength(2);
+    expect(constructed[0].dispose).toHaveBeenCalledTimes(1);
+    expect(constructed[1].dispose).not.toHaveBeenCalled();
+  });
 });

@@ -1,7 +1,12 @@
 import { EventEmitter } from 'node:events';
-import { describe, expect, it, vi } from 'vitest';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   JumpServerSftpSession,
+  SFTP_HEARTBEAT_INTERVAL_MS,
+  SFTP_HEARTBEAT_TIMEOUT_MS,
   SFTP_UPLOAD_CHUNK_BYTES,
   type JumpServerSftpSessionClient
 } from '../../src/sftp/JumpServerSftpSession';
@@ -10,6 +15,12 @@ class FakeSocket extends EventEmitter {
   readonly send = vi.fn();
   readonly close = vi.fn();
   readonly terminate = vi.fn();
+  answersPings = true;
+  readonly ping = vi.fn(() => {
+    if (this.answersPings) {
+      this.emit('pong');
+    }
+  });
   /** A socket that always claims an empty queue, so send backpressure never engages here. */
   readonly bufferedAmount = 0;
 
@@ -17,6 +28,13 @@ class FakeSocket extends EventEmitter {
     this.emit('message', JSON.stringify(message));
   }
 }
+
+const tempDirs: string[] = [];
+
+afterEach(async () => {
+  vi.useRealTimers();
+  await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+});
 
 function client(socket: FakeSocket): JumpServerSftpSessionClient & {
   createConnectionToken: ReturnType<typeof vi.fn>;
@@ -66,8 +84,9 @@ describe('JumpServerSftpSession', () => {
     await expect(list).resolves.toEqual([{ name: 'app', path: '/home/root/app', type: 'directory' }]);
     expect(fakeClient.createConnectionToken).toHaveBeenCalledWith({
       assetId: 'asset-1',
-      account: { id: 'account-1', username: 'root', hasSecret: true },
-      protocol: 'sftp'
+      account: { kind: 'managed', id: 'account-1', username: 'root', hasSecret: true },
+      protocol: 'sftp',
+      connectMethod: 'web_sftp'
     });
   });
 
@@ -559,6 +578,179 @@ describe('JumpServerSftpSession', () => {
     });
 
     await expect(download).rejects.toThrow(/in-memory limit/i);
+  });
+
+  it('drops the SFTP session, rejects pending commands, and clears timers when heartbeat pongs stop', async () => {
+    vi.useFakeTimers();
+    const socket = new FakeSocket();
+    socket.answersPings = false;
+    const session = new JumpServerSftpSession({ asset: { id: 'asset-1', name: 'web-1' }, client: client(socket) });
+    const connecting = session.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    socket.emitMessage({ id: 'ws-1', type: 'CONNECT', data: '{}' });
+    await connecting;
+
+    const pendingList = session.listDirectory('/tmp');
+    const rejected = pendingList.catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(SFTP_HEARTBEAT_INTERVAL_MS + SFTP_HEARTBEAT_TIMEOUT_MS + 100);
+
+    const error = await rejected;
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toMatch(/heartbeat/i);
+    expect(session.isConnected()).toBe(false);
+    expect(socket.ping).toHaveBeenCalled();
+    expect(socket.terminate).toHaveBeenCalledTimes(1);
+    session.dispose();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('keeps the SFTP session open while pong replies arrive on time', async () => {
+    vi.useFakeTimers();
+    const socket = new FakeSocket();
+    const session = new JumpServerSftpSession({ asset: { id: 'asset-1', name: 'web-1' }, client: client(socket) });
+    const connecting = session.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    socket.emitMessage({ id: 'ws-1', type: 'CONNECT', data: '{}' });
+    await connecting;
+
+    await vi.advanceTimersByTimeAsync(SFTP_HEARTBEAT_INTERVAL_MS * 3);
+
+    expect(socket.ping).toHaveBeenCalled();
+    expect(session.isConnected()).toBe(true);
+    expect(socket.terminate).not.toHaveBeenCalled();
+    session.dispose();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('falls back to a dedicated web_sftp token when a reused terminal token fails the SFTP handshake', async () => {
+    const socket = new FakeSocket();
+    const fakeClient = client(socket);
+    (fakeClient.openKokoSftpWebSocket as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce(new Error('401 reusable token expired'))
+      .mockResolvedValueOnce(socket as never);
+    const session = new JumpServerSftpSession({
+      asset: { id: 'asset-1', name: 'web-1' },
+      client: fakeClient,
+      getReusableTokenId: () => 'stale-terminal-token'
+    });
+
+    const connecting = session.connect();
+    await vi.waitFor(() => expect(fakeClient.openKokoSftpWebSocket).toHaveBeenCalledTimes(2));
+    await flushPromises();
+    socket.emitMessage({ id: 'ws-1', type: 'CONNECT', data: '{}' });
+    await connecting;
+
+    expect(fakeClient.createConnectionToken).toHaveBeenCalledTimes(1);
+    expect(fakeClient.createConnectionToken).toHaveBeenCalledWith({
+      assetId: 'asset-1',
+      account: { kind: 'managed', id: 'account-1', username: 'root', hasSecret: true },
+      protocol: 'sftp',
+      connectMethod: 'web_sftp'
+    });
+    expect(fakeClient.openKokoSftpWebSocket).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      tokenId: 'stale-terminal-token'
+    }));
+    expect(fakeClient.openKokoSftpWebSocket).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      tokenId: 'token-1'
+    }));
+    expect(session.isConnected()).toBe(true);
+  });
+
+  it('streams small and multi-chunk files from disk with uploadFromFile without buffering the whole file', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'jms-sftp-upload-'));
+    tempDirs.push(dir);
+    const smallPath = join(dir, 'small.txt');
+    const largePath = join(dir, 'large.bin');
+    await writeFile(smallPath, 'hello');
+    const largeBytes = Buffer.concat([
+      Buffer.alloc(SFTP_UPLOAD_CHUNK_BYTES, 0x61),
+      Buffer.alloc(1024, 0x62)
+    ]);
+    await writeFile(largePath, largeBytes);
+
+    const socket = new FakeSocket();
+    const session = await openSession(socket);
+    autoAckUploads(socket);
+
+    const smallProgress: Array<[number, number]> = [];
+    await session.uploadFromFile('/tmp/small.txt', smallPath, (sent, total) => smallProgress.push([sent, total]));
+    const smallFrames = socket.send.mock.calls
+      .map(([frame]) => JSON.parse(String(frame)))
+      .filter((frame) => frame.cmd === 'upload');
+    expect(smallFrames).toHaveLength(1);
+    expect(JSON.parse(smallFrames[0].data)).toEqual({
+      path: '/tmp/small.txt',
+      size: 5,
+      offSet: 0,
+      chunk: false
+    });
+    expect(Buffer.from(smallFrames[0].raw, 'base64').toString('utf8')).toBe('hello');
+    expect(smallProgress).toEqual([[5, 5]]);
+
+    socket.send.mockClear();
+    const largeProgress: Array<[number, number]> = [];
+    await session.uploadFromFile('/tmp/large.bin', largePath, (sent, total) => largeProgress.push([sent, total]));
+    const largeFrames = socket.send.mock.calls
+      .map(([frame]) => JSON.parse(String(frame)))
+      .filter((frame) => frame.cmd === 'upload');
+
+    expect(largeFrames).toHaveLength(3);
+    expect(new Set(largeFrames.map((frame) => frame.id)).size).toBe(1);
+    expect(JSON.parse(largeFrames[0].data)).toEqual({
+      path: '/tmp/large.bin',
+      size: largeBytes.byteLength,
+      offSet: 0,
+      chunk: true
+    });
+    expect(Buffer.from(largeFrames[0].raw, 'base64').equals(largeBytes.subarray(0, SFTP_UPLOAD_CHUNK_BYTES))).toBe(true);
+    expect(JSON.parse(largeFrames[1].data)).toEqual({
+      path: '/tmp/large.bin',
+      size: largeBytes.byteLength,
+      offSet: SFTP_UPLOAD_CHUNK_BYTES,
+      chunk: true
+    });
+    expect(Buffer.from(largeFrames[1].raw, 'base64').equals(largeBytes.subarray(SFTP_UPLOAD_CHUNK_BYTES))).toBe(true);
+    expect(JSON.parse(largeFrames[2].data)).toEqual({
+      path: '/tmp/large.bin',
+      size: 0,
+      offSet: 0,
+      merge: true
+    });
+    expect(largeProgress).toEqual([
+      [SFTP_UPLOAD_CHUNK_BYTES, largeBytes.byteLength],
+      [largeBytes.byteLength, largeBytes.byteLength]
+    ]);
+  });
+
+  it('aborts uploadFromFile on chunk failure without sending merge and closes the file handle', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'jms-sftp-upload-fail-'));
+    tempDirs.push(dir);
+    const largePath = join(dir, 'fail.bin');
+    await writeFile(largePath, Buffer.alloc(SFTP_UPLOAD_CHUNK_BYTES + 2048, 0x63));
+
+    const socket = new FakeSocket();
+    const session = await openSession(socket);
+    socket.send.mockImplementation((frame: unknown) => {
+      const parsed = JSON.parse(String(frame));
+      if (parsed.cmd !== 'upload') {
+        return;
+      }
+      const data = JSON.parse(parsed.data);
+      queueMicrotask(() => {
+        if (data.offSet > 0) {
+          socket.emitMessage({ id: parsed.id, type: 'SFTP_DATA', cmd: 'upload', err: 'quota exceeded' });
+        } else {
+          socket.emitMessage({ id: parsed.id, type: 'SFTP_DATA', cmd: 'upload', data: 'ok' });
+        }
+      });
+    });
+
+    await expect(session.uploadFromFile('/tmp/fail.bin', largePath)).rejects.toThrow('quota exceeded');
+    const frames = socket.send.mock.calls
+      .map(([frame]) => JSON.parse(String(frame)))
+      .filter((frame) => frame.cmd === 'upload');
+    expect(frames).toHaveLength(2);
+    expect(frames.some((frame) => JSON.parse(frame.data).merge)).toBe(false);
   });
 });
 

@@ -13,13 +13,25 @@ export interface JumpServerAssetSource {
   listAssetTrustOverrides?(): Promise<Record<string, 'policy' | 'full'>>;
 }
 
+interface BastionTreeIndex {
+  childGroupPathsByParentKey: Map<string, string[][]>;
+  assetsByParentKey: Map<string, CachedJumpServerAsset[]>;
+}
+
+interface TreeSnapshot {
+  trustOverlay: Record<string, 'policy' | 'full'>;
+  bastionIndices: Map<string, BastionTreeIndex>;
+}
+
 export class JumpServerTreeProvider implements vscode.TreeDataProvider<JumpServerTreeElement> {
   private readonly changed = new vscode.EventEmitter<JumpServerTreeElement | undefined>();
   readonly onDidChangeTreeData = this.changed.event;
+  private snapshotPromise: Promise<TreeSnapshot> | undefined;
 
   constructor(private readonly source: JumpServerAssetSource) {}
 
   refresh(): void {
+    this.snapshotPromise = undefined;
     this.changed.fire(undefined);
   }
 
@@ -41,33 +53,70 @@ export class JumpServerTreeProvider implements vscode.TreeDataProvider<JumpServe
       return [];
     }
     const bastionId = element instanceof BastionTreeItem ? element.bastion.id : element.bastionId;
-    const nodes = (await this.source.listCachedAssetNodes?.() ?? []).filter((node) => node.bastionId === bastionId);
-    const assets = (await this.source.listCachedAssets()).filter((asset) => asset.bastionId === bastionId);
-    const trustOverlay = await this.source.listAssetTrustOverrides?.() ?? {};
-    const groupElement = element instanceof GroupTreeItem ? element : undefined;
-    if (nodes.length > 0) {
-      return this.getNodeTreeChildren(nodes, assets, bastionId, trustOverlay, groupElement);
+    const snapshot = await this.getSnapshot();
+    const index = snapshot.bastionIndices.get(bastionId);
+    if (!index) {
+      return [];
     }
-    const parentPath = groupElement?.path ?? [];
-    const childGroups = new Set<string>();
-    const childAssets: CachedJumpServerAsset[] = [];
+    const parentKey = pathKey(element instanceof GroupTreeItem ? element.path : []);
+    const childGroups = (index.childGroupPathsByParentKey.get(parentKey) ?? [])
+      .map((path) => new GroupTreeItem(path, bastionId));
+    const childAssets = (index.assetsByParentKey.get(parentKey) ?? [])
+      .map((asset) => this.assetItem(asset, snapshot.trustOverlay));
+    return [...childGroups, ...childAssets];
+  }
 
+  private getSnapshot(): Promise<TreeSnapshot> {
+    if (!this.snapshotPromise) {
+      this.snapshotPromise = this.buildSnapshot().catch((error) => {
+        this.snapshotPromise = undefined;
+        throw error;
+      });
+    }
+    return this.snapshotPromise;
+  }
+
+  private async buildSnapshot(): Promise<TreeSnapshot> {
+    const [nodes, assets, trustOverlay] = await Promise.all([
+      this.source.listCachedAssetNodes?.() ?? Promise.resolve([]),
+      this.source.listCachedAssets(),
+      this.source.listAssetTrustOverrides?.() ?? Promise.resolve({})
+    ]);
+
+    const nodesByBastion = new Map<string, CachedJumpServerNode[]>();
+    for (const node of nodes) {
+      let bucket = nodesByBastion.get(node.bastionId);
+      if (!bucket) {
+        bucket = [];
+        nodesByBastion.set(node.bastionId, bucket);
+      }
+      bucket.push(node);
+    }
+
+    const assetsByBastion = new Map<string, CachedJumpServerAsset[]>();
     for (const asset of assets) {
-      const groupPath = this.groupPath(asset);
-      if (!this.startsWith(groupPath, parentPath)) {
-        continue;
+      let bucket = assetsByBastion.get(asset.bastionId);
+      if (!bucket) {
+        bucket = [];
+        assetsByBastion.set(asset.bastionId, bucket);
       }
-      if (groupPath.length > parentPath.length) {
-        childGroups.add(groupPath[parentPath.length]);
-      } else {
-        childAssets.push(asset);
-      }
+      bucket.push(asset);
     }
 
-    return [
-      ...Array.from(childGroups).sort((a, b) => a.localeCompare(b)).map((group) => new GroupTreeItem([...parentPath, group], bastionId)),
-      ...childAssets.sort((a, b) => a.name.localeCompare(b.name)).map((asset) => this.assetItem(asset, trustOverlay))
-    ];
+    const bastionIds = new Set<string>([...nodesByBastion.keys(), ...assetsByBastion.keys()]);
+    const bastionIndices = new Map<string, BastionTreeIndex>();
+    for (const bastionId of bastionIds) {
+      const bastionNodes = nodesByBastion.get(bastionId) ?? [];
+      const bastionAssets = assetsByBastion.get(bastionId) ?? [];
+      bastionIndices.set(
+        bastionId,
+        bastionNodes.length > 0
+          ? this.buildNodeIndex(bastionNodes, bastionAssets)
+          : this.buildGroupIndex(bastionAssets)
+      );
+    }
+
+    return { trustOverlay, bastionIndices };
   }
 
   private assetItem(asset: CachedJumpServerAsset, trustOverlay: Record<string, 'policy' | 'full'>): AssetTreeItem {
@@ -84,30 +133,101 @@ export class JumpServerTreeProvider implements vscode.TreeDataProvider<JumpServe
     return [t('Default')];
   }
 
+  private buildGroupIndex(assets: CachedJumpServerAsset[]): BastionTreeIndex {
+    const childGroupMapByParentKey = new Map<string, Map<string, string[]>>();
+    const assetsByParentKey = new Map<string, CachedJumpServerAsset[]>();
 
-  private startsWith(path: string[], prefix: string[]): boolean {
-    return prefix.every((value, index) => path[index] === value);
+    for (const asset of assets) {
+      const groupPath = this.groupPath(asset);
+      for (let index = 0; index < groupPath.length; index += 1) {
+        const parent = pathKey(groupPath.slice(0, index));
+        const child = groupPath.slice(0, index + 1);
+        let childMap = childGroupMapByParentKey.get(parent);
+        if (!childMap) {
+          childMap = new Map();
+          childGroupMapByParentKey.set(parent, childMap);
+        }
+        childMap.set(pathKey(child), child);
+      }
+      const key = pathKey(groupPath);
+      let assetBucket = assetsByParentKey.get(key);
+      if (!assetBucket) {
+        assetBucket = [];
+        assetsByParentKey.set(key, assetBucket);
+      }
+      assetBucket.push(asset);
+    }
+
+    const childGroupPathsByParentKey = new Map<string, string[][]>();
+    for (const [parent, childMap] of childGroupMapByParentKey) {
+      childGroupPathsByParentKey.set(
+        parent,
+        Array.from(childMap.values()).sort((a, b) => (a.at(-1) || '').localeCompare(b.at(-1) || ''))
+      );
+    }
+    for (const bucket of assetsByParentKey.values()) {
+      bucket.sort((a, b) => a.name.localeCompare(b.name));
+    }
+
+    return { childGroupPathsByParentKey, assetsByParentKey };
   }
 
-  private getNodeTreeChildren(
-    nodes: CachedJumpServerNode[],
-    assets: CachedJumpServerAsset[],
-    bastionId: string,
-    trustOverlay: Record<string, 'policy' | 'full'>,
-    element?: GroupTreeItem
-  ): Array<GroupTreeItem | AssetTreeItem> {
-    const parentPath = element?.path ?? [];
+  private buildNodeIndex(nodes: CachedJumpServerNode[], assets: CachedJumpServerAsset[]): BastionTreeIndex {
     const nodePaths = this.normalizedNodePaths(nodes, assets);
-    const childNodePaths = Array.from(nodePaths.values())
-      .filter((path) => path.length === parentPath.length + 1 && this.startsWith(path, parentPath))
-      .sort((a, b) => (a.at(-1) || '').localeCompare(b.at(-1) || ''))
-      .map((path) => new GroupTreeItem(path, bastionId));
-    const assetIds = new Set(nodes.find((node) => samePath(node.path, parentPath))?.assetIds ?? []);
-    const childAssets = assets
-      .filter((asset) => assetIds.has(asset.id) || samePath(asset.nodePath, parentPath))
-      .sort((a, b) => a.name.localeCompare(b.name))
-      .map((asset) => this.assetItem(asset, trustOverlay));
-    return [...childNodePaths, ...childAssets];
+    const childGroupPathsByParentKey = new Map<string, string[][]>();
+    for (const path of nodePaths.values()) {
+      const parent = pathKey(path.slice(0, -1));
+      let bucket = childGroupPathsByParentKey.get(parent);
+      if (!bucket) {
+        bucket = [];
+        childGroupPathsByParentKey.set(parent, bucket);
+      }
+      bucket.push(path);
+    }
+    for (const bucket of childGroupPathsByParentKey.values()) {
+      bucket.sort((a, b) => (a.at(-1) || '').localeCompare(b.at(-1) || ''));
+    }
+
+    const assetsById = new Map(assets.map((asset) => [asset.id, asset]));
+    const firstNodeAssetIdsByPathKey = new Map<string, string[]>();
+    for (const node of nodes) {
+      const key = pathKey(node.path);
+      if (!firstNodeAssetIdsByPathKey.has(key)) {
+        firstNodeAssetIdsByPathKey.set(key, node.assetIds);
+      }
+    }
+
+    const assetSetsByParentKey = new Map<string, Set<CachedJumpServerAsset>>();
+    const addAsset = (key: string, asset: CachedJumpServerAsset) => {
+      let set = assetSetsByParentKey.get(key);
+      if (!set) {
+        set = new Set();
+        assetSetsByParentKey.set(key, set);
+      }
+      set.add(asset);
+    };
+
+    for (const asset of assets) {
+      addAsset(pathKey(asset.nodePath), asset);
+    }
+    for (const [key, assetIds] of firstNodeAssetIdsByPathKey) {
+      for (const assetId of assetIds) {
+        const asset = assetsById.get(assetId);
+        if (asset) {
+          addAsset(key, asset);
+        }
+      }
+    }
+
+    const assetsByParentKey = new Map<string, CachedJumpServerAsset[]>();
+    for (const [key, set] of assetSetsByParentKey) {
+      assetsByParentKey.set(
+        key,
+        Array.from(set).sort((a, b) => a.name.localeCompare(b.name))
+      );
+    }
+
+    return { childGroupPathsByParentKey, assetsByParentKey };
   }
 
   private normalizedNodePaths(nodes: CachedJumpServerNode[], assets: CachedJumpServerAsset[]): Map<string, string[]> {
@@ -117,7 +237,7 @@ export class JumpServerTreeProvider implements vscode.TreeDataProvider<JumpServe
     const assetRootNames = new Set(assetNodePaths.map((path) => path[0]));
     for (const node of nodes) {
       if (hasNestedNodePaths || node.path.length > 1 || assetNodePaths.length === 0 || assetRootNames.has(node.path[0])) {
-        paths.set(node.path.join('/'), node.path);
+        paths.set(pathKey(node.path), node.path);
       }
     }
     if (hasNestedNodePaths) {
@@ -126,13 +246,13 @@ export class JumpServerTreeProvider implements vscode.TreeDataProvider<JumpServe
     for (const asset of assets) {
       for (let index = 1; index <= asset.nodePath.length; index += 1) {
         const path = asset.nodePath.slice(0, index);
-        paths.set(path.join('/'), path);
+        paths.set(pathKey(path), path);
       }
     }
     return paths;
   }
 }
 
-function samePath(left: string[], right: string[]): boolean {
-  return left.length === right.length && left.every((value, index) => right[index] === value);
+function pathKey(path: string[]): string {
+  return path.join('\0');
 }

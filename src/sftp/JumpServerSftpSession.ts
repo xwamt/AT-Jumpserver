@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
+import { open } from 'node:fs/promises';
 import { extractProtocolNames, resolveFirstUsableAccount, type KokoWebSocket } from '../jumpserver/JumpServerClient';
-import type { JumpServerConnectionProtocol } from '../jumpserver/types';
+import type { JumpServerAccountRef, JumpServerConnectionProtocol } from '../jumpserver/types';
 import {
   decodeSftpRaw,
   encodeSftpRaw,
@@ -10,6 +11,7 @@ import {
   type SftpCommand
 } from './SftpProtocol';
 import type { JumpServerSftpEntry, SftpListDirectoryOptions, SftpUploadProgress } from './SftpTypes';
+import { log } from '../utils/logger';
 
 /**
  * `ws` queues whatever it is handed. A whole file goes out as one frame, so a
@@ -54,6 +56,9 @@ export const SFTP_UPLOAD_CHUNK_BYTES = 4 * 1024 * 1024;
  */
 export const SFTP_DOWNLOAD_MEMORY_CAP_BYTES = 512 * 1024 * 1024;
 
+export const SFTP_HEARTBEAT_INTERVAL_MS = 20_000;
+export const SFTP_HEARTBEAT_TIMEOUT_MS = 15_000;
+
 export interface JumpServerSftpSessionAsset {
   id: string;
   name: string;
@@ -63,8 +68,9 @@ export interface JumpServerSftpSessionClient {
   getAssetDetail(assetId: string): Promise<Record<string, any>>;
   createConnectionToken(input: {
     assetId: string;
-    account: { id: string; alias?: string; username: string; hasSecret?: boolean };
+    account: JumpServerAccountRef;
     protocol: JumpServerConnectionProtocol;
+    connectMethod?: string;
   }): Promise<{ id: string }>;
   getSmartEndpoint(tokenId: string): Promise<Record<string, any>>;
   openKokoSftpWebSocket(input: { endpoint: Record<string, any>; tokenId: string }): Promise<KokoWebSocket>;
@@ -106,6 +112,8 @@ export class JumpServerSftpSession {
   private disposed = false;
   private connectResolver: (() => void) | undefined;
   private connectRejecter: ((error: Error) => void) | undefined;
+  private heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+  private pongTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly pending = new Map<string, PendingCommand>();
   private currentPath = '/';
   private readonly listCache = new Map<string, { at: number; resolvedPath: string; entries: JumpServerSftpEntry[] }>();
@@ -121,6 +129,7 @@ export class JumpServerSftpSession {
   constructor(private readonly input: {
     asset: JumpServerSftpSessionAsset;
     client: JumpServerSftpSessionClient;
+    getReusableTokenId?: () => string | undefined | Promise<string | undefined>;
   }) {}
 
   async connect(): Promise<void> {
@@ -130,14 +139,49 @@ export class JumpServerSftpSession {
       throw new Error('Selected asset does not expose SFTP protocol.');
     }
     const account = resolveFirstUsableAccount(detail);
-    const token = await this.input.client.createConnectionToken({
-      assetId: this.input.asset.id,
-      account,
-      protocol: 'sftp'
-    });
-    const endpoint = await this.input.client.getSmartEndpoint(token.id);
+    let tokenId: string | undefined;
+    let fromReusable = false;
+    if (typeof this.input.getReusableTokenId === 'function') {
+      try {
+        tokenId = await this.input.getReusableTokenId();
+        if (tokenId) {
+          fromReusable = true;
+        }
+      } catch {
+        tokenId = undefined;
+      }
+    }
+    if (!tokenId) {
+      const token = await this.input.client.createConnectionToken({
+        assetId: this.input.asset.id,
+        account,
+        protocol: 'sftp',
+        connectMethod: 'web_sftp'
+      });
+      tokenId = token.id;
+    }
+    let endpoint = await this.input.client.getSmartEndpoint(tokenId);
     this.throwIfDisposedDuringConnect();
-    const socket = await this.input.client.openKokoSftpWebSocket({ endpoint, tokenId: token.id });
+    let socket: KokoWebSocket;
+    try {
+      socket = await this.input.client.openKokoSftpWebSocket({ endpoint, tokenId });
+    } catch (wsError) {
+      if (fromReusable && !this.disposed) {
+        log.warn(`Reused connection token ${tokenId} failed for SFTP handshake; retrying with dedicated token`);
+        const token = await this.input.client.createConnectionToken({
+          assetId: this.input.asset.id,
+          account,
+          protocol: 'sftp',
+          connectMethod: 'web_sftp'
+        });
+        tokenId = token.id;
+        endpoint = await this.input.client.getSmartEndpoint(tokenId);
+        this.throwIfDisposedDuringConnect();
+        socket = await this.input.client.openKokoSftpWebSocket({ endpoint, tokenId });
+      } else {
+        throw wsError;
+      }
+    }
     if (this.disposed) {
       // dispose() ran while the handshake was in flight and had no socket to
       // close; the one that just arrived is ours to kill or it leaks.
@@ -241,6 +285,70 @@ export class JumpServerSftpSession {
     }).then(() => undefined);
   }
 
+  async uploadFromFile(path: string, localPath: string, onProgress?: SftpUploadProgress): Promise<void> {
+    if (!this.socket || !this.connected) {
+      throw new Error('SFTP connection is not available.');
+    }
+    this.listCache.clear();
+    const fh = await open(localPath, 'r');
+    try {
+      const totalBytes = (await fh.stat()).size;
+      if (totalBytes <= SFTP_UPLOAD_CHUNK_BYTES) {
+        const buffer = Buffer.allocUnsafe(totalBytes);
+        let filled = 0;
+        while (filled < totalBytes) {
+          const { bytesRead } = await fh.read(buffer, filled, totalBytes - filled, filled);
+          if (bytesRead === 0) {
+            break;
+          }
+          filled += bytesRead;
+        }
+        await this.sendCommand(
+          'upload',
+          { path, size: filled, offSet: 0, chunk: false },
+          { id: createKokoUploadId(), raw: encodeSftpRaw(buffer.subarray(0, filled)) }
+        );
+        onProgress?.(filled, totalBytes);
+        return;
+      }
+
+      const id = createKokoUploadId();
+      const chunkBuffer = Buffer.allocUnsafe(SFTP_UPLOAD_CHUNK_BYTES);
+      await this.enqueue(async () => {
+        let offset = 0;
+        while (offset < totalBytes) {
+          let filled = 0;
+          const targetChunkSize = Math.min(SFTP_UPLOAD_CHUNK_BYTES, totalBytes - offset);
+          while (filled < targetChunkSize) {
+            const { bytesRead } = await fh.read(
+              chunkBuffer,
+              filled,
+              targetChunkSize - filled,
+              offset + filled
+            );
+            if (bytesRead === 0) {
+              break;
+            }
+            filled += bytesRead;
+          }
+          if (filled === 0) {
+            break;
+          }
+          await this.dispatchCommand(
+            'upload',
+            { path, size: totalBytes, offSet: offset, chunk: true },
+            { id, raw: encodeSftpRaw(chunkBuffer.subarray(0, filled)) }
+          );
+          offset += filled;
+          onProgress?.(offset, totalBytes);
+        }
+        await this.dispatchCommand('upload', { path, size: 0, offSet: 0, merge: true }, { id, raw: '' });
+      });
+    } finally {
+      await fh.close();
+    }
+  }
+
   async stat(path: string): Promise<{ size: number; modifiedAt: number }> {
     const parent = path.replace(/\/+[^/]*$/, '') || '/';
     const name = path.split('/').filter(Boolean).pop();
@@ -297,6 +405,7 @@ export class JumpServerSftpSession {
 
   dispose(): void {
     this.disposed = true;
+    this.stopHeartbeat();
     const rejectConnect = this.connectRejecter;
     this.connectResolver = undefined;
     this.connectRejecter = undefined;
@@ -386,13 +495,73 @@ export class JumpServerSftpSession {
       () => this.sendWhenDrained(id, frame, waitedMs + SFTP_DRAIN_POLL_MS),
       SFTP_DRAIN_POLL_MS
     );
-    (timer as unknown as { unref?: () => void }).unref?.();
+    unrefTimer(timer);
   }
 
   private bindSocket(socket: KokoWebSocket): void {
     socket.on('message', (message: Buffer | string) => this.handleSocketMessage(message));
     socket.on('close', () => this.handleClose(new Error('SFTP websocket closed.')));
     socket.on('error', (error) => this.handleClose(error instanceof Error ? error : new Error(String(error))));
+    socket.on('pong', () => this.clearPongDeadline());
+    this.startHeartbeat();
+  }
+
+  private startHeartbeat(): void {
+    this.stopHeartbeat();
+    if (this.disposed) {
+      return;
+    }
+    this.heartbeatTimer = unrefTimer(setInterval(() => this.sendHeartbeat(), SFTP_HEARTBEAT_INTERVAL_MS));
+  }
+
+  private sendHeartbeat(): void {
+    if (!this.socket || this.disposed || this.pongTimer) {
+      return;
+    }
+    if (typeof (this.socket as { ping?: unknown }).ping !== 'function') {
+      return;
+    }
+    this.pongTimer = unrefTimer(setTimeout(() => this.failHeartbeat(), SFTP_HEARTBEAT_TIMEOUT_MS));
+    try {
+      this.socket.ping();
+    } catch (error) {
+      this.failHeartbeat(error);
+    }
+  }
+
+  private clearPongDeadline(): void {
+    if (!this.pongTimer) {
+      return;
+    }
+    clearTimeout(this.pongTimer);
+    this.pongTimer = undefined;
+  }
+
+  private stopHeartbeat(): void {
+    this.clearPongDeadline();
+    if (!this.heartbeatTimer) {
+      return;
+    }
+    clearInterval(this.heartbeatTimer);
+    this.heartbeatTimer = undefined;
+  }
+
+  private failHeartbeat(cause?: unknown): void {
+    if (!this.socket && !this.connected) {
+      return;
+    }
+    log.warn(
+      `KoKo SFTP for ${this.input.asset.name} stopped answering heartbeats within ${SFTP_HEARTBEAT_TIMEOUT_MS}ms` +
+        `${cause ? `: ${String(cause)}` : ''}; dropping the session.`
+    );
+    const socket = this.socket;
+    this.socket = undefined;
+    this.handleClose(
+      new Error(`SFTP websocket disconnected (no heartbeat response within ${SFTP_HEARTBEAT_TIMEOUT_MS}ms)`)
+    );
+    if (socket) {
+      closeSocketNow(socket);
+    }
   }
 
   private handleSocketMessage(raw: Buffer | string): void {
@@ -489,7 +658,9 @@ export class JumpServerSftpSession {
   }
 
   private handleClose(error: Error): void {
+    this.stopHeartbeat();
     this.connected = false;
+    this.socket = undefined;
     this.listCache.clear();
     this.connectRejecter?.(error);
     this.connectResolver = undefined;
@@ -503,6 +674,11 @@ export class JumpServerSftpSession {
     }
     this.pending.clear();
   }
+}
+
+function unrefTimer<T>(timer: T): T {
+  (timer as unknown as { unref?: () => void }).unref?.();
+  return timer;
 }
 
 function createKokoUploadId(): string {

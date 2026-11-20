@@ -2,7 +2,7 @@
   "name": "at-jumpserver-terminal",
   "displayName": "%atJumpServer.displayName%",
   "description": "%atJumpServer.description%",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "publisher": "local",
   "icon": "media/at-terminal-icon.png",
   "l10n": "./l10n",
@@ -50,15 +50,18 @@
       },
       {
         "command": "jumpserverManager.removeBastion",
-        "title": "%atJumpServer.command.removeBastion.title%"
+        "title": "%atJumpServer.command.removeBastion.title%",
+        "icon": "$(trash)"
       },
       {
         "command": "jumpserverManager.refreshBastion",
-        "title": "%atJumpServer.command.refreshBastion.title%"
+        "title": "%atJumpServer.command.refreshBastion.title%",
+        "icon": "$(refresh)"
       },
       {
         "command": "jumpserverManager.editBastion",
-        "title": "%atJumpServer.command.editBastion.title%"
+        "title": "%atJumpServer.command.editBastion.title%",
+        "icon": "$(edit)"
       },
       {
         "command": "jumpserverManager.validate",
@@ -72,6 +75,11 @@
       {
         "command": "jumpserverManager.connect",
         "title": "%atJumpServer.command.connect.title%"
+      },
+      {
+        "command": "jumpserverManager.connectWithAccount",
+        "title": "%atJumpServer.command.connectWithAccount.title%",
+        "icon": "$(account)"
       },
       {
         "command": "jumpserverManager.copyHostIp",
@@ -91,6 +99,11 @@
         "command": "jumpserverManager.sftp.goUp",
         "title": "%atJumpServer.command.sftp.goUp.title%",
         "icon": "$(arrow-up)"
+      },
+      {
+        "command": "jumpserverManager.sftp.goToPath",
+        "title": "%atJumpServer.command.sftp.goToPath.title%",
+        "icon": "$(go-to-file)"
       },
       {
         "command": "jumpserverManager.sftp.upload",
@@ -128,9 +141,19 @@
         "icon": "$(new-folder)"
       },
       {
+        "command": "jumpserverManager.sftp.newFile",
+        "title": "%atJumpServer.command.sftp.newFile.title%",
+        "icon": "$(new-file)"
+      },
+      {
         "command": "jumpserverManager.sftp.copyPath",
         "title": "%atJumpServer.command.sftp.copyPath.title%",
         "icon": "$(copy)"
+      },
+      {
+        "command": "jumpserverManager.sftp.cdToDirectory",
+        "title": "%atJumpServer.command.sftp.cdToDirectory.title%",
+        "icon": "$(terminal)"
       },
       {
         "command": "jumpserverManager.installMcpConfig",
@@ -176,6 +199,11 @@
           "command": "jumpserverManager.sftp.goUp",
           "when": "view == jumpserverManager.sftpFiles",
           "group": "navigation@3"
+        },
+        {
+          "command": "jumpserverManager.sftp.goToPath",
+          "when": "view == jumpserverManager.sftpFiles",
+          "group": "navigation@4"
         }
       ],
       "view/item/context": [
@@ -195,9 +223,9 @@
           "group": "2_manage@2"
         },
         {
-          "command": "jumpserverManager.connect",
-          "when": "view == jumpserverManager.assets && (viewItem == jumpserverAsset || viewItem == jumpserverMysqlAsset || viewItem == jumpserverRedisAsset || viewItem == jumpserverUnsupportedAsset)",
-          "group": "inline@1"
+          "command": "jumpserverManager.connectWithAccount",
+          "when": "view == jumpserverManager.assets && (viewItem == jumpserverAsset || viewItem == jumpserverMysqlAsset || viewItem == jumpserverRedisAsset)",
+          "group": "1_connect@1"
         },
         {
           "command": "jumpserverManager.copyHostIp",
@@ -235,6 +263,16 @@
           "group": "inline@2"
         },
         {
+          "command": "jumpserverManager.sftp.newFile",
+          "when": "view == jumpserverManager.sftpFiles && viewItem == jumpserverSftpDirectory",
+          "group": "1_create@1"
+        },
+        {
+          "command": "jumpserverManager.sftp.cdToDirectory",
+          "when": "view == jumpserverManager.sftpFiles && viewItem == jumpserverSftpDirectory",
+          "group": "1_terminal@1"
+        },
+        {
           "command": "jumpserverManager.sftp.rename",
           "when": "view == jumpserverManager.sftpFiles && (viewItem == jumpserverSftpFile || viewItem == jumpserverSftpDirectory)",
           "group": "2_manage@1"
@@ -260,6 +298,42 @@
       "commandPalette": [
         {
           "command": "jumpserverManager.setAssetTrust",
+          "when": "false"
+        },
+        {
+          "command": "jumpserverManager.copyHostIp",
+          "when": "false"
+        },
+        {
+          "command": "jumpserverManager.sftp.download",
+          "when": "false"
+        },
+        {
+          "command": "jumpserverManager.sftp.preview",
+          "when": "false"
+        },
+        {
+          "command": "jumpserverManager.sftp.edit",
+          "when": "false"
+        },
+        {
+          "command": "jumpserverManager.sftp.delete",
+          "when": "false"
+        },
+        {
+          "command": "jumpserverManager.sftp.rename",
+          "when": "false"
+        },
+        {
+          "command": "jumpserverManager.sftp.copyPath",
+          "when": "false"
+        },
+        {
+          "command": "jumpserverManager.sftp.cdToDirectory",
+          "when": "false"
+        },
+        {
+          "command": "jumpserverManager.connectWithAccount",
           "when": "false"
         }
       ]
@@ -289,6 +363,11 @@
           "type": "number",
           "default": 60,
           "minimum": 0
+        },
+        "jumpserverManager.kokoBearerHandshake": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "%atJumpServer.configuration.kokoBearerHandshake.description%"
         }
       }
     }
@@ -297,7 +376,7 @@
     "copy:hub": "node scripts/copy-hub.mjs",
     "copy:policy-assets": "node scripts/copy-policy-assets.mjs",
     "sync:l10n": "node scripts/sync-l10n-aliases.mjs",
-    "build": "npm run sync:l10n && node esbuild.config.mjs && npm run copy:hub && npm run copy:policy-assets",
+    "build": "npm run sync:l10n && node esbuild.config.mjs && npm run copy:hub",
     "probe:sftp": "node tools/probe-jumpserver-sftp.mjs",
     "watch": "node esbuild.config.mjs --watch",
     "typecheck": "tsc --noEmit",

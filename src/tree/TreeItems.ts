@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import type { AssetCommandTrust, CachedJumpServerAsset } from '../config/schema';
-import { getAssetConnectionKind, isDatabaseAsset, type JumpServerConnectionKind } from '../jumpserver/connectionTypes';
+import { connectionKindLabel, getAssetConnectionKind, isDatabaseAsset, type JumpServerConnectionKind } from '../jumpserver/connectionTypes';
 import { t } from '../i18n/t';
 
 export class GroupTreeItem extends vscode.TreeItem {
@@ -14,18 +14,21 @@ export class GroupTreeItem extends vscode.TreeItem {
     super(path.at(-1) || t('Default'), collapsibleState);
     this.label = path.at(-1) || t('Default');
     this.id = `group:${bastionId}/${path.join('/')}`;
+    this.iconPath = new vscode.ThemeIcon('folder');
   }
 }
 
 export class AssetTreeItem extends vscode.TreeItem {
   constructor(readonly asset: CachedJumpServerAsset, readonly trust: AssetCommandTrust = 'none') {
     super(asset.name, vscode.TreeItemCollapsibleState.None);
-    const kind = getAssetOpenKind(asset);
+    const openKind = getAssetOpenKind(asset);
+    const connKind = getAssetConnectionKind(asset);
     this.id = `asset:${asset.bastionId}/${asset.id}`;
     this.label = asset.name;
-    this.contextValue = contextValueForKind(kind);
-    this.description = decorateDescription(assetDescription(asset, kind), trust);
-    this.tooltip = `${asset.name}${asset.address ? ` (${asset.address})` : ''}${kind === 'mysql' ? ' - MySQL' : kind === 'redis' ? ' - Redis' : ''}\n${t('Agent command trust')}: ${trustLabel(trust)}`;
+    this.contextValue = contextValueForKind(openKind);
+    this.iconPath = iconForAssetKind(openKind);
+    this.description = decorateDescription(assetDescription(asset, connKind), trust);
+    this.tooltip = `${asset.name}${asset.address ? ` (${asset.address})` : ''}${openKind === 'mysql' ? ' - MySQL' : openKind === 'redis' ? ' - Redis' : ''}\n${t('Agent command trust')}: ${trustLabel(trust)}`;
     this.command = {
       command: 'jumpserverManager.connect',
       title: t('Connect'),
@@ -53,10 +56,31 @@ function decorateDescription(base: string, trust: AssetCommandTrust): string {
   return base ? `${base} · ${label}` : label;
 }
 
+export function getAssetOpenKind(asset: CachedJumpServerAsset): 'ssh' | 'mysql' | 'redis' | 'unsupported' {
+  const kind = getAssetConnectionKind(asset);
+  if (kind === 'mysql' || kind === 'mariadb') {
+    return 'mysql';
+  }
+  if (kind === 'redis') {
+    return 'redis';
+  }
+  if (kind === 'ssh') {
+    return 'ssh';
+  }
+  return 'unsupported';
+}
 
-export const getAssetOpenKind = getAssetConnectionKind;
+function iconForAssetKind(kind: 'ssh' | 'mysql' | 'redis' | 'unsupported'): vscode.ThemeIcon {
+  if (kind === 'mysql' || kind === 'redis') {
+    return new vscode.ThemeIcon('database');
+  }
+  if (kind === 'ssh') {
+    return new vscode.ThemeIcon('terminal');
+  }
+  return new vscode.ThemeIcon('circle-slash');
+}
 
-function contextValueForKind(kind: JumpServerConnectionKind): string {
+function contextValueForKind(kind: 'ssh' | 'mysql' | 'redis' | 'unsupported'): string {
   if (kind === 'mysql') {
     return 'jumpserverMysqlAsset';
   }
@@ -76,6 +100,9 @@ function assetDescription(asset: CachedJumpServerAsset, kind: JumpServerConnecti
   }
   if (kind === 'redis') {
     return base ? `${base} - Redis` : 'Redis';
+  }
+  if (kind && kind !== 'ssh' && kind !== 'unsupported') {
+    return base ? `${base} - ${connectionKindLabel(kind)}` : connectionKindLabel(kind);
   }
   return base;
 }

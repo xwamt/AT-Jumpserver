@@ -9,6 +9,8 @@ interface CachedClient {
 
 export interface JumpServerClientAcquireOptions {
   webSessionStore?: JumpServerWebSessionStore;
+  bastionId?: string;
+  kokoBearerHandshake?: boolean;
 }
 
 /**
@@ -24,7 +26,11 @@ export class JumpServerClientPool {
       settings: JumpServerSettingsWithPassword,
       options?: JumpServerClientAcquireOptions
     ) => JumpServerClient = (settings, options) =>
-      new JumpServerClient(settings, undefined, { webSessionStore: options?.webSessionStore })
+      new JumpServerClient(settings, undefined, {
+        webSessionStore: options?.webSessionStore,
+        bastionId: options?.bastionId,
+        kokoBearerHandshake: options?.kokoBearerHandshake
+      })
   ) {}
 
   acquire(
@@ -32,10 +38,13 @@ export class JumpServerClientPool {
     settings: JumpServerSettingsWithPassword,
     options?: JumpServerClientAcquireOptions
   ): JumpServerClient {
-    const identity = clientCacheIdentity(settings);
+    const identity = clientCacheIdentity(settings, options);
     const cached = this.entries.get(bastionId);
     if (cached && cached.identity === identity) {
       cached.client.setOrgId(settings.orgId);
+      if (typeof (cached.client as any).setBastionId === 'function' && !(cached.client as any).getBastionId?.()) {
+        (cached.client as any).setBastionId(bastionId);
+      }
       // A cached client may predate the store (the asset refresh path has no
       // SecretStorage in reach); the first caller that has one hands it over.
       if (options?.webSessionStore) {
@@ -47,6 +56,9 @@ export class JumpServerClientPool {
     // A replaced client would otherwise keep its keep-alive sockets open.
     disposeClient(cached?.client);
     const client = this.factory(settings, options);
+    if (typeof (client as any).setBastionId === 'function' && !(client as any).getBastionId?.()) {
+      (client as any).setBastionId(bastionId);
+    }
     this.entries.set(bastionId, { client, identity });
     log.info(`JumpServer client created for bastion ${bastionId}`);
     return client;
@@ -84,6 +96,15 @@ function attachWebSessionStore(client: JumpServerClient, store: JumpServerWebSes
   }
 }
 
-function clientCacheIdentity(settings: JumpServerSettingsWithPassword): string {
-  return [settings.baseUrl, settings.username, settings.password, settings.verifyTls ? '1' : '0'].join('\0');
+function clientCacheIdentity(
+  settings: JumpServerSettingsWithPassword,
+  options?: JumpServerClientAcquireOptions
+): string {
+  return [
+    settings.baseUrl,
+    settings.username,
+    settings.password,
+    settings.verifyTls ? '1' : '0',
+    options?.kokoBearerHandshake ? '1' : '0'
+  ].join('\0');
 }

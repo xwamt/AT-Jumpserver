@@ -4,6 +4,7 @@ import type { CachedJumpServerAsset } from '../config/schema';
 import { JumpServerClient } from '../jumpserver/JumpServerClient';
 import { connectionKindLabel, getAssetConnectionKind, type JumpServerConnectionKind } from '../jumpserver/connectionTypes';
 import { JumpServerSession } from '../jumpserver/JumpServerSession';
+import type { JumpServerAccountRef, TerminalConnectionState } from '../jumpserver/types';
 import type { TerminalContextRegistry } from '../terminal/TerminalContext';
 import { formatError } from '../utils/errors';
 import { showTimedNotification } from '../utils/notifications';
@@ -63,7 +64,7 @@ export function createTerminalViewColumn(): vscode.ViewColumn {
   return vscode.ViewColumn.Active;
 }
 
-export function renderTerminalBody(settings: TerminalSettings): string {
+export function renderTerminalBody(settings: TerminalSettings, hostLabel = 'xterm.js'): string {
   return `<main class="terminal-shell">
   <header class="terminal-status terminal-status--connecting" id="status" role="status" aria-live="polite">
     <span class="terminal-status-dot"></span>
@@ -74,7 +75,7 @@ export function renderTerminalBody(settings: TerminalSettings): string {
       </svg>
       <span class="terminal-reconnect-label">${escapeAttr(t('Reconnect'))}</span>
     </button>
-    <span class="terminal-host">xterm.js</span>
+    <span class="terminal-host">${escapeAttr(hostLabel)}</span>
   </header>
   <section id="terminal" class="terminal-surface" data-scrollback="${escapeAttr(settings.scrollback)}" data-font-size="${escapeAttr(settings.fontSize)}" data-font-family="${escapeAttr(settings.fontFamily)}" data-semantic-highlight="${escapeAttr(settings.semanticHighlight)}"></section>
 </main>`;
@@ -117,12 +118,23 @@ function isTerminalDimension(value: number): boolean {
   return Number.isInteger(value) && value > 0;
 }
 
+export interface AccountPreferenceStore {
+  getPreferredAccountKey(bastionId: string, assetId: string): string | undefined;
+  setPreferredAccountKey(bastionId: string, assetId: string, accountKey: string | undefined): Promise<void>;
+}
+
+export function accountRefKey(account: JumpServerAccountRef): string {
+  return account.kind === 'alias' ? `alias:${account.alias}` : `managed:${account.id}`;
+}
+
 export class TerminalPanel {
   private static active: TerminalPanel | undefined;
   private static readonly panels = new Set<TerminalPanel>();
+  private static accountPreferenceStore: AccountPreferenceStore | undefined;
   private readonly terminalId = randomUUID();
   private readonly connectionKind: JumpServerConnectionKind;
   private session: JumpServerSession;
+  private currentTokenId: string | undefined;
   private connected = false;
   private disposed = false;
   private connectionGeneration = 0;
@@ -131,24 +143,33 @@ export class TerminalPanel {
   private outputFlushTimer: ReturnType<typeof setTimeout> | undefined;
   private idleDisconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private lastActivityAt = Date.now();
+  private lastSize: { rows: number; cols: number } | undefined;
+  private forceNextAccountPick: boolean;
 
   private constructor(
     private readonly panel: vscode.WebviewPanel,
     private readonly asset: CachedJumpServerAsset,
     private readonly jumpServerClient: JumpServerClient,
-    private readonly settings: TerminalSettings,
-    private readonly terminalContext?: TerminalContextRegistry
+    private settings: TerminalSettings,
+    private readonly terminalContext?: TerminalContextRegistry,
+    options?: { forceAccountPick?: boolean }
   ) {
     this.connectionKind = getAssetConnectionKind(asset);
+    this.forceNextAccountPick = Boolean(options?.forceAccountPick);
     this.session = this.createSession(this.connectionGeneration);
     TerminalPanel.panels.add(this);
+  }
+
+  static setAccountPreferenceStore(store?: AccountPreferenceStore): void {
+    TerminalPanel.accountPreferenceStore = store;
   }
 
   static open(
     context: vscode.ExtensionContext,
     asset: CachedJumpServerAsset,
     jumpServerClient: JumpServerClient,
-    terminalContext?: TerminalContextRegistry
+    terminalContext?: TerminalContextRegistry,
+    options?: { forceAccountPick?: boolean }
   ): TerminalPanel {
     const connectionKind = getAssetConnectionKind(asset);
     const panel = vscode.window.createWebviewPanel(
@@ -163,12 +184,13 @@ export class TerminalPanel {
     );
 
     const settings = resolveTerminalSettings(vscode.workspace.getConfiguration('jumpserverManager'));
-    const terminal = new TerminalPanel(panel, asset, jumpServerClient, settings, terminalContext);
+    const terminal = new TerminalPanel(panel, asset, jumpServerClient, settings, terminalContext, options);
+    const hostLabel = `${asset.address || asset.name} · ${connectionKindLabel(connectionKind)}`;
     TerminalPanel.active = terminal;
     panel.webview.html = renderWebviewHtml(
       panel.webview,
       createTerminalAssets(context.extensionUri),
-      renderTerminalBody(settings)
+      renderTerminalBody(settings, hostLabel)
     );
     terminal.bind();
     terminal.publishContext();
@@ -181,6 +203,36 @@ export class TerminalPanel {
     return TerminalPanel.active;
   }
 
+  static getReusableToken(connectionKey?: string, asset?: CachedJumpServerAsset): string | undefined {
+    if (connectionKey) {
+      for (const panel of TerminalPanel.panels) {
+        if (panel.terminalId === connectionKey && panel.connected && panel.currentTokenId) {
+          return panel.currentTokenId;
+        }
+      }
+    }
+    if (asset) {
+      for (const panel of TerminalPanel.panels) {
+        if (
+          panel.connected &&
+          panel.currentTokenId &&
+          panel.asset.id === asset.id &&
+          panel.asset.bastionId === asset.bastionId
+        ) {
+          return panel.currentTokenId;
+        }
+      }
+    }
+    if (connectionKey) {
+      for (const panel of TerminalPanel.panels) {
+        if (panel.asset.id === connectionKey && panel.connected && panel.currentTokenId) {
+          return panel.currentTokenId;
+        }
+      }
+    }
+    return undefined;
+  }
+
   getTerminalId(): string {
     return this.terminalId;
   }
@@ -191,7 +243,14 @@ export class TerminalPanel {
     }
     TerminalPanel.panels.clear();
     TerminalPanel.active = undefined;
+    TerminalPanel.accountPreferenceStore = undefined;
     void vscode.commands.executeCommand('setContext', 'jumpserverTerminalActive', false);
+  }
+
+  static syncConfiguration(settings: TerminalSettings): void {
+    for (const terminal of TerminalPanel.panels) {
+      terminal.applySettings(settings);
+    }
   }
 
   static disposeSessionsForBastion(bastionId: string): string[] {
@@ -221,17 +280,19 @@ export class TerminalPanel {
       if (generation !== this.connectionGeneration) {
         return;
       }
+      this.currentTokenId = undefined;
       this.connected = false;
       this.terminalContext?.markDisconnected(this.terminalId);
       this.clearIdleDisconnect();
-      this.postStatus(formatError(error));
+      this.postStatus(formatError(error), 'disconnected');
     }
   }
 
   async reconnect(): Promise<void> {
     const generation = ++this.connectionGeneration;
+    this.currentTokenId = undefined;
     try {
-      this.postStatus(t('Reconnecting...'));
+      this.postStatus(t('Reconnecting...'), 'connecting');
       this.session.dispose();
       this.session = this.createSession(generation);
       await this.session.connect();
@@ -246,20 +307,22 @@ export class TerminalPanel {
       if (generation !== this.connectionGeneration) {
         return;
       }
+      this.currentTokenId = undefined;
       this.connected = false;
       this.terminalContext?.markDisconnected(this.terminalId);
       this.clearIdleDisconnect();
-      this.postStatus(formatError(error));
+      this.postStatus(formatError(error), 'disconnected');
     }
   }
 
   disconnect(reason?: string): void {
     this.connectionGeneration++;
+    this.currentTokenId = undefined;
     this.clearIdleDisconnect();
     this.session.dispose();
     this.connected = false;
     this.terminalContext?.markDisconnected(this.terminalId);
-    this.postStatus(reason ?? t('Disconnected'));
+    this.postStatus(reason ?? t('Disconnected'), 'disconnected');
     const notice = formatTerminalNotice(reason ?? t('Connection disconnected'));
     this.terminalContext?.appendOutput(this.terminalId, notice);
     this.postWebviewMessage({ type: 'output', payload: notice });
@@ -270,13 +333,19 @@ export class TerminalPanel {
     this.panel.webview.onDidReceiveMessage((message: TerminalMessage) => {
       try {
         if (handleTerminalMessage(message, this.session, this)) {
+          if (message.type === 'ready' || message.type === 'resize') {
+            this.lastSize = { rows: message.rows, cols: message.cols };
+          }
           this.markActivity();
         }
       } catch (error) {
         // A session that has lost its peer rejects writes rather than dropping
         // them. Typing into one is a status line, not an exception thrown back
         // into VS Code's message dispatcher.
-        this.postStatus(formatError(error));
+        const messageText = formatError(error);
+        const state: TerminalConnectionState =
+          !this.connected || /unavailable/i.test(messageText) ? 'disconnected' : 'connected';
+        this.postStatus(messageText, state);
       }
     });
 
@@ -301,6 +370,7 @@ export class TerminalPanel {
       this.pendingOutputBytes = 0;
       this.clearIdleDisconnect();
       this.connectionGeneration++;
+      this.currentTokenId = undefined;
       this.session.dispose();
       this.connected = false;
       this.terminalContext?.clearIfActive(this.terminalId);
@@ -313,10 +383,82 @@ export class TerminalPanel {
   }
 
   private createSession(generation: number): JumpServerSession {
-    return new JumpServerSession({
+    const session = new JumpServerSession({
       asset: this.asset,
       connectionKind: this.connectionKind,
       client: this.jumpServerClient,
+      onTokenReady: (tokenId, info) => {
+        if (generation === this.connectionGeneration && info?.reusable) {
+          this.currentTokenId = tokenId;
+        }
+      },
+      selectAccount: async (accounts, asset) => {
+        const forcePick = this.forceNextAccountPick;
+        this.forceNextAccountPick = false;
+        const bastionId = asset.bastionId ?? '';
+        const rememberedKey = bastionId
+          ? TerminalPanel.accountPreferenceStore?.getPreferredAccountKey(bastionId, asset.id)
+          : undefined;
+        if (!forcePick && rememberedKey) {
+          const remembered = accounts.find((candidate) => accountRefKey(candidate) === rememberedKey);
+          if (remembered) {
+            return remembered;
+          }
+        }
+        const picked = await vscode.window.showQuickPick(
+          accounts.map((candidate) => {
+            const key = accountRefKey(candidate);
+            const label = candidate.kind === 'alias'
+              ? (candidate.username ? `${candidate.alias} (${candidate.username})` : candidate.alias)
+              : (candidate.username || candidate.alias || candidate.id);
+            const tags: string[] = [];
+            if (key === rememberedKey) {
+              tags.push(t('Last used'));
+            }
+            if (candidate.kind === 'alias') {
+              tags.push(t('Alias account'));
+            } else if (candidate.hasSecret === false) {
+              tags.push(t('No secret saved'));
+            }
+            return {
+              label,
+              description: tags.join(' · ') || undefined,
+              account: candidate
+            };
+          }),
+          {
+            title: t('Select account for {name}', { name: asset.name }),
+            placeHolder: t('Choose the JumpServer account to connect with'),
+            ignoreFocusOut: true
+          }
+        );
+        if (!picked) {
+          return undefined;
+        }
+        if (bastionId && TerminalPanel.accountPreferenceStore) {
+          await TerminalPanel.accountPreferenceStore.setPreferredAccountKey(
+            bastionId,
+            asset.id,
+            accountRefKey(picked.account)
+          );
+        }
+        return picked.account;
+      },
+      resolveInputAccount: async (asset) => {
+        const username = await vscode.window.showInputBox({
+          prompt: t('Enter username for @INPUT account on {name}', { name: asset.name }),
+          ignoreFocusOut: true
+        });
+        if (!username) {
+          return undefined;
+        }
+        const password = await vscode.window.showInputBox({
+          prompt: t('Enter password for {username} on {name}', { username, name: asset.name }),
+          password: true,
+          ignoreFocusOut: true
+        });
+        return { username, password };
+      },
       events: {
         output: (data) => {
           // The context buffer feeds MCP marker detection, so it must never be
@@ -325,14 +467,34 @@ export class TerminalPanel {
           this.markActivity();
           this.queueOutput(data);
         },
-        status: (message) => this.handleSessionStatus(message, generation),
-        error: (error) => this.postStatus(formatError(error))
+        status: (message, state) => this.handleSessionStatus(message, generation, state),
+        error: (error) => this.postStatus(formatError(error), this.connected ? 'connected' : 'disconnected')
       }
     });
+    if (this.lastSize) {
+      session.resize(this.lastSize.rows, this.lastSize.cols);
+    }
+    return session;
   }
 
-  private postStatus(message: string): void {
-    this.postWebviewMessage({ type: 'status', payload: message });
+  private applySettings(settings: TerminalSettings): void {
+    this.settings = settings;
+    this.postWebviewMessage({
+      type: 'settings',
+      payload: {
+        scrollback: settings.scrollback,
+        fontSize: settings.fontSize,
+        fontFamily: settings.fontFamily,
+        semanticHighlight: settings.semanticHighlight
+      }
+    });
+    if (this.connected) {
+      this.armIdleDisconnect();
+    }
+  }
+
+  private postStatus(message: string, state: TerminalConnectionState): void {
+    this.postWebviewMessage({ type: 'status', state, payload: message });
   }
 
   /**
@@ -381,17 +543,24 @@ export class TerminalPanel {
     this.idleDisconnectTimer = undefined;
   }
 
-  private handleSessionStatus(message: string, generation: number): void {
-    if (message.startsWith('Disconnected') && generation === this.connectionGeneration) {
+  private handleSessionStatus(
+    message: string,
+    generation: number,
+    explicitState?: TerminalConnectionState
+  ): void {
+    const state = explicitState ?? inferTerminalState(message);
+    if (state === 'disconnected' && generation === this.connectionGeneration) {
+      this.currentTokenId = undefined;
       this.connected = false;
       this.terminalContext?.markDisconnected(this.terminalId);
       this.clearIdleDisconnect();
-      const detail = message.slice('Disconnected'.length).trim();
-      const notice = formatTerminalNotice(`Connection disconnected${detail ? ` ${detail}` : ''}`);
+      const detail = extractDisconnectDetail(message);
+      const baseNotice = t('Connection disconnected');
+      const notice = formatTerminalNotice(detail ? `${baseNotice} ${detail}` : baseNotice);
       this.terminalContext?.appendOutput(this.terminalId, notice);
       this.postWebviewMessage({ type: 'output', payload: notice });
     }
-    this.postStatus(message);
+    this.postStatus(message, state);
   }
 
   private publishContext(): void {
@@ -455,8 +624,43 @@ export class TerminalPanel {
   }
 }
 
-export function renderTerminalHtml(webview: vscode.Webview, assets: WebviewAsset, settings: TerminalSettings): string {
-  return renderWebviewHtml(webview, assets, renderTerminalBody(settings));
+export function renderTerminalHtml(
+  webview: vscode.Webview,
+  assets: WebviewAsset,
+  settings: TerminalSettings,
+  hostLabel?: string
+): string {
+  return renderWebviewHtml(webview, assets, renderTerminalBody(settings, hostLabel));
+}
+
+function inferTerminalState(message: string): TerminalConnectionState {
+  if (message === 'Connected' || message === t('Connected') || message === '已连接') {
+    return 'connected';
+  }
+  const lower = message.toLowerCase();
+  if (
+    lower.includes('disconnect') ||
+    lower.includes('failed') ||
+    lower.includes('error') ||
+    lower.includes('unavailable') ||
+    lower.includes('rejected') ||
+    message.includes('已断开') ||
+    message.includes('断开连接')
+  ) {
+    return 'disconnected';
+  }
+  return 'connecting';
+}
+
+function extractDisconnectDetail(message: string): string {
+  const localizedPrefix = t('Disconnected');
+  if (message.startsWith(localizedPrefix)) {
+    return message.slice(localizedPrefix.length).trim();
+  }
+  if (message.startsWith('Disconnected')) {
+    return message.slice('Disconnected'.length).trim();
+  }
+  return '';
 }
 
 /**

@@ -122,7 +122,7 @@ describe('JumpServerSession heartbeat', () => {
 
     expect(session.isConnected()).toBe(false);
     expect(socket.terminated).toBe(true);
-    expect(events.status).toHaveBeenCalledWith(expect.stringContaining('Disconnected'));
+    expect(events.status).toHaveBeenCalledWith(expect.stringContaining('Disconnected'), 'disconnected');
   });
 
   it('fails an agent write into a session that stopped answering instead of dropping it', async () => {

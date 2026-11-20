@@ -22,6 +22,7 @@ const SETTINGS_KEY = 'jumpserverManager.settings';
 const ASSETS_KEY = 'jumpserverManager.cachedAssets';
 const NODES_KEY = 'jumpserverManager.cachedAssetNodes';
 const ASSET_TRUST_KEY = 'jumpserverManager.assetTrust';
+const PREFERRED_ACCOUNTS_KEY = 'jumpserverManager.preferredAccounts';
 const PASSWORD_KEY = 'jumpserverManager.password';
 const passwordKey = (id: string) => `jumpserverManager.password.${id}`;
 
@@ -85,6 +86,7 @@ export class JumpServerConfigManager {
   private assetsCache?: CachedJumpServerAsset[];
   private nodesCache?: CachedJumpServerNode[];
   private assetTrustCache?: Record<string, 'policy' | 'full'>;
+  private preferredAccountsCache?: Record<string, string>;
 
   constructor(
     private readonly globalState: ExtensionMemento,
@@ -136,14 +138,19 @@ export class JumpServerConfigManager {
     const trust = Object.fromEntries(
       Object.entries(this.readAssetTrustOverlay()).filter(([key]) => !key.startsWith(trustPrefix))
     );
+    const preferredAccounts = Object.fromEntries(
+      Object.entries(this.readPreferredAccounts()).filter(([key]) => !key.startsWith(trustPrefix))
+    );
     await this.globalState.update(BASTIONS_KEY, bastions);
     await this.globalState.update(ASSETS_KEY, assets);
     await this.globalState.update(NODES_KEY, nodes);
     await this.globalState.update(ASSET_TRUST_KEY, trust);
+    await this.globalState.update(PREFERRED_ACCOUNTS_KEY, preferredAccounts);
     this.bastionsCache = undefined;
     this.assetsCache = undefined;
     this.nodesCache = undefined;
     this.assetTrustCache = undefined;
+    this.preferredAccountsCache = undefined;
     await this.secrets.delete(passwordKey(id));
   }
 
@@ -205,10 +212,12 @@ export class JumpServerConfigManager {
     await this.globalState.update(NODES_KEY, undefined);
     await this.globalState.update(SETTINGS_KEY, undefined);
     await this.globalState.update(ASSET_TRUST_KEY, undefined);
+    await this.globalState.update(PREFERRED_ACCOUNTS_KEY, undefined);
     this.bastionsCache = undefined;
     this.assetsCache = undefined;
     this.nodesCache = undefined;
     this.assetTrustCache = undefined;
+    this.preferredAccountsCache = undefined;
   }
 
   async getPassword(id?: string): Promise<string | undefined> {
@@ -309,6 +318,39 @@ export class JumpServerConfigManager {
   private readAssetTrustOverlay(): Record<string, 'policy' | 'full'> {
     this.assetTrustCache ??= parseAssetTrustOverlay(this.globalState.get<unknown>(ASSET_TRUST_KEY, {}));
     return this.assetTrustCache;
+  }
+
+  getPreferredAccountKey(bastionId: string, assetId: string): string | undefined {
+    return this.readPreferredAccounts()[assetTrustKey(bastionId, assetId)];
+  }
+
+  async setPreferredAccountKey(bastionId: string, assetId: string, accountKey: string | undefined): Promise<void> {
+    const next = { ...this.readPreferredAccounts() };
+    const key = assetTrustKey(bastionId, assetId);
+    if (!accountKey) {
+      delete next[key];
+    } else {
+      next[key] = accountKey;
+    }
+    await this.globalState.update(PREFERRED_ACCOUNTS_KEY, next);
+    this.preferredAccountsCache = undefined;
+  }
+
+  private readPreferredAccounts(): Record<string, string> {
+    if (this.preferredAccountsCache) {
+      return this.preferredAccountsCache;
+    }
+    const raw = this.globalState.get<unknown>(PREFERRED_ACCOUNTS_KEY, {});
+    const parsed: Record<string, string> = {};
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      for (const [key, value] of Object.entries(raw)) {
+        if (typeof value === 'string' && value) {
+          parsed[key] = value;
+        }
+      }
+    }
+    this.preferredAccountsCache = parsed;
+    return parsed;
   }
 
   private migrateIfNeeded(): Promise<void> {

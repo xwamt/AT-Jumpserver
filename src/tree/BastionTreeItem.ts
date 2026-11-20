@@ -9,6 +9,7 @@ export class BastionTreeItem extends vscode.TreeItem {
     super(bastion.name, vscode.TreeItemCollapsibleState.Expanded);
     this.id = `bastion:${bastion.id}`;
     this.description = hostnameFromBaseUrl(bastion.baseUrl);
+    this.iconPath = new vscode.ThemeIcon('server-environment');
   }
 }
 
@@ -17,6 +18,7 @@ export class EmptyBastionTreeItem extends vscode.TreeItem {
 
   constructor() {
     super(t('Add JumpServer to get started'), vscode.TreeItemCollapsibleState.None);
+    this.iconPath = new vscode.ThemeIcon('add');
     this.command = {
       command: 'jumpserverManager.addBastion',
       title: t('Add JumpServer to get started')

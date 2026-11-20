@@ -103,8 +103,14 @@ export function installTerminalClipboardPasteHandler(terminal: PasteTerminal, ta
   );
 }
 
-export function resolveTerminalStatusClass(payload: string): 'connected' | 'disconnected' | 'connecting' {
-  if (payload === 'Connected') {
+export function resolveTerminalStatusClass(
+  payload: string,
+  state?: string
+): 'connected' | 'disconnected' | 'connecting' {
+  if (state === 'connected' || state === 'disconnected' || state === 'connecting') {
+    return state;
+  }
+  if (payload === 'Connected' || payload === '已连接') {
     return 'connected';
   }
   const lowerPayload = payload.toLowerCase();
@@ -113,7 +119,9 @@ export function resolveTerminalStatusClass(payload: string): 'connected' | 'disc
     lowerPayload.includes('failed') ||
     lowerPayload.includes('error') ||
     lowerPayload.includes('unavailable') ||
-    lowerPayload.includes('rejected')
+    lowerPayload.includes('rejected') ||
+    payload.includes('已断开') ||
+    payload.includes('断开连接')
   ) {
     return 'disconnected';
   }

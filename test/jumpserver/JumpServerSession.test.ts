@@ -96,7 +96,7 @@ describe('JumpServerSession', () => {
 
     expect(fakeClient.createConnectionToken).toHaveBeenCalledWith({
       assetId: 'asset-1',
-      account: { id: 'account-1', alias: 'account-alias-1', username: 'root', hasSecret: true },
+      account: { kind: 'managed', id: 'account-1', alias: 'account-alias-1', username: 'root', hasSecret: true },
       protocol: 'ssh'
     });
     expect(socket.sent.at(-1)).toBe(JSON.stringify({
@@ -104,7 +104,7 @@ describe('JumpServerSession', () => {
       type: 'TERMINAL_INIT',
       data: JSON.stringify({ cols: 80, rows: 24, code: '' })
     }));
-    expect(events.status).toHaveBeenCalledWith('Connected');
+    expect(events.status).toHaveBeenCalledWith('Connected', 'connected');
   });
 
   it('logs how long a KoKo terminal connect took', async () => {
@@ -180,7 +180,7 @@ describe('JumpServerSession', () => {
 
     expect(fakeClient.createConnectionToken).toHaveBeenCalledWith({
       assetId: 'redis-1',
-      account: { id: 'account-1', alias: 'account-alias-1', username: 'root', hasSecret: true },
+      account: { kind: 'managed', id: 'account-1', alias: 'account-alias-1', username: 'root', hasSecret: true },
       protocol: 'redis'
     });
     expect(fakeClient.openKokoWebSocket).toHaveBeenCalledWith({
@@ -210,7 +210,7 @@ describe('JumpServerSession', () => {
 
     expect(fakeClient.createConnectionToken).toHaveBeenCalledWith({
       assetId: 'mysql-1',
-      account: { id: 'account-1', alias: 'account-alias-1', username: 'root', hasSecret: true },
+      account: { kind: 'managed', id: 'account-1', alias: 'account-alias-1', username: 'root', hasSecret: true },
       protocol: 'mysql'
     });
     expect(fakeClient.openKokoWebSocket).toHaveBeenCalledWith({
@@ -244,7 +244,7 @@ describe('JumpServerSession', () => {
       data: JSON.stringify({ cols: 80, rows: 24, code: '' })
     }));
     expect(events.output).not.toHaveBeenCalled();
-    expect(events.status).toHaveBeenCalledWith('Connected');
+    expect(events.status).toHaveBeenCalledWith('Connected', 'connected');
   });
 
   it('handles KoKo PING heartbeats without writing JSON into the terminal', async () => {
@@ -284,6 +284,66 @@ describe('JumpServerSession', () => {
     }));
   });
 
+  it('preserves resize dimensions arrived before connect completes for openKokoWebSocket and TERMINAL_INIT', async () => {
+    const socketDeferred = deferred<FakeSocket>();
+    const fakeClient = {
+      ...client(socket),
+      openKokoWebSocket: vi.fn().mockReturnValue(socketDeferred.promise)
+    };
+    const session = new JumpServerSession({
+      asset: { id: 'asset-1', name: 'web-1' },
+      connectionKind: 'ssh',
+      client: fakeClient,
+      events
+    });
+
+    const connecting = session.connect();
+    await vi.waitFor(() => expect(fakeClient.openKokoWebSocket).toHaveBeenCalled());
+    // Ready resize arrives before the KoKo socket has finished opening.
+    session.resize(40, 160);
+    socketDeferred.resolve(socket);
+    await connecting;
+    socket.emit('message', JSON.stringify({ id: 'connect-1', type: 'CONNECT', data: '{}' }));
+
+    expect(socket.sent).toContain(JSON.stringify({
+      id: 'connect-1',
+      type: 'TERMINAL_INIT',
+      data: JSON.stringify({ cols: 160, rows: 40, code: '' })
+    }));
+  });
+
+  it('uses resize dimensions received before openKokoWebSocket starts when opening the socket', async () => {
+    const detailDeferred = deferred<Record<string, any>>();
+    const fakeClient = {
+      ...client(socket),
+      getAssetDetail: vi.fn().mockReturnValue(detailDeferred.promise)
+    };
+    const session = new JumpServerSession({
+      asset: { id: 'asset-1', name: 'web-1' },
+      connectionKind: 'ssh',
+      client: fakeClient,
+      events
+    });
+
+    const connecting = session.connect();
+    session.resize(40, 160);
+    detailDeferred.resolve(assetDetail());
+    await connecting;
+    socket.emit('message', JSON.stringify({ id: 'connect-1', type: 'CONNECT', data: '{}' }));
+
+    expect(fakeClient.openKokoWebSocket).toHaveBeenCalledWith({
+      endpoint: { host: 'koko.example.com', https_port: 443 },
+      tokenId: 'token-1',
+      cols: 160,
+      rows: 40
+    });
+    expect(socket.sent).toContain(JSON.stringify({
+      id: 'connect-1',
+      type: 'TERMINAL_INIT',
+      data: JSON.stringify({ cols: 160, rows: 40, code: '' })
+    }));
+  });
+
   it('forwards upstream bytes and closes cleanly', async () => {
     const session = new JumpServerSession({ asset: { id: 'asset-1', name: 'web-1' }, connectionKind: 'ssh', client: client(socket), events });
     await session.connect();
@@ -301,7 +361,7 @@ describe('JumpServerSession', () => {
 
     socket.emit('close', 4001, Buffer.from('idle timeout', 'utf8'));
 
-    expect(events.status).toHaveBeenCalledWith('Disconnected (code 4001: idle timeout)');
+    expect(events.status).toHaveBeenCalledWith('Disconnected (code 4001: idle timeout)', 'disconnected');
   });
 
   it('reports normal remote websocket close codes too', async () => {
@@ -310,7 +370,7 @@ describe('JumpServerSession', () => {
 
     socket.emit('close', 1000, Buffer.alloc(0));
 
-    expect(events.status).toHaveBeenCalledWith('Disconnected (code 1000)');
+    expect(events.status).toHaveBeenCalledWith('Disconnected (code 1000)', 'disconnected');
   });
 
 
@@ -533,10 +593,170 @@ describe('JumpServerSession dispose during an in-flight connect', () => {
       expect(vi.getTimerCount()).toBe(0);
       socket.emit('message', JSON.stringify({ id: 'connect-1', type: 'CONNECT', data: '{}' }));
       expect(socket.sent).toEqual([]);
-      expect(events.status).not.toHaveBeenCalledWith('Connected');
+      expect(events.status).not.toHaveBeenCalledWith('Connected', expect.anything());
       expect(session.isConnected()).toBe(false);
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('selects connect_method from connect-methods when available (mstsc for rdp, web_cli for ssh)', async () => {
+    const fakeClientRdp = {
+      ...client(socket, 'rdp'),
+      getConnectMethods: vi.fn().mockResolvedValue({
+        rdp: [{ component: 'lion', type: 'web', endpoint_protocol: 'http', value: 'mstsc', label: 'RDP Web' }]
+      })
+    };
+    const sessionRdp = new JumpServerSession({
+      asset: { id: 'asset-rdp', name: 'windows-1' },
+      connectionKind: 'rdp',
+      client: fakeClientRdp,
+      events
+    });
+    await sessionRdp.connect();
+    expect(fakeClientRdp.createConnectionToken).toHaveBeenCalledWith(
+      expect.objectContaining({ protocol: 'rdp', connectMethod: 'mstsc' })
+    );
+
+    const fakeClientSsh = {
+      ...client(socket, 'ssh'),
+      getConnectMethods: vi.fn().mockResolvedValue({
+        ssh: [{ component: 'koko', type: 'web', endpoint_protocol: 'http', value: 'web_cli', label: 'Web CLI' }]
+      })
+    };
+    const sessionSsh = new JumpServerSession({
+      asset: { id: 'asset-ssh', name: 'linux-1' },
+      connectionKind: 'ssh',
+      client: fakeClientSsh,
+      events
+    });
+    await sessionSsh.connect();
+    expect(fakeClientSsh.createConnectionToken).toHaveBeenCalledWith(
+      expect.objectContaining({ protocol: 'ssh', connectMethod: 'web_cli' })
+    );
+  });
+
+  it('falls back to existing protocol string heuristics when connect-methods fails with 500', async () => {
+    const fakeClient = {
+      ...client(socket, 'ssh'),
+      getConnectMethods: vi.fn().mockRejectedValue(new Error('HTTP 500 Internal Server Error'))
+    };
+    const session = new JumpServerSession({
+      asset: { id: 'asset-1', name: 'web-1' },
+      connectionKind: 'ssh',
+      client: fakeClient,
+      events
+    });
+
+    await expect(session.connect()).resolves.toBeUndefined();
+    expect(fakeClient.createConnectionToken).toHaveBeenCalledWith(
+      expect.objectContaining({ protocol: 'ssh' })
+    );
+    expect(events.status).toHaveBeenCalledWith('Opening KoKo terminal', 'connecting');
+  });
+
+  it('B1 Step 6: skips ensureWebSession when server is detected as 5.0', async () => {
+    const ensureWebSession = vi.fn().mockResolvedValue(undefined);
+    const getClientVersions = vi.fn().mockResolvedValue(['5.0.0']);
+    const fakeClient = {
+      ...client(socket, 'ssh'),
+      ensureWebSession,
+      getClientVersions
+    };
+
+    const session = new JumpServerSession({
+      asset: { id: 'asset-50', name: 'v5-server', bastionId: 'b-v5' },
+      connectionKind: 'ssh',
+      client: fakeClient as any,
+      events
+    });
+
+    await session.connect();
+    expect(ensureWebSession).not.toHaveBeenCalled();
+  });
+
+  it('B1 Step 6: invokes ensureWebSession on legacy versions (4.x / 3.x)', async () => {
+    const ensureWebSession = vi.fn().mockResolvedValue(undefined);
+    const getClientVersions = vi.fn().mockRejectedValue({ statusCode: 404 });
+    const fakeClient = {
+      ...client(socket, 'ssh'),
+      ensureWebSession,
+      getClientVersions
+    };
+
+    const session = new JumpServerSession({
+      asset: { id: 'asset-legacy', name: 'v4-server', bastionId: 'b-v4' },
+      connectionKind: 'ssh',
+      client: fakeClient as any,
+      events
+    });
+
+    await session.connect();
+    // Wait for the async capability promise to finish
+    await new Promise((r) => setTimeout(r, 10));
+    expect(ensureWebSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('invokes selectAccount when multiple usable accounts exist and skips it when only one exists', async () => {
+    const multiClient = client(socket);
+    multiClient.getAssetDetail.mockResolvedValue({
+      id: 'asset-1',
+      permed_accounts: [
+        { id: 'acc-1', username: 'ubuntu', has_secret: true },
+        { id: 'acc-2', username: 'root', has_secret: true }
+      ],
+      permed_protocols: [{ name: 'ssh' }]
+    });
+    const selectAccount = vi.fn(async (accounts) => accounts[1]);
+    const session = new JumpServerSession({
+      asset: { id: 'asset-1', name: 'web-1' },
+      connectionKind: 'ssh',
+      client: multiClient,
+      events,
+      selectAccount
+    });
+
+    await session.connect();
+
+    expect(selectAccount).toHaveBeenCalledTimes(1);
+    expect(multiClient.createConnectionToken).toHaveBeenCalledWith(
+      expect.objectContaining({
+        account: expect.objectContaining({ id: 'acc-2', username: 'root' })
+      })
+    );
+
+    const singleSelect = vi.fn();
+    const singleSession = new JumpServerSession({
+      asset: { id: 'asset-1', name: 'web-1' },
+      connectionKind: 'ssh',
+      client: client(socket),
+      events,
+      selectAccount: singleSelect
+    });
+
+    await singleSession.connect();
+    expect(singleSelect).not.toHaveBeenCalled();
+  });
+
+  it('aborts connect when selectAccount returns undefined', async () => {
+    const multiClient = client(socket);
+    multiClient.getAssetDetail.mockResolvedValue({
+      id: 'asset-1',
+      permed_accounts: [
+        { id: 'acc-1', username: 'ubuntu', has_secret: true },
+        { id: 'acc-2', username: 'root', has_secret: true }
+      ],
+      permed_protocols: [{ name: 'ssh' }]
+    });
+    const session = new JumpServerSession({
+      asset: { id: 'asset-1', name: 'web-1' },
+      connectionKind: 'ssh',
+      client: multiClient,
+      events,
+      selectAccount: async () => undefined
+    });
+
+    await expect(session.connect()).rejects.toThrow(/cancelled/i);
+    expect(multiClient.createConnectionToken).not.toHaveBeenCalled();
   });
 });

@@ -28,7 +28,8 @@ import {
   isKokoLoginRedirect,
   normalizeJumpServerAsset,
   parseCsrfMiddlewareToken,
-  resolveFirstUsableAccount
+  resolveFirstUsableAccount,
+  resolveUsableAccounts
 } from '../../src/jumpserver/JumpServerClient';
 import { DEFAULT_ORG_ID, GLOBAL_ORG_ID } from '../../src/jumpserver/orgs';
 
@@ -162,7 +163,82 @@ describe('JumpServerClient pure helpers', () => {
           { id: 'account-3', name: 'deploy' }
         ]
       })
-    ).toEqual({ id: 'account-2', alias: 'mysql-root', username: 'root', hasSecret: true });
+    ).toEqual({ kind: 'managed', id: 'account-2', alias: 'mysql-root', username: 'root', hasSecret: true });
+  });
+
+  it('resolves @INPUT alias account without throwing when only alias accounts exist', () => {
+    expect(
+      resolveFirstUsableAccount({
+        permed_accounts: [
+          { alias: '@INPUT' }
+        ]
+      })
+    ).toEqual({ kind: 'alias', alias: '@INPUT' });
+  });
+
+  it('returns all usable managed and alias accounts in priority order without duplicates', () => {
+    expect(
+      resolveUsableAccounts({
+        permed_accounts: [
+          { id: 'acc-no-secret', username: 'readonly', has_secret: false },
+          { id: 'acc-secret', alias: 'ops', username: 'ubuntu', has_secret: true },
+          { id: 'acc-secret', alias: 'ops', username: 'ubuntu', has_secret: true },
+          { alias: '@INPUT' },
+          { alias: '@USER', id: 'user-alias', username: 'alan' }
+        ]
+      })
+    ).toEqual([
+      { kind: 'managed', id: 'acc-secret', alias: 'ops', username: 'ubuntu', hasSecret: true },
+      { kind: 'managed', id: 'acc-no-secret', username: 'readonly', hasSecret: false },
+      { kind: 'alias', alias: '@INPUT' },
+      { kind: 'alias', alias: '@USER', id: 'user-alias', username: 'alan' }
+    ]);
+  });
+
+  it('builds connection-token payload for @INPUT with account and input_username', () => {
+    const payload = buildConnectionTokenPayload({
+      assetId: 'asset-1',
+      account: { kind: 'alias', alias: '@INPUT', inputUsername: 'dev-user', inputSecret: 'dev-pass' },
+      protocol: 'ssh'
+    });
+    expect(payload.account).toBe('@INPUT');
+    expect(payload.input_username).toBe('dev-user');
+    expect(payload.input_secret).toBe('dev-pass');
+  });
+
+  it('builds connection-token payload for @USER and @ANON without input_username', () => {
+    const payloadUser = buildConnectionTokenPayload({
+      assetId: 'asset-1',
+      account: { kind: 'alias', alias: '@USER' },
+      protocol: 'ssh'
+    });
+    expect(payloadUser.account).toBe('@USER');
+    expect('input_username' in payloadUser).toBe(false);
+
+    const payloadAnon = buildConnectionTokenPayload({
+      assetId: 'asset-1',
+      account: { kind: 'alias', alias: '@ANON' },
+      protocol: 'ssh'
+    });
+    expect(payloadAnon.account).toBe('@ANON');
+    expect('input_username' in payloadAnon).toBe(false);
+  });
+
+  it('builds connection-token payload for managed accounts byte-for-byte identical to legacy behavior', () => {
+    const payloadManaged = buildConnectionTokenPayload({
+      assetId: 'asset-1',
+      account: { kind: 'managed', id: 'account-1', username: 'root' },
+      protocol: 'ssh'
+    });
+    expect(payloadManaged).toEqual({
+      asset: 'asset-1',
+      account: 'account-1',
+      protocol: 'ssh',
+      input_username: 'root',
+      input_secret: '',
+      connect_method: 'web_cli',
+      connect_options: DEFAULT_CONNECT_OPTIONS
+    });
   });
 
   it('builds Ahell-compatible connection-token payload', () => {
@@ -230,7 +306,7 @@ describe('JumpServerClient pure helpers', () => {
       protocol: 'sftp',
       input_username: 'root',
       input_secret: '',
-      connect_method: 'sftp',
+      connect_method: 'web_sftp',
       connect_options: DEFAULT_SFTP_CONNECT_OPTIONS
     });
   });
@@ -1749,6 +1825,61 @@ describe('JumpServerClient REST TLS verification', () => {
     });
 
     await expect(client.ensureAuthToken()).rejects.toThrow(/self.signed|self signed/i);
+  });
+});
+
+describe('JumpServerClient connect-methods', () => {
+  const settings = {
+    baseUrl: 'https://jumpserver.example.com',
+    orgId: '',
+    username: 'alan',
+    password: 'secret',
+    verifyTls: true
+  };
+
+  it('coalesces concurrent requests and caches connect-methods for 30s', async () => {
+    let callCount = 0;
+    const fetchMock = vi.fn(async (url: string) => {
+      if (String(url).includes('/api/v1/authentication/auth/')) {
+        return new Response(JSON.stringify({ token: 'bearer-token' }), { status: 200 });
+      }
+      if (String(url).includes('/api/v1/terminal/components/connect-methods/')) {
+        callCount += 1;
+        return new Response(JSON.stringify({
+          ssh: [{ component: 'koko', type: 'web', endpoint_protocol: 'http', value: 'web_cli', label: 'Web CLI' }]
+        }), { status: 200 });
+      }
+      return new Response('Not Found', { status: 404 });
+    });
+
+    const client = new JumpServerClient(settings, fetchMock as any);
+    const [res1, res2] = await Promise.all([
+      client.getConnectMethods(),
+      client.getConnectMethods()
+    ]);
+
+    expect(callCount).toBe(1);
+    expect(res1.ssh[0].value).toBe('web_cli');
+    expect(res2).toEqual(res1);
+
+    const res3 = await client.getConnectMethods();
+    expect(callCount).toBe(1);
+    expect(res3).toEqual(res1);
+  });
+
+  it('throws classifiable error when connect-methods endpoint returns 500', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (String(url).includes('/api/v1/authentication/auth/')) {
+        return new Response(JSON.stringify({ token: 'bearer-token' }), { status: 200 });
+      }
+      if (String(url).includes('/api/v1/terminal/components/connect-methods/')) {
+        return new Response(JSON.stringify({ detail: 'Internal Server Error' }), { status: 500 });
+      }
+      return new Response('Not Found', { status: 404 });
+    });
+
+    const client = new JumpServerClient(settings, fetchMock as any);
+    await expect(client.getConnectMethods()).rejects.toThrow();
   });
 });
 

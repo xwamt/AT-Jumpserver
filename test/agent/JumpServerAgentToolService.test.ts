@@ -823,6 +823,82 @@ describe('JumpServerAgentToolService', () => {
     expect(confirm).not.toHaveBeenCalled();
     expect(write).not.toHaveBeenCalled();
   });
+
+  it('serializes concurrent commands per terminal and deletes finished terminalQueues entries', async () => {
+    const events: string[] = [];
+    const terminalContext = new TerminalContextRegistry();
+    const pendingMarkers = new Map<string, () => void>();
+    const write = vi.fn((data: string) => {
+      const id = data.match(/'([0-9a-f]{32})'/)?.[1] ?? 'unknown';
+      const cmdLabel = data.includes('first-cmd') ? 'first' : 'second';
+      events.push(`start:${cmdLabel}`);
+      const buffer = terminalContext.getOutputBuffer('terminal-1');
+      buffer?.append(`prompt$ ${data}`);
+      pendingMarkers.set(cmdLabel, () => {
+        events.push(`end:${cmdLabel}`);
+        buffer?.append(`__JMS_CMD_START_${id}__\nok:${cmdLabel}\n__JMS_CMD_END_${id}__0\n`);
+      });
+    });
+    terminalContext.setActive({
+      terminalId: 'terminal-1',
+      asset: asset({ id: 'ssh-1', name: 'web-1', address: '10.0.0.5', protocolNames: ['ssh'] }),
+      connected: true,
+      write
+    });
+    const service = serviceWith({
+      terminalContext,
+      ...withTrust('full')
+    });
+
+    const first = service.runTerminalCommand({ command: 'first-cmd' });
+    const second = service.runTerminalCommand({ command: 'second-cmd' });
+
+    await vi.waitFor(() => expect(pendingMarkers.has('first')).toBe(true));
+    expect(events).toEqual(['start:first']);
+    expect((service as unknown as { terminalQueues: Map<string, Promise<unknown>> }).terminalQueues.size).toBe(1);
+
+    pendingMarkers.get('first')?.();
+    await expect(first).resolves.toMatchObject({ stdout: expect.stringContaining('ok:first') });
+
+    await vi.waitFor(() => expect(pendingMarkers.has('second')).toBe(true));
+    expect(events).toEqual(['start:first', 'end:first', 'start:second']);
+
+    pendingMarkers.get('second')?.();
+    await expect(second).resolves.toMatchObject({ stdout: expect.stringContaining('ok:second') });
+    await vi.waitFor(() => {
+      expect((service as unknown as { terminalQueues: Map<string, Promise<unknown>> }).terminalQueues.size).toBe(0);
+    });
+  });
+
+  it('cleans terminalQueues entries even when queued execution rejects', async () => {
+    const terminalContext = new TerminalContextRegistry();
+    terminalContext.setActive({
+      terminalId: 'terminal-1',
+      asset: asset({ id: 'ssh-1', name: 'web-1', address: '10.0.0.5', protocolNames: ['ssh'] }),
+      connected: true,
+      write: vi.fn(() => {
+        throw new Error('socket dead');
+      })
+    });
+    const service = serviceWith({ terminalContext, ...withTrust('full') });
+
+    await expect(service.runTerminalCommand({ command: 'ls' })).rejects.toThrow('socket dead');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect((service as unknown as { terminalQueues: Map<string, Promise<unknown>> }).terminalQueues.size).toBe(0);
+  });
+
+  it('evicts terminalQueues entries immediately when a terminal context is removed', () => {
+    const { terminalContext } = sshExecutingTerminal();
+    const service = serviceWith({ terminalContext, ...withTrust('full') });
+    const queues = (service as unknown as { terminalQueues: Map<string, Promise<unknown>> }).terminalQueues;
+    queues.set('terminal-1', new Promise(() => undefined));
+
+    terminalContext.clearIfActive('terminal-1');
+
+    expect(queues.has('terminal-1')).toBe(false);
+  });
 });
 
 function verdict(

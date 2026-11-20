@@ -17,7 +17,10 @@ const connect = vi.fn<() => Promise<void>>();
 const disposeSession = vi.fn<() => void>();
 const write = vi.fn<(data: string) => void>();
 const resize = vi.fn<(rows: number, cols: number) => void>();
-const sessionEvents: Array<{ output(data: Buffer): void; status(message: string): void }> = [];
+const sessionEvents: Array<{
+  output(data: Buffer): void;
+  status(message: string, state?: 'connecting' | 'connected' | 'disconnected'): void;
+}> = [];
 const sessionInputs: unknown[] = [];
 
 vi.mock('../../src/jumpserver/JumpServerSession', () => ({
@@ -451,6 +454,7 @@ describe('TerminalPanel rendering helpers', () => {
 
     expect(panelHost.panel.webview.postMessage).toHaveBeenCalledWith({
       type: 'status',
+      state: 'disconnected',
       payload: expect.stringContaining('unavailable')
     });
   });
@@ -489,4 +493,214 @@ describe('TerminalPanel rendering helpers', () => {
     expect(dropHostB.panel.dispose).toHaveBeenCalled();
     expect(keepHost.panel.dispose).not.toHaveBeenCalled();
   });
+
+  it('exposes reusable token for active connected session and clears on disconnect', async () => {
+    const host = createPanel();
+    vi.mocked(vscode.window.createWebviewPanel).mockReturnValue(host.panel);
+
+    const assetItem = asset('tok-asset');
+    const panel = TerminalPanel.open(extensionContext(), assetItem, jumpServerClient());
+
+    const lastInput = sessionInputs[sessionInputs.length - 1] as any;
+    expect(lastInput.onTokenReady).toBeDefined();
+    lastInput.onTokenReady('tok-active-1', { reusable: true, kind: 'ssh' });
+
+    await flushPromises();
+
+    // Query by terminalId
+    expect(TerminalPanel.getReusableToken(panel.getTerminalId())).toBe('tok-active-1');
+    // Query by asset
+    expect(TerminalPanel.getReusableToken(undefined, assetItem)).toBe('tok-active-1');
+    // Query by asset.id
+    expect(TerminalPanel.getReusableToken(assetItem.id)).toBe('tok-active-1');
+    // Unknown id
+    expect(TerminalPanel.getReusableToken('unknown-id')).toBeUndefined();
+
+    // Disconnect clears token
+    panel.disconnect();
+    expect(TerminalPanel.getReusableToken(panel.getTerminalId())).toBeUndefined();
+    expect(TerminalPanel.getReusableToken(undefined, assetItem)).toBeUndefined();
+  });
+
+  it('carries the last viewport dimensions into the recreated session on reconnect', async () => {
+    const host = createPanel();
+    vi.mocked(vscode.window.createWebviewPanel).mockReturnValueOnce(host.panel);
+    const panel = TerminalPanel.open(extensionContext(), asset(), jumpServerClient());
+    await flushPromises();
+
+    host.sendMessage({ type: 'ready', rows: 42, cols: 132 });
+    resize.mockClear();
+
+    await panel.reconnect();
+
+    expect(resize).toHaveBeenCalledWith(42, 132);
+  });
+
+  it('renders asset host and protocol label plus reconnect button in the status bar', () => {
+    const body = renderTerminalBody(
+      {
+        scrollback: 5000,
+        fontSize: 14,
+        fontFamily: 'Menlo',
+        semanticHighlight: true,
+        idleDisconnectMinutes: 60
+      },
+      '10.0.0.10 · SSH'
+    );
+
+    expect(body).toContain('10.0.0.10 · SSH');
+    expect(body).toContain('id="reconnect-btn"');
+    expect(body).toContain('Reconnect');
+
+    const host = createPanel();
+    vi.mocked(vscode.window.createWebviewPanel).mockReturnValueOnce(host.panel);
+    TerminalPanel.open(extensionContext(), asset('web-1'), jumpServerClient());
+
+    expect(host.panel.webview.html).toContain('web-1.example.com · SSH');
+    expect(host.panel.webview.html).not.toContain('>xterm.js<');
+  });
+
+  it('sends structured connecting/connected/disconnected status states and reconnects on button click', async () => {
+    const host = createPanel();
+    vi.mocked(vscode.window.createWebviewPanel).mockReturnValueOnce(host.panel);
+    const panel = TerminalPanel.open(extensionContext(), asset('web-1'), jumpServerClient());
+    await flushPromises();
+
+    sessionEvents.at(-1)!.status('Connected', 'connected');
+    expect(host.panel.webview.postMessage).toHaveBeenCalledWith({
+      type: 'status',
+      state: 'connected',
+      payload: 'Connected'
+    });
+
+    panel.disconnect();
+    expect(host.panel.webview.postMessage).toHaveBeenCalledWith({
+      type: 'status',
+      state: 'disconnected',
+      payload: 'Disconnected'
+    });
+
+    vi.mocked(host.panel.webview.postMessage).mockClear();
+    connect.mockClear();
+    host.sendMessage({ type: 'reconnect' });
+    await flushPromises();
+
+    expect(host.panel.webview.postMessage).toHaveBeenCalledWith({
+      type: 'status',
+      state: 'connecting',
+      payload: 'Reconnecting...'
+    });
+    expect(connect).toHaveBeenCalledTimes(1);
+  });
+
+  it('pushes updated terminal settings to open panels when configuration changes', async () => {
+    const host = createPanel();
+    vi.mocked(vscode.window.createWebviewPanel).mockReturnValueOnce(host.panel);
+    TerminalPanel.open(extensionContext(), asset('web-1'), jumpServerClient());
+    await flushPromises();
+    vi.mocked(host.panel.webview.postMessage).mockClear();
+
+    TerminalPanel.syncConfiguration({
+      scrollback: 12000,
+      fontSize: 16,
+      fontFamily: 'JetBrains Mono',
+      semanticHighlight: false,
+      idleDisconnectMinutes: 15
+    });
+
+    expect(host.panel.webview.postMessage).toHaveBeenCalledWith({
+      type: 'settings',
+      payload: {
+        scrollback: 12000,
+        fontSize: 16,
+        fontFamily: 'JetBrains Mono',
+        semanticHighlight: false
+      }
+    });
+  });
+
+  it('remembers and auto-selects preferred accounts unless forceAccountPick is requested', async () => {
+    const preferred = new Map<string, string>();
+    TerminalPanel.setAccountPreferenceStore({
+      getPreferredAccountKey: (bastionId, assetId) => preferred.get(`${bastionId}/${assetId}`),
+      setPreferredAccountKey: async (bastionId, assetId, key) => {
+        if (key) {
+          preferred.set(`${bastionId}/${assetId}`, key);
+        } else {
+          preferred.delete(`${bastionId}/${assetId}`);
+        }
+      }
+    });
+
+    const accounts = [
+      { kind: 'managed' as const, id: 'acc-1', username: 'ubuntu', hasSecret: true },
+      { kind: 'managed' as const, id: 'acc-2', username: 'root', hasSecret: true }
+    ];
+    vi.mocked(vscode.window.showQuickPick).mockImplementationOnce(async (items) => {
+      const list = items as unknown as Array<{ label: string; account: unknown }>;
+      return list[1] as never;
+    });
+
+    const host1 = createPanel();
+    vi.mocked(vscode.window.createWebviewPanel).mockReturnValueOnce(host1.panel);
+    TerminalPanel.open(extensionContext(), asset('web-1'), jumpServerClient());
+    const input1 = sessionInputs.at(-1) as {
+      selectAccount?: (list: typeof accounts, target: CachedJumpServerAsset) => Promise<unknown>;
+    };
+    const chosen1 = await input1.selectAccount?.(accounts, asset('web-1'));
+    expect(chosen1).toEqual(accounts[1]);
+    expect(preferred.get('b1/web-1')).toBe('managed:acc-2');
+
+    // Second open without forceAccountPick reuses remembered account without QuickPick
+    vi.mocked(vscode.window.showQuickPick).mockClear();
+    const host2 = createPanel();
+    vi.mocked(vscode.window.createWebviewPanel).mockReturnValueOnce(host2.panel);
+    TerminalPanel.open(extensionContext(), asset('web-1'), jumpServerClient());
+    const input2 = sessionInputs.at(-1) as {
+      selectAccount?: (list: typeof accounts, target: CachedJumpServerAsset) => Promise<unknown>;
+    };
+    const chosen2 = await input2.selectAccount?.(accounts, asset('web-1'));
+    expect(chosen2).toEqual(accounts[1]);
+    expect(vscode.window.showQuickPick).not.toHaveBeenCalled();
+
+    // forceAccountPick prompts again and marks remembered entry
+    vi.mocked(vscode.window.showQuickPick).mockImplementationOnce(async (items) => {
+      const list = items as unknown as Array<{ label: string; description?: string; account: unknown }>;
+      expect(list[1].description).toContain('Last used');
+      return list[0] as never;
+    });
+    const host3 = createPanel();
+    vi.mocked(vscode.window.createWebviewPanel).mockReturnValueOnce(host3.panel);
+    TerminalPanel.open(extensionContext(), asset('web-1'), jumpServerClient(), undefined, { forceAccountPick: true });
+    const input3 = sessionInputs.at(-1) as {
+      selectAccount?: (list: typeof accounts, target: CachedJumpServerAsset) => Promise<unknown>;
+    };
+    const chosen3 = await input3.selectAccount?.(accounts, asset('web-1'));
+    expect(chosen3).toEqual(accounts[0]);
+    expect(preferred.get('b1/web-1')).toBe('managed:acc-1');
+  });
+
+  it('passes localized @INPUT prompts with asset and username context', async () => {
+    const host = createPanel();
+    vi.mocked(vscode.window.createWebviewPanel).mockReturnValueOnce(host.panel);
+    TerminalPanel.open(extensionContext(), asset('db-prod'), jumpServerClient());
+    const lastInput = sessionInputs.at(-1) as {
+      resolveInputAccount?: (target: CachedJumpServerAsset) => Promise<{ username: string; password?: string } | undefined>;
+    };
+    vi.mocked(vscode.window.showInputBox)
+      .mockResolvedValueOnce('ops-admin')
+      .mockResolvedValueOnce('s3cr3t');
+
+    const creds = await lastInput.resolveInputAccount?.(asset('db-prod'));
+
+    expect(creds).toEqual({ username: 'ops-admin', password: 's3cr3t' });
+    expect(vscode.window.showInputBox).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      prompt: 'Enter username for @INPUT account on db-prod'
+    }));
+    expect(vscode.window.showInputBox).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      prompt: 'Enter password for ops-admin on db-prod',
+      password: true
+    }));
+  });
 });
+

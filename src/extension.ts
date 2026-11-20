@@ -2,31 +2,31 @@ import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import * as vscode from 'vscode';
 import { JumpServerAgentToolService } from './agent/JumpServerAgentToolService';
+import { registerAssetCommands } from './commands/assetCommands';
+import { registerBastionCommands } from './commands/bastionCommands';
+import { registerMcpCommands } from './commands/mcpCommands';
+import { registerSftpCommands } from './commands/sftpCommands';
 import { JumpServerConfigManager } from './config/JumpServerConfigManager';
-import type { AssetCommandTrust, CachedJumpServerAsset, JumpServerBastion } from './config/schema';
-import { assetPathsFromNodes, JumpServerClient } from './jumpserver/JumpServerClient';
+import type { CachedJumpServerAsset } from './config/schema';
+import { JumpServerClient } from './jumpserver/JumpServerClient';
 import { JumpServerClientPool } from './jumpserver/JumpServerClientPool';
 import { createWebSessionSecretStore } from './jumpserver/webSessionStore';
-import { resolveOrgContext } from './jumpserver/orgContext';
+import { detectKokoCapabilities, isKokoCookieLess } from './jumpserver/kokoCapability';
 import { confirmWithTimeout } from './mcp/confirmTimeout';
 import type { McpRuntimeHandle } from './mcp/mcpRuntime';
-import { assertTextFileEditable, DEFAULT_SFTP_EDIT_MAX_BYTES } from './sftp/SftpFileGuards';
 import { createVscodeSftpEditUi, SftpEditSessionManager } from './sftp/SftpEditSessionManager';
 import { JumpServerSftpManager } from './sftp/JumpServerSftpManager';
 import { JumpServerSftpSession } from './sftp/JumpServerSftpSession';
-import { JUMPSERVER_SFTP_PREVIEW_SCHEME, openRemotePreviewFile, SftpPreviewDocumentStore } from './sftp/SftpPreview';
-import { dirname, joinRemotePath, remoteBasename } from './sftp/RemotePath';
+import { JUMPSERVER_SFTP_PREVIEW_SCHEME, SftpPreviewDocumentStore } from './sftp/SftpPreview';
 import { VscodeTransferReporter } from './sftp/VscodeTransferReporter';
 import { TerminalContextRegistry } from './terminal/TerminalContext';
 import { JumpServerTreeProvider } from './tree/JumpServerTreeProvider';
-import { SftpDirectoryTreeItem, SftpFileTreeItem } from './tree/SftpTreeItems';
 import { SftpTreeProvider } from './tree/SftpTreeProvider';
-import { AssetTreeItem, getAssetOpenKind } from './tree/TreeItems';
+import { AssetTreeItem } from './tree/TreeItems';
 import { log, setLogSink } from './utils/logger';
 import { showTimedNotification } from './utils/notifications';
 import { errorMessage } from './utils/redaction';
-import { JumpServerConfigPanel } from './webview/JumpServerConfigPanel';
-import { TerminalPanel } from './webview/TerminalPanel';
+import { resolveTerminalSettings, TerminalPanel } from './webview/TerminalPanel';
 import { t } from './i18n/t';
 
 let extensionCleanup: { dispose(): void } | undefined;
@@ -75,12 +75,14 @@ export function activate(context: vscode.ExtensionContext): void {
   clientPool?.dropAll();
   clientPool = new JumpServerClientPool();
   const configManager = new JumpServerConfigManager(context.globalState, context.secrets);
+  TerminalPanel.setAccountPreferenceStore(configManager);
   const terminalContext = new TerminalContextRegistry();
   const treeProvider = new JumpServerTreeProvider(configManager);
   const sftpManager = new JumpServerSftpManager({
-    createSession: async (asset) => new JumpServerSftpSession({
+    createSession: async (asset, connectionKey) => new JumpServerSftpSession({
       asset,
-      client: await createClient(configManager, asset.bastionId, context.secrets)
+      client: await createClient(configManager, asset.bastionId, context.secrets),
+      getReusableTokenId: () => TerminalPanel.getReusableToken(connectionKey, asset)
     }),
     reporter: new VscodeTransferReporter()
   });
@@ -229,6 +231,8 @@ export function activate(context: vscode.ExtensionContext): void {
     showCollapseAll: true
   });
 
+  const createBastionClient = (bastionId: string) => createClient(configManager, bastionId, context.secrets);
+
   context.subscriptions.push(
     assetsView,
     assetsView.onDidChangeSelection((event) => {
@@ -254,349 +258,49 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.tabGroups.onDidChangeTabs((event) => {
       void sftpPreviewStore.deletePreviewFilesForClosedTabs(event.closed);
     }),
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (event.affectsConfiguration('jumpserverManager')) {
+        TerminalPanel.syncConfiguration(
+          resolveTerminalSettings(vscode.workspace.getConfiguration('jumpserverManager'))
+        );
+      }
+    }),
     cleanup,
-    vscode.commands.registerCommand('jumpserverManager.configure', async () => {
-      await runCommand(async () => {
-        const bastions = await configManager.listBastions();
-        if (bastions.length === 0) {
-          await JumpServerConfigPanel.open(context, configManager, { mode: 'add' });
-          return;
-        }
-        const picked = await vscode.window.showQuickPick(
-          [
-            ...bastions.map((bastion) => ({
-              label: bastion.name,
-              description: bastion.baseUrl,
-              bastionId: bastion.id
-            })),
-            { label: t('Add JumpServer'), description: '', bastionId: '' }
-          ],
-          { title: t('Select a JumpServer bastion'), ignoreFocusOut: true }
-        );
-        if (!picked) {
-          return;
-        }
-        await JumpServerConfigPanel.open(
-          context,
-          configManager,
-          picked.bastionId === '' ? { mode: 'add' } : { mode: 'edit', bastionId: picked.bastionId }
-        );
-      });
+    ...registerBastionCommands({
+      context,
+      configManager,
+      treeProvider,
+      sftpManager,
+      createClient: createBastionClient,
+      dropClient: (bastionId) => clientPool?.drop(bastionId),
+      ensureMcpRuntime,
+      runCommand
     }),
-    vscode.commands.registerCommand('jumpserverManager.addBastion', () => {
-      void JumpServerConfigPanel.open(context, configManager, { mode: 'add' });
+    ...registerAssetCommands({
+      context,
+      configManager,
+      treeProvider,
+      terminalContext,
+      sftpManager,
+      sftpTreeProvider,
+      createClient: createBastionClient,
+      runCommand
     }),
-    vscode.commands.registerCommand('jumpserverManager.editBastion', async (item?: BastionCommandArg) => {
-      await runCommand(async () => {
-        const bastion = await pickBastion(configManager, item);
-        if (!bastion) {
-          return;
-        }
-        await JumpServerConfigPanel.open(context, configManager, { mode: 'edit', bastionId: bastion.id });
-      });
+    ...registerSftpCommands({
+      context,
+      sftpManager,
+      sftpTreeProvider,
+      sftpPreviewStore,
+      sftpEditManager,
+      terminalContext,
+      runCommand
     }),
-    vscode.commands.registerCommand('jumpserverManager.removeBastion', async (item?: BastionCommandArg) => {
-      await runCommand(async () => {
-        const bastion = await pickBastion(configManager, item);
-        if (!bastion) {
-          return;
-        }
-        const deleteAction = t('Delete');
-        const answer = await vscode.window.showWarningMessage(
-          t('Delete JumpServer bastion {name}?', { name: bastion.name }),
-          { modal: true },
-          deleteAction
-        );
-        if (answer !== deleteAction) {
-          return;
-        }
-        await configManager.deleteBastion(bastion.id);
-        clientPool?.drop(bastion.id);
-        for (const terminalId of TerminalPanel.disposeSessionsForBastion(bastion.id)) {
-          sftpManager.removeTerminal(terminalId);
-        }
-        treeProvider.refresh();
-      });
-    }),
-    vscode.commands.registerCommand('jumpserverManager.refreshBastion', async (item?: BastionCommandArg) => {
-      await runCommand(async () => {
-        const bastion = await pickBastion(configManager, item);
-        if (!bastion) {
-          return;
-        }
-        const result = await refreshBastion(configManager, treeProvider, bastion.id, context.secrets);
-        notifyRefreshSummary([bastion], [{ status: 'fulfilled', value: result }]);
-        if (!result.cancelled) {
-          // A working bastion now exists; late-start MCP for windows that
-          // activated with none configured. No-op when already running.
-          void ensureMcpRuntime();
-        }
-      });
-    }),
-    vscode.commands.registerCommand('jumpserverManager.validate', async (item?: BastionCommandArg) => {
-      await runCommand(async () => {
-        const bastion = await pickBastion(configManager, item);
-        if (!bastion) {
-          return;
-        }
-        const client = await createClient(configManager, bastion.id, context.secrets);
-        await client.healthCheck();
-        await client.ensureAuthToken();
-        // Verifying an account should not drag the whole node tree along.
-        await client.getUserProfile();
-        const org = await ensureOrgContext(configManager, client, bastion);
-        if (!org) {
-          return;
-        }
-        client.setOrgId(org.id);
-        showTimedNotification(t('JumpServer account verified. Organization: {org}.', { org: org.name }));
-      });
-    }),
-    vscode.commands.registerCommand('jumpserverManager.refresh', async () => {
-      await runCommand(async () => {
-        const bastions = await configManager.listBastions();
-        if (bastions.length === 0) {
-          throw new Error('JumpServer is not configured.');
-        }
-        const results = await Promise.allSettled(
-          bastions.map((bastion) => refreshBastion(configManager, treeProvider, bastion.id, context.secrets))
-        );
-        notifyRefreshSummary(bastions, results);
-        if (results.some((result) => result.status === 'fulfilled' && !result.value.cancelled)) {
-          void ensureMcpRuntime();
-        }
-      });
-    }),
-    vscode.commands.registerCommand('jumpserverManager.connect', async (item?: AssetTreeItem) => {
-      if (!item) {
-        return;
-      }
-      await runCommand(async () => {
-        const kind = getAssetOpenKind(item.asset);
-        if (kind === 'unsupported') {
-          showTimedNotification(
-            t('Asset type is not supported yet: {name}', { name: item.asset.name }),
-            'error'
-          );
-          return;
-        }
-        const client = await createClient(configManager, item.asset.bastionId, context.secrets);
-        const terminal = TerminalPanel.open(context, item.asset, client, terminalContext);
-        await tryOpenSftpFiles(sftpManager, sftpTreeProvider, item.asset, terminal.getTerminalId(), false);
-      });
-    }),
-    vscode.commands.registerCommand('jumpserverManager.copyHostIp', async (item?: AssetTreeItem) => {
-      const address = item?.asset?.address;
-      if (!address) {
-        await vscode.window.showWarningMessage(t('Host IP is not available.'));
-        return;
-      }
-      await runCommand(async () => {
-        await vscode.env.clipboard.writeText(address);
-      });
-    }),
-    vscode.commands.registerCommand('jumpserverManager.setAssetTrust', async (item?: AssetTreeItem) => {
-      if (!item) {
-        return;
-      }
-      await runCommand(async () => {
-        const asset = item.asset;
-        const current = configManager.resolveAssetTrust(asset.bastionId, asset.id);
-        const picked = await vscode.window.showQuickPick(assetTrustQuickPickItems(current), {
-          placeHolder: t('Select trust level for {asset}', { asset: asset.name }),
-          ignoreFocusOut: true
-        });
-        if (!picked) {
-          return;
-        }
-        await configManager.setAssetTrust(asset.bastionId, asset.id, picked.level);
-        treeProvider.refresh();
-        showTimedNotification(
-          t('Trust level for {asset} is now {level}.', { asset: asset.name, level: picked.label })
-        );
-      });
-    }),
-    vscode.commands.registerCommand('jumpserverManager.sftp.refresh', async () => {
-      await runCommand(async () => {
-        if (!await ensureSftpAssetOpen(sftpManager)) {
-          return;
-        }
-        await sftpManager.refreshDirectory();
-        sftpTreeProvider.refresh();
-      });
-    }),
-    vscode.commands.registerCommand('jumpserverManager.sftp.goUp', async () => {
-      await runCommand(async () => {
-        if (!await ensureSftpAssetOpen(sftpManager)) {
-          return;
-        }
-        await sftpManager.changeToParentDirectory();
-        sftpTreeProvider.refresh();
-      });
-    }),
-    vscode.commands.registerCommand('jumpserverManager.sftp.upload', async (item?: SftpDirectoryTreeItem | SftpFileTreeItem) => {
-      await runCommand(async () => {
-        if (!await ensureSftpAssetOpen(sftpManager)) {
-          return;
-        }
-        const sources = await vscode.window.showOpenDialog({ canSelectFiles: true, canSelectFolders: false, canSelectMany: true });
-        if (!sources?.length) {
-          return;
-        }
-        const targetDirectory = getSftpTargetDirectory(sftpManager, item);
-        for (const source of sources) {
-          await sftpManager.uploadFile(source.fsPath, joinRemotePath(targetDirectory, localBasename(source.fsPath)));
-        }
-        sftpTreeProvider.refresh();
-      });
-    }),
-    vscode.commands.registerCommand('jumpserverManager.sftp.download', async (item?: SftpDirectoryTreeItem | SftpFileTreeItem) => {
-      if (!item) {
-        return;
-      }
-      await runCommand(async () => {
-        const target = await vscode.window.showSaveDialog({ defaultUri: vscode.Uri.file(item.entry.name) });
-        if (!target) {
-          return;
-        }
-        await sftpManager.downloadFile(item.entry.path, target.fsPath, item.entry.type === 'directory');
-      });
-    }),
-    vscode.commands.registerCommand('jumpserverManager.sftp.preview', async (item?: SftpFileTreeItem) => {
-      if (!item) {
-        return;
-      }
-      await runCommand(async () => {
-        const allowed = await ensurePreviewEditAllowed(sftpManager, item);
-        await openRemotePreviewFile({
-          storageUri: context.globalStorageUri ?? context.extensionUri,
-          remotePath: item.entry.path,
-          previewStore: sftpPreviewStore,
-          initialContent: allowed.sample,
-          downloadFile: (remotePath, localPath) => sftpManager.downloadFile(remotePath, localPath, false),
-          openUri: async (uri, options) => {
-            await vscode.commands.executeCommand('vscode.open', uri, options);
-          }
-        });
-      });
-    }),
-    vscode.commands.registerCommand('jumpserverManager.sftp.edit', async (item?: SftpFileTreeItem) => {
-      if (!item) {
-        return;
-      }
-      await runCommand(async () => {
-        const allowed = await ensurePreviewEditAllowed(sftpManager, item);
-        await sftpEditManager.openRemoteFile(item.entry.path, { initialContent: allowed.sample });
-      });
-    }),
-    vscode.commands.registerCommand('jumpserverManager.sftp.delete', async (item?: SftpDirectoryTreeItem | SftpFileTreeItem) => {
-      if (!item) {
-        return;
-      }
-      await runCommand(async () => {
-        const deleteAction = t('Delete');
-        const answer = await vscode.window.showWarningMessage(
-          t('Delete {path}?', { path: item.entry.path }),
-          { modal: true },
-          deleteAction
-        );
-        if (answer !== deleteAction) {
-          return;
-        }
-        await sftpManager.deleteEntry(item.entry);
-        sftpTreeProvider.refresh();
-      });
-    }),
-    vscode.commands.registerCommand('jumpserverManager.sftp.rename', async (item?: SftpDirectoryTreeItem | SftpFileTreeItem) => {
-      if (!item) {
-        return;
-      }
-      await runCommand(async () => {
-        const nextName = await vscode.window.showInputBox({ prompt: t('New name'), value: item.entry.name });
-        if (!nextName || nextName === item.entry.name) {
-          return;
-        }
-        await sftpManager.rename(item.entry.path, joinRemotePath(dirname(item.entry.path), nextName));
-        sftpTreeProvider.refresh();
-      });
-    }),
-    vscode.commands.registerCommand('jumpserverManager.sftp.newFolder', async (item?: SftpDirectoryTreeItem | SftpFileTreeItem) => {
-      await runCommand(async () => {
-        if (!await ensureSftpAssetOpen(sftpManager)) {
-          return;
-        }
-        const name = await vscode.window.showInputBox({ prompt: t('Folder name') });
-        if (!name) {
-          return;
-        }
-        await sftpManager.mkdir(joinRemotePath(getSftpTargetDirectory(sftpManager, item), name));
-        sftpTreeProvider.refresh();
-      });
-    }),
-    vscode.commands.registerCommand('jumpserverManager.sftp.copyPath', async (item?: SftpDirectoryTreeItem | SftpFileTreeItem) => {
-      if (!item) {
-        return;
-      }
-      await runCommand(async () => {
-        await vscode.env.clipboard.writeText(item.entry.path);
-        showTimedNotification(t('Remote path copied.'));
-      });
-    }),
-    vscode.commands.registerCommand('jumpserverManager.installMcpConfig', async () => {
-      await runCommand(async () => {
-        const runtime = await loadMcpRuntimeModule(context);
-        try {
-          // Repair must not trust the metadata short-circuit: force the full
-          // read+hash election so a tampered ~/.at-series install is rebuilt.
-          await runtime.syncPackagedHub(context, { force: true });
-        } catch (error) {
-          showTimedNotification(t('AT Series hub sync failed: {message}', { message: errorMessage(error) }), 'error');
-          return;
-        }
-        const result = await runtime.ensureAtSeriesConfigForCurrentIde({
-          ...hostEnv,
-          workspaceFolder: currentWorkspaceFolder()
-        });
-        if (result) {
-          showTimedNotification(
-            result.updated
-              ? t('AT Series MCP config installed/repaired.')
-              : t('AT Series MCP config is already up to date.')
-          );
-          return;
-        }
-        showTimedNotification(
-          t('No supported IDE MCP config target was detected. Open a workspace to install Continue config.'),
-          'warning'
-        );
-      });
-    }),
-    vscode.commands.registerCommand('jumpserverManager.uninstallAtSeriesMcpConfig', async () => {
-      await runCommand(async () => {
-        const runtime = await loadMcpRuntimeModule(context);
-        const result = await runtime.uninstallAtSeriesConfigForCurrentIde({
-          ...hostEnv,
-          workspaceFolder: currentWorkspaceFolder()
-        });
-        if (result?.removed) {
-          showTimedNotification(t('AT Series MCP config uninstalled.'));
-          return;
-        }
-        if (result) {
-          showTimedNotification(t('AT Series MCP config was not present.'));
-          return;
-        }
-        showTimedNotification(
-          t('No supported IDE MCP config target was detected. Open a workspace to uninstall Continue config.'),
-          'warning'
-        );
-      });
-    }),
-    vscode.commands.registerCommand('jumpserverManager.disconnect', () => {
-      TerminalPanel.getActive()?.disconnect();
-    }),
-    vscode.commands.registerCommand('jumpserverManager.reconnect', async () => {
-      await TerminalPanel.getActive()?.reconnect();
+    ...registerMcpCommands({
+      context,
+      loadMcpRuntimeModule: () => loadMcpRuntimeModule(context),
+      hostEnv,
+      currentWorkspaceFolder,
+      runCommand
     })
   );
 }
@@ -604,161 +308,6 @@ export function activate(context: vscode.ExtensionContext): void {
 export function deactivate(): void {
   extensionCleanup?.dispose();
   TerminalPanel.disconnectAll();
-}
-
-type BastionCommandArg = string | { bastion?: { id?: string } };
-
-type BastionRefreshResult =
-  | { cancelled: true }
-  | { cancelled: false; truncated: boolean; count: number; total: number };
-
-async function pickBastion(
-  configManager: JumpServerConfigManager,
-  item?: BastionCommandArg
-): Promise<JumpServerBastion | undefined> {
-  const requestedId = bastionIdFromArg(item);
-  if (requestedId) {
-    return configManager.requireBastion(requestedId);
-  }
-  const bastions = await configManager.listBastions();
-  if (bastions.length === 0) {
-    throw new Error('JumpServer is not configured.');
-  }
-  if (bastions.length === 1) {
-    return bastions[0];
-  }
-  const picked = await vscode.window.showQuickPick(
-    bastions.map((bastion) => ({
-      label: bastion.name,
-      description: bastion.baseUrl,
-      bastionId: bastion.id
-    })),
-    { title: t('Select a JumpServer bastion'), ignoreFocusOut: true }
-  );
-  if (!picked) {
-    return undefined;
-  }
-  return configManager.requireBastion(picked.bastionId);
-}
-
-function bastionIdFromArg(item?: BastionCommandArg): string | undefined {
-  if (typeof item === 'string' && item) {
-    return item;
-  }
-  if (item && typeof item === 'object' && typeof item.bastion?.id === 'string' && item.bastion.id) {
-    return item.bastion.id;
-  }
-  return undefined;
-}
-
-async function refreshBastion(
-  configManager: JumpServerConfigManager,
-  treeProvider: JumpServerTreeProvider,
-  bastionId: string,
-  secrets?: vscode.SecretStorage
-): Promise<BastionRefreshResult> {
-  const bastion = await configManager.requireBastion(bastionId);
-  const client = await createClient(configManager, bastionId, secrets);
-  const org = await ensureOrgContext(configManager, client, bastion);
-  if (!org) {
-    return { cancelled: true };
-  }
-  client.setOrgId(org.id);
-  const nodes = await client.listAssetNodes();
-  await configManager.saveCachedAssetNodes(bastionId, nodes);
-  treeProvider.refresh();
-  const inventory = await client.listAllAssets({ treePaths: assetPathsFromNodes(nodes) });
-  await configManager.saveCachedAssets(bastionId, inventory.assets);
-  treeProvider.refresh();
-  return {
-    cancelled: false,
-    truncated: inventory.truncated,
-    count: inventory.assets.length,
-    total: inventory.total
-  };
-}
-
-function notifyRefreshSummary(
-  bastions: JumpServerBastion[],
-  results: PromiseSettledResult<BastionRefreshResult>[]
-): void {
-  const failed = results
-    .map((result, index) => ({ result, bastion: bastions[index] }))
-    .filter((entry): entry is { result: PromiseRejectedResult; bastion: JumpServerBastion } =>
-      entry.result.status === 'rejected'
-    );
-  const succeeded = results.filter(
-    (result): result is PromiseFulfilledResult<Exclude<BastionRefreshResult, { cancelled: true }>> =>
-      result.status === 'fulfilled' && !result.value.cancelled
-  );
-  if (succeeded.length === 0 && failed.length === 0) {
-    return;
-  }
-  const truncated = succeeded.filter((result) => result.value.truncated);
-  const warning = failed.length > 0 || truncated.length > 0;
-  if (failed.length > 0) {
-    showTimedNotification(
-      t('JumpServer assets refreshed: {ok} succeeded, {fail} failed ({names}).', {
-        ok: succeeded.length,
-        fail: failed.length,
-        names: failed.map((entry) => entry.bastion.name).join(', ')
-      }),
-      'warning'
-    );
-    return;
-  }
-  let message = t('JumpServer assets refreshed: {ok} succeeded.', { ok: succeeded.length });
-  if (truncated.length > 0) {
-    message = `${message} ${truncated.map((result) =>
-      t('JumpServer assets refreshed: {count} of {total} (cache cap reached).', {
-        count: result.value.count,
-        total: result.value.total
-      })
-    ).join(' ')}`;
-  }
-  if (warning) {
-    showTimedNotification(message, 'warning');
-    return;
-  }
-  showTimedNotification(message);
-}
-
-async function ensureOrgContext(
-  configManager: JumpServerConfigManager,
-  client: JumpServerClient,
-  bastion: JumpServerBastion
-): Promise<{ id: string; name: string } | undefined> {
-  // A saved org id is trusted as-is: listing orgs on every refresh/validate
-  // costs a REST round-trip, and a stale org still surfaces through the
-  // existing error toasts when the follow-up asset calls fail.
-  const savedOrgId = bastion.orgId.trim();
-  if (savedOrgId) {
-    return { id: savedOrgId, name: bastion.name || savedOrgId };
-  }
-  const accessible = await client.listAccessibleOrgs();
-  const context = resolveOrgContext({ savedOrgId: bastion.orgId, accessibleOrgs: accessible });
-  if (context.effectiveOrg && context.effectiveOrg.source === 'reserved_auto_select') {
-    await configManager.saveBastion({ ...bastion, orgId: context.effectiveOrg.id, updatedAt: Date.now() });
-    return context.effectiveOrg;
-  }
-  if (context.effectiveOrg && !context.selectionRequired) {
-    return context.effectiveOrg;
-  }
-  const picked = await vscode.window.showQuickPick(
-    context.candidateOrgs.map((org) => ({
-      label: org.name || org.id,
-      description: org.id,
-      orgId: org.id,
-      name: org.name || org.id
-    })),
-    { title: t('Select the JumpServer organization to query.'), ignoreFocusOut: true }
-  );
-  if (!picked) {
-    showTimedNotification(t('Organization selection was cancelled.'), 'error');
-    return undefined;
-  }
-  await configManager.saveBastion({ ...bastion, orgId: picked.orgId, updatedAt: Date.now() });
-  return { id: picked.orgId, name: picked.name };
 }
 
 async function prefetchAssetDetail(
@@ -774,7 +323,20 @@ async function prefetchAssetDetail(
     }
     const warmups: Array<Promise<unknown>> = [client.getAssetDetail(asset.id)];
     if (typeof client.ensureWebSession === 'function') {
-      warmups.push(client.ensureWebSession());
+      const cached = isKokoCookieLess(asset.bastionId);
+      if (cached === true) {
+        // Detected as 5.0 cookie-less: skip ensureWebSession
+      } else if (cached === false || typeof (client as any).getClientVersions !== 'function') {
+        warmups.push(client.ensureWebSession());
+      } else {
+        warmups.push(
+          detectKokoCapabilities(client, asset.bastionId).then((caps) => {
+            if (!caps.cookieLess) {
+              return client.ensureWebSession?.();
+            }
+          })
+        );
+      }
     }
     await Promise.all(warmups);
   } catch (error) {
@@ -793,48 +355,24 @@ async function createClient(
   // skip a second REST + KoKo login on the same bastion.
   const pool = clientPool ?? new JumpServerClientPool();
   clientPool = pool;
-  return pool.acquire(bastionId, {
-    baseUrl: bastion.baseUrl,
-    orgId: bastion.orgId,
-    username: bastion.username,
-    password,
-    verifyTls: bastion.verifyTls
-  }, secrets ? { webSessionStore: createWebSessionSecretStore(secrets, bastionId) } : undefined);
-}
-
-/**
- * The picked entry carries its `level`; nothing maps a localized label back
- * to a trust value.
- */
-function assetTrustQuickPickItems(
-  current: AssetCommandTrust
-): Array<vscode.QuickPickItem & { level: AssetCommandTrust }> {
-  const levels: Array<{ level: AssetCommandTrust; label: string; detail: string }> = [
+  const kokoBearerHandshake = vscode.workspace
+    .getConfiguration('jumpserverManager')
+    .get<boolean>('kokoBearerHandshake', false);
+  return pool.acquire(
+    bastionId,
     {
-      level: 'none',
-      label: t('Untrusted'),
-      detail: t('Every agent command asks for confirmation.')
+      baseUrl: bastion.baseUrl,
+      orgId: bastion.orgId,
+      username: bastion.username,
+      password,
+      verifyTls: bastion.verifyTls
     },
     {
-      level: 'policy',
-      label: t('Limited trust'),
-      // The npm package name (at-series slash command-policy) must stay out
-      // of this literal: the policy-bundle test greps dist/extension.js for
-      // it to prove the policy runtime is not inlined into the extension.
-      detail: t('Commands are reviewed by the command policy engine; only an allow verdict skips the prompt.')
-    },
-    {
-      level: 'full',
-      label: t('Full trust'),
-      detail: t('Agent commands and SFTP writes run without prompts. Raw terminal input still asks.')
+      ...(secrets ? { webSessionStore: createWebSessionSecretStore(secrets, bastionId) } : {}),
+      bastionId,
+      kokoBearerHandshake
     }
-  ];
-  return levels.map(({ level, label, detail }) => ({
-    label,
-    detail,
-    description: level === current ? t('Current') : undefined,
-    level
-  }));
+  );
 }
 
 async function runCommand(command: () => Promise<void>): Promise<void> {
@@ -844,85 +382,5 @@ async function runCommand(command: () => Promise<void>): Promise<void> {
     log.error(`command failed: ${errorMessage(error)}`);
     showTimedNotification(errorMessage(error), 'error');
   }
-}
-
-function assetMaySupportSftp(asset: CachedJumpServerAsset): boolean {
-  const protocols = asset.protocolNames.map((name) => name.toLowerCase());
-  if (protocols.includes('sftp')) {
-    return true;
-  }
-  if (protocols.length === 0 || protocols.includes('ssh')) {
-    return getAssetOpenKind(asset) === 'ssh';
-  }
-  return false;
-}
-
-async function tryOpenSftpFiles(
-  manager: JumpServerSftpManager,
-  treeProvider: SftpTreeProvider,
-  asset: CachedJumpServerAsset,
-  terminalId: string,
-  notifyErrors: boolean
-): Promise<void> {
-  if (!assetMaySupportSftp(asset)) {
-    return;
-  }
-  try {
-    await manager.openAsset(asset, terminalId);
-    treeProvider.refresh();
-  } catch (error) {
-    if (notifyErrors) {
-      throw error;
-    }
-    showTimedNotification(
-      t('Files are not available for {name}: {message}', { name: asset.name, message: errorMessage(error) }),
-      'warning'
-    );
-  }
-}
-
-async function ensureSftpAssetOpen(manager: JumpServerSftpManager): Promise<boolean> {
-  if (manager.getState().kind !== 'none') {
-    return true;
-  }
-  showTimedNotification(t('Open files from a JumpServer asset first.'), 'warning');
-  return false;
-}
-
-async function ensurePreviewEditAllowed(
-  manager: JumpServerSftpManager,
-  item: SftpFileTreeItem
-): Promise<{ size: number; sample: Buffer }> {
-  if (!await ensureSftpAssetOpen(manager)) {
-    throw new Error(t('Open files from a JumpServer asset first.'));
-  }
-  const stat = item.entry.size === undefined
-    ? await manager.stat(item.entry.path)
-    : { size: item.entry.size, modifiedAt: item.entry.modifiedAt ?? 0 };
-  assertTextFileEditable({ remotePath: item.entry.path, size: stat.size });
-  const sample = await manager.readFile(item.entry.path, Math.min(DEFAULT_SFTP_EDIT_MAX_BYTES, Math.max(stat.size, 1)));
-  assertTextFileEditable({ remotePath: item.entry.path, size: stat.size, sample });
-  return { size: stat.size, sample };
-}
-
-function getSftpTargetDirectory(
-  manager: JumpServerSftpManager,
-  item?: SftpDirectoryTreeItem | SftpFileTreeItem
-): string {
-  if (item instanceof SftpDirectoryTreeItem) {
-    return item.entry.path;
-  }
-  if (item instanceof SftpFileTreeItem) {
-    return dirname(item.entry.path);
-  }
-  const state = manager.getState();
-  if (state.kind === 'active' || state.kind === 'disconnected') {
-    return state.rootPath;
-  }
-  throw new Error(t('No active JumpServer SFTP asset.'));
-}
-
-function localBasename(path: string): string {
-  return path.split(/[\\/]/).filter(Boolean).pop() || remoteBasename(path);
 }
 

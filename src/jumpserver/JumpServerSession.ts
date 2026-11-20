@@ -1,9 +1,12 @@
 import { randomUUID } from 'node:crypto';
+import { t } from '../i18n/t';
 import { UserVisibleError } from '../utils/errors';
 import { log } from '../utils/logger';
-import { extractProtocolNames, resolveFirstUsableAccount, type KokoWebSocket } from './JumpServerClient';
+import { extractProtocolNames, resolveUsableAccounts, type KokoWebSocket } from './JumpServerClient';
 import { connectionKindLabel, connectionKindProtocol, type JumpServerConnectionKind } from './connectionTypes';
-import type { JumpServerConnectionProtocol, TerminalEvents } from './types';
+import type { JumpServerAccountRef, JumpServerConnectionProtocol, TerminalEvents } from './types';
+import { selectConnectMethod, type ConnectMethod } from './connectMethods';
+import { detectKokoCapabilities, isKokoCookieLess } from './kokoCapability';
 
 /**
  * How often the client pings KoKo once the socket is bound. A bastion sits
@@ -31,30 +34,21 @@ export const TERMINAL_SEND_HIGH_WATER_BYTES = 1024 * 1024;
 export interface JumpServerSessionAsset {
   id: string;
   name: string;
+  bastionId?: string;
 }
 
 export interface JumpServerSessionClient {
   getAssetDetail(assetId: string): Promise<Record<string, any>>;
   createConnectionToken(input: {
     assetId: string;
-    account: { id: string; alias?: string; username: string; hasSecret?: boolean };
+    account: JumpServerAccountRef;
     protocol: JumpServerConnectionProtocol;
-  }): Promise<{ id: string }>;
+    connectMethod?: string;
+  }): Promise<{ id: string; personalCredentialId?: string }>;
   getSmartEndpoint(tokenId: string): Promise<Record<string, any>>;
-  /**
-   * Endpoint lookup keyed by asset id, which the session can start while the
-   * connection token is still being minted. Optional so older clients and
-   * existing test doubles keep working; without it the session falls back to
-   * the serial token-based lookup above.
-   */
   getSmartEndpointForAsset?(assetId: string): Promise<Record<string, any>>;
-  /**
-   * Django form login that produces the KoKo web-session cookies. It needs no
-   * connection token, so the session fires it in parallel with everything else.
-   */
   ensureWebSession?(): Promise<void>;
   hasWebSession?(): boolean;
-  /** How much of the last openKokoWebSocket call was Django warmup, in ms. */
   lastKokoWarmupMs?(): number;
   openKokoWebSocket(input: {
     endpoint: Record<string, any>;
@@ -62,6 +56,10 @@ export interface JumpServerSessionClient {
     cols: number;
     rows: number;
   }): Promise<KokoWebSocket>;
+  getConnectMethods?(protocol?: string): Promise<Record<string, ConnectMethod[]>>;
+  markTokenReusable?(tokenId: string): Promise<boolean>;
+  getClientVersions?(): Promise<string[]>;
+  getBaseUrl?(): string;
 }
 
 export class JumpServerSession {
@@ -94,6 +92,9 @@ export class JumpServerSession {
     connectionKind: JumpServerConnectionKind;
     client: JumpServerSessionClient;
     events: TerminalEvents;
+    onTokenReady?(tokenId: string, info?: { reusable: boolean; kind?: string }): void;
+    selectAccount?(accounts: JumpServerAccountRef[], asset: JumpServerSessionAsset): Promise<JumpServerAccountRef | undefined>;
+    resolveInputAccount?(asset: JumpServerSessionAsset): Promise<{ username: string; password?: string } | undefined>;
   }) {}
 
   async connect(): Promise<void> {
@@ -101,32 +102,107 @@ export class JumpServerSession {
     const timings = { detail: 0, token: 0, endpoint: 0, ws: 0 };
     let wsAttempted = false;
     try {
-      this.input.events.status('Loading asset');
+      this.input.events.status(t('Loading asset'), 'connecting');
       const client = this.input.client;
       // The Django form login KoKo cookies come from needs no token and no
       // asset detail, so it overlaps the whole REST leg below. A failure is
       // ignored here: openKokoWebSocket still has its own warmup fallback.
       if (typeof client.ensureWebSession === 'function') {
-        client.ensureWebSession().catch(() => undefined);
+        const cached = isKokoCookieLess(this.input.asset.bastionId);
+        if (cached === true) {
+          // Detected as 5.0 cookie-less: do not initiate web session form login
+        } else if (cached === false || typeof client.getClientVersions !== 'function') {
+          // Known legacy (or mock client without capability probe): fire-and-forget
+          client.ensureWebSession().catch(() => undefined);
+        } else {
+          // Probe capability; only warm web session if not cookie-less
+          detectKokoCapabilities(client as any, this.input.asset.bastionId)
+            .then((caps) => {
+              if (!caps.cookieLess && !this.disposed) {
+                client.ensureWebSession?.().catch(() => undefined);
+              }
+            })
+            .catch(() => undefined);
+        }
       }
+
+      // Parallelize connect-methods query with getAssetDetail to save a serial REST round-trip (P1-1)
+      const connectMethodsPromise = typeof client.getConnectMethods === 'function'
+        ? client.getConnectMethods().catch(() => undefined)
+        : undefined;
+
       const detail = await step(() => client.getAssetDetail(this.input.asset.id), (ms) => {
         timings.detail = ms;
       });
       if (this.disposed) {
         return;
       }
-      const protocol = connectionKindProtocol(this.input.connectionKind);
       const protocolNames = extractProtocolNames(detail).map((name) => name.toLowerCase());
+      let protocol = connectionKindProtocol(this.input.connectionKind);
       if (!protocolNames.includes(protocol)) {
-        throw new Error(`Selected asset does not expose ${connectionKindLabel(this.input.connectionKind)} protocol.`);
+        if (protocol === 'mysql' && protocolNames.includes('mariadb')) {
+          protocol = 'mariadb' as JumpServerConnectionProtocol;
+        } else if ((protocol === 'k8s' || protocol === 'kubernetes') && (protocolNames.includes('k8s') || protocolNames.includes('kubernetes'))) {
+          protocol = (protocolNames.includes('k8s') ? 'k8s' : 'kubernetes') as JumpServerConnectionProtocol;
+        } else {
+          throw new Error(`Selected asset does not expose ${connectionKindLabel(this.input.connectionKind)} protocol.`);
+        }
       }
-      const account = resolveFirstUsableAccount(detail);
+      const accounts = resolveUsableAccounts(detail);
+      if (accounts.length === 0) {
+        throw new Error('No usable JumpServer account was returned for this asset.');
+      }
+      let account = accounts[0];
+      if (accounts.length > 1 && typeof this.input.selectAccount === 'function') {
+        const chosen = await this.input.selectAccount(accounts, this.input.asset);
+        if (!chosen) {
+          throw new UserVisibleError(t('Account selection was cancelled.'));
+        }
+        account = chosen;
+      }
+      if (account.kind === 'alias' && account.alias === '@INPUT' && typeof this.input.resolveInputAccount === 'function') {
+        const credentials = await this.input.resolveInputAccount(this.input.asset);
+        if (credentials) {
+          account.inputUsername = credentials.username;
+          account.inputSecret = credentials.password;
+        }
+      }
 
-      this.input.events.status('Creating connection token');
+      let connectMethod: string | undefined;
+      const methodsDict = connectMethodsPromise ? await connectMethodsPromise : undefined;
+      if (methodsDict) {
+        try {
+          const preferred = (protocol === 'mysql' || protocol === 'redis') ? 'db_client' : 'web_cli';
+          const selected = selectConnectMethod(methodsDict, { protocol, preferred });
+          if (selected) {
+            if (selected.type === 'web' || selected.value === 'db_client') {
+              connectMethod = selected.value;
+            } else if (selected.type === 'native') {
+              throw new Error(
+                `Connection method '${selected.value}' (${selected.label}) requires a native client, which is not supported in the embedded terminal.`
+              );
+            } else if (selected.type === 'applet' || selected.type === 'virtual_app') {
+              throw new Error(
+                `Connection method '${selected.value}' (${selected.label}) requires ${selected.type}, which is not supported in the embedded terminal.`
+              );
+            } else {
+              connectMethod = selected.value;
+            }
+          }
+        } catch (error) {
+          if (error instanceof Error && error.message.includes('not supported in the embedded terminal')) {
+            throw error;
+          }
+          log.warn(`connect-methods query failed; falling back to protocol heuristics: ${String(error)}`);
+        }
+      }
+
+      this.input.events.status(t('Creating connection token'), 'connecting');
       const tokenPromise = step(() => client.createConnectionToken({
         assetId: this.input.asset.id,
         account,
-        protocol
+        protocol,
+        ...(connectMethod ? { connectMethod } : {})
       }), (ms) => {
         timings.token = ms;
       });
@@ -135,14 +211,26 @@ export class JumpServerSession {
       });
       // Whichever of the pair loses the race must not surface as an unhandled
       // rejection while the other one is still being awaited.
-      endpointPromise.catch(() => undefined);
       const token = await tokenPromise;
+      if (!token.personalCredentialId && typeof client.markTokenReusable === 'function') {
+        client.markTokenReusable(token.id)
+          .then((isReusable) => {
+            if (!this.disposed) {
+              this.input.onTokenReady?.(token.id, { reusable: Boolean(isReusable), kind: this.input.connectionKind });
+            }
+          })
+          .catch(() => {
+            if (!this.disposed) {
+              this.input.onTokenReady?.(token.id, { reusable: false, kind: this.input.connectionKind });
+            }
+          });
+      }
       const endpoint = await endpointPromise;
       if (this.disposed) {
         return;
       }
 
-      this.input.events.status('Opening KoKo terminal');
+      this.input.events.status(t('Opening KoKo terminal'), 'connecting');
       wsAttempted = true;
       const socket = await step(() => client.openKokoWebSocket({
         endpoint,
@@ -216,11 +304,14 @@ export class JumpServerSession {
    * user has to dismiss, and there is no message to lose.
    */
   resize(rows: number, cols: number): void {
-    if (rows <= 0 || cols <= 0 || !this.socket || this.unavailableReason) {
+    if (rows <= 0 || cols <= 0 || this.unavailableReason) {
       return;
     }
     this.rows = rows;
     this.cols = cols;
+    if (!this.socket) {
+      return;
+    }
     this.socket.send(JSON.stringify({
       id: '',
       type: 'TERMINAL_RESIZE',
@@ -248,12 +339,13 @@ export class JumpServerSession {
     socket.on('close', (code?: number, reason?: Buffer | string) => {
       this.stopHeartbeat();
       this.connected = false;
+      const rawStatus = formatRawSocketCloseStatus(code, reason);
       const status = formatSocketCloseStatus(code, reason);
-      this.markUnavailable(status.toLowerCase());
+      this.markUnavailable(rawStatus.toLowerCase());
       if (!this.disconnectReported) {
         this.disconnectReported = true;
-        log.info(`KoKo terminal for ${this.input.asset.name}: ${status}`);
-        this.input.events.status(status);
+        log.info(`KoKo terminal for ${this.input.asset.name}: ${rawStatus}`);
+        this.input.events.status(status, 'disconnected');
       }
     });
     socket.on('error', (error) => this.input.events.error(error));
@@ -319,7 +411,7 @@ export class JumpServerSession {
     if (this.unavailableReason) {
       return;
     }
-    const status = `Disconnected (no heartbeat response within ${HEARTBEAT_TIMEOUT_MS}ms)`;
+    const status = t('Disconnected (no heartbeat response within {ms}ms)', { ms: HEARTBEAT_TIMEOUT_MS });
     // The asset name is safe to print; the KoKo URL carries the connection token
     // and never reaches this class, which is why nothing here has to redact one.
     log.warn(
@@ -335,7 +427,7 @@ export class JumpServerSession {
     // `close()` politely waits for a close frame from a peer that has already
     // stopped reading. Only `terminate()` frees the socket now.
     socket?.terminate();
-    this.input.events.status(status);
+    this.input.events.status(status, 'disconnected');
   }
 
   private handleSocketMessage(message: Buffer | string, isBinary: boolean): void {
@@ -359,7 +451,7 @@ export class JumpServerSession {
       };
       this.socket?.send(JSON.stringify(init));
       this.connected = true;
-      this.input.events.status('Connected');
+      this.input.events.status(t('Connected'), 'connected');
       return true;
     }
     if (payload.type === 'PING') {
@@ -410,7 +502,7 @@ function discardSocket(socket: KokoWebSocket): void {
   socket.terminate();
 }
 
-function formatSocketCloseStatus(code?: number, reason?: Buffer | string): string {
+function closeDetails(code?: number, reason?: Buffer | string): string[] {
   const details: string[] = [];
   if (typeof code === 'number') {
     details.push(`code ${code}`);
@@ -419,7 +511,19 @@ function formatSocketCloseStatus(code?: number, reason?: Buffer | string): strin
   if (textReason?.trim()) {
     details.push(textReason.trim());
   }
+  return details;
+}
+
+function formatRawSocketCloseStatus(code?: number, reason?: Buffer | string): string {
+  const details = closeDetails(code, reason);
   return details.length > 0 ? `Disconnected (${details.join(': ')})` : 'Disconnected';
+}
+
+function formatSocketCloseStatus(code?: number, reason?: Buffer | string): string {
+  const details = closeDetails(code, reason);
+  return details.length > 0
+    ? t('Disconnected ({details})', { details: details.join(': ') })
+    : t('Disconnected');
 }
 
 function parseKokoControlMessage(message: string): { id?: string; type?: string; data?: unknown } | undefined {

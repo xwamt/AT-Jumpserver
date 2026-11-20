@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import * as vscode from 'vscode';
 import { BastionTreeItem } from '../../src/tree/BastionTreeItem';
 import { JumpServerTreeProvider } from '../../src/tree/JumpServerTreeProvider';
 import { AssetTreeItem, GroupTreeItem, getAssetOpenKind } from '../../src/tree/TreeItems';
@@ -157,7 +158,7 @@ describe('JumpServerTreeProvider', () => {
     expect(full.id).toBe('asset:b1/asset-1');
     expect(full.contextValue).toBe(plain.contextValue);
     expect(full.command).toEqual({ command: 'jumpserverManager.connect', title: 'Connect', arguments: [full] });
-    expect(full.iconPath).toBeUndefined();
+    expect(full.iconPath).toEqual(new vscode.ThemeIcon('terminal'));
   });
 
   it('applies trust decorations to assets attached to JumpServer nodes', async () => {
@@ -192,7 +193,7 @@ describe('JumpServerTreeProvider', () => {
     expect(asset.id).toBe('asset:b1/asset-3');
     expect(asset.contextValue).toBe('jumpserverAsset');
     expect(asset.command).toEqual({ command: 'jumpserverManager.connect', title: 'Connect', arguments: [asset] });
-    expect(asset.iconPath).toBeUndefined();
+    expect(asset.iconPath).toEqual(new vscode.ThemeIcon('terminal'));
     // The tooltip states the (default) trust level on every asset.
     expect(asset.tooltip).toBe('ops-1\nAgent command trust: Untrusted');
   });
@@ -238,14 +239,25 @@ describe('JumpServerTreeProvider', () => {
 
     expect(getAssetOpenKind(mysql.asset)).toBe('mysql');
     expect(mysql.contextValue).toBe('jumpserverMysqlAsset');
+    expect(mysql.iconPath).toEqual(new vscode.ThemeIcon('database'));
     expect(mysql.description).toBe('db.example.com - MySQL');
     expect(mysql.tooltip).toBe('mysql-1 (db.example.com) - MySQL\nAgent command trust: Untrusted');
     expect(getAssetOpenKind(redis.asset)).toBe('redis');
     expect(redis.contextValue).toBe('jumpserverRedisAsset');
+    expect(redis.iconPath).toEqual(new vscode.ThemeIcon('database'));
     expect(redis.description).toBe('redis.example.com - Redis');
     expect(redis.tooltip).toBe('redis-1 (redis.example.com) - Redis\nAgent command trust: Untrusted');
     expect(getAssetOpenKind(postgresql.asset)).toBe('unsupported');
     expect(postgresql.contextValue).toBe('jumpserverUnsupportedAsset');
+    expect(postgresql.iconPath).toEqual(new vscode.ThemeIcon('circle-slash'));
+  });
+
+  it('assigns distinct ThemeIcons to bastion and group tree items', () => {
+    const bastionItem = new BastionTreeItem(b1Bastion);
+    const groupItem = new GroupTreeItem(['Production'], 'b1');
+
+    expect(bastionItem.iconPath).toEqual(new vscode.ThemeIcon('server-environment'));
+    expect(groupItem.iconPath).toEqual(new vscode.ThemeIcon('folder'));
   });
 
   it('routes MySQL database assets to the terminal even if cached protocols include ssh', () => {
@@ -320,5 +332,37 @@ describe('JumpServerTreeProvider', () => {
     expect(service.path).toEqual(['DEFAULT', 'PROD', 'service']);
     expect(serviceChildren[0]).toBeInstanceOf(AssetTreeItem);
     expect((serviceChildren[0] as AssetTreeItem).asset.id).toBe('asset-1');
+  });
+
+  it('caches tree index across group expansions until refresh is called', async () => {
+    const listBastions = vi.fn(async () => [b1Bastion]);
+    const listCachedAssets = vi.fn(async () => assets);
+    const listCachedAssetNodes = vi.fn(async () => []);
+    const listAssetTrustOverrides = vi.fn(async () => ({}));
+    const provider = new JumpServerTreeProvider({
+      listBastions,
+      listCachedAssets,
+      listCachedAssetNodes,
+      listAssetTrustOverrides
+    });
+
+    const [bastionRoot] = await provider.getChildren();
+    const groups = await provider.getChildren(bastionRoot);
+    const production = groups.find((item) => item.label === 'Production') as GroupTreeItem;
+    const prodChildren = await provider.getChildren(production);
+    const network = prodChildren.find((item) => item.label === 'Network') as GroupTreeItem;
+    const networkChildren = await provider.getChildren(network);
+    const gateway = networkChildren.find((item) => item.label === 'Gateway') as GroupTreeItem;
+    const gatewayChildren = await provider.getChildren(gateway);
+
+    expect((gatewayChildren[0] as AssetTreeItem).asset.id).toBe('asset-5');
+    expect(listCachedAssets).toHaveBeenCalledTimes(1);
+    expect(listCachedAssetNodes).toHaveBeenCalledTimes(1);
+    expect(listAssetTrustOverrides).toHaveBeenCalledTimes(1);
+
+    provider.refresh();
+    await provider.getChildren(bastionRoot);
+    expect(listCachedAssets).toHaveBeenCalledTimes(2);
+    expect(listCachedAssetNodes).toHaveBeenCalledTimes(2);
   });
 });

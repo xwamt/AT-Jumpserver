@@ -379,4 +379,50 @@ describe('JumpServerSftpManager', () => {
 
     expect(reported).toEqual([{ transferredBytes: 5, totalBytes: 5 }]);
   });
+
+  it('disposes a disconnected session and reconnects automatically on the next operation', async () => {
+    let connected = true;
+    const staleSession = { ...session(), isConnected: vi.fn(() => connected) };
+    const freshSession = { ...session(), isConnected: vi.fn(() => true) };
+    const createSession = vi.fn()
+      .mockReturnValueOnce(staleSession)
+      .mockReturnValueOnce(freshSession);
+    const manager = new JumpServerSftpManager({ createSession });
+    await manager.openAsset(asset());
+
+    await manager.listDirectory();
+    connected = false;
+    await expect(manager.listDirectory()).resolves.toEqual([
+      { name: 'app', path: '/home/root/app', type: 'directory' }
+    ]);
+
+    expect(staleSession.dispose).toHaveBeenCalledTimes(1);
+    expect(createSession).toHaveBeenCalledTimes(2);
+    expect(freshSession.connect).toHaveBeenCalledTimes(1);
+  });
+
+  it('delegates file uploads to session.uploadFromFile when supported instead of buffering in memory', async () => {
+    const uploadFromFile = vi.fn(async (_remotePath: string, _localPath: string, onProgress?: (sent: number, total: number) => void) => {
+      onProgress?.(42, 42);
+    });
+    const fakeSession = { ...session(), uploadFromFile };
+    const reported: Array<{ transferredBytes: number; totalBytes: number }> = [];
+    const manager = new JumpServerSftpManager({
+      createSession: () => fakeSession,
+      reporter: {
+        withProgress: (_label, job) => job({ report: (event) => reported.push(event) }),
+        notifySuccess: async () => undefined
+      }
+    });
+    const tempDir = await mkdtemp(join(tmpdir(), 'jumpserver-sftp-stream-upload-'));
+    const localPath = join(tempDir, 'big.bin');
+    await writeFile(localPath, 'streaming-content');
+    await manager.openAsset(asset());
+
+    await manager.uploadFile(localPath, '/tmp/big.bin');
+
+    expect(uploadFromFile).toHaveBeenCalledWith('/tmp/big.bin', localPath, expect.any(Function));
+    expect(fakeSession.uploadBytes).not.toHaveBeenCalled();
+    expect(reported).toEqual([{ transferredBytes: 42, totalBytes: 42 }]);
+  });
 });

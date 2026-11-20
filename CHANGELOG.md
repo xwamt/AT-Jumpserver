@@ -4,6 +4,40 @@
 
 ---
 
+## [v0.2.2] - 2026-11-20
+
+**JumpServer 5.0 协议与账号体系全面对齐、稳定性深度加固及界面交互与性能升级！🚀**
+
+本版本在合并 `v0.2.1`（CSRF 防护与重连交互）的基础上，重点完成了 **JumpServer v5.0 协议适配**、**终端/SFTP 核心稳定性修复**、**资产与文件树体验优化**、**大资产库/大文件流式性能优化** 以及 **代码模块化拆包重构**。
+
+### 🌟 本次更新内容
+
+#### 1. JumpServer 5.0 协议与账号体系对齐
+- **动态连接方式协商**：对接 `/api/v1/terminal/components/connect-methods/` 并缓存 30s，支持 `web_cli`、`db_client`、`web_sftp` 自动匹配，同时补全 **MariaDB** 协议映射；遇到本地客户端 / Applet / Virtual App 等不支持模式时给出清晰提示。
+- **KoKo 5.0 能力探测与无 Cookie 握手**：通过 `client/versions` 探测 KoKo 能力（404 自动兼容旧版本并隔离缓存），新增实验性配置项 `jumpserverManager.kokoBearerHandshake` 支持在 5.0 WebSocket 握手直传 Bearer（遇 401 自动回退至 Ticket 认证）。
+- **多账号与别名账号模式**：统一解析托管账号与别名账号（`@USER`、`@INPUT`、`@ANON`、`@ALL`、`@SPEC`），支持 `@INPUT` 弹窗录入凭证；新增多账号偏好记忆，左键点击自动复用上次账号，右键点击 **「连接资产」** 可随时弹窗重选账号。
+- **终端与 SFTP 令牌复用安全降级**：终端建连后将可复用连接令牌共享给同资产 SFTP 会话以加速打开，当复用令牌握手失败时自动降级重新走 `web_sftp` 建连流程。
+
+#### 2. 核心稳定性与缺陷修复
+- **终端首屏尺寸与重连一致**：修复会话建立前丢失 `resize` 导致首屏固定 `80x24` 的问题，并在重连后保留上一次视口行列数。
+- **状态栏结构化状态与中文断连识别**：新增结构化状态同步，准确识别中文及各类英文断连文案（红/黄/绿灯与重连按钮状态不再误判），右侧显示当前资产地址与协议标签，并支持编辑器设置（字号、字体、回滚行数、语义高亮、空闲断开时间）实时热更新。
+- **SFTP 心跳保活与断连自动重建**：新增 20s/15s WebSocket `ping/pong` 心跳（`unref` 定时器）防止代理空闲断流；连接失效后再次浏览或传输时自动清理旧会话并无缝重连。
+- **配置变更缓存联动清理**：保存或删除堡垒机、切换 `kokoBearerHandshake` 时同步失效 `JumpServerClientPool` 与 KoKo 能力探测缓存。
+- **并发与资源清理修复**：修复 SFTP 编辑状态栏隐藏定时器竞态，将同步文件 stat 替换为异步 `node:fs/promises`；清理已完成的 MCP `terminalQueues` 内存条目并响应 `onDidRemoveContext`；补齐堡垒机行内菜单图标，解决悬停长文案遮挡域名的问题。
+
+#### 3. 界面、命令与交互体验优化
+- **命令面板与全局快速直连**：隐藏无上下文的树专属右键命令，使用 `JumpServer: 连接终端`（`jumpserverManager.connect`）时弹出全量缓存资产 QuickPick，支持按名称/IP/堡垒机/分组搜索直连。
+- **资产树图标与右键菜单精简**：为堡垒机、空节点、分组、SSH、MySQL、Redis 与不支持资产提供清晰 `ThemeIcon` 体系；将资产右键连接菜单精简为 **「连接资产」** / **`Connect Asset`**，避免截断。
+- **SFTP 文件树高频操作补全**：点击“待连接”占位行直接刷新并懒加载建立 SFTP；单击文件直接触发只读预览；新增 **跳转到路径**、**新建文件** 与目录右键 **在终端中打开目录**（自动向当前 SSH 终端输入转义后的 `cd`）。
+- **配置面板体验升级**：补充 URL/组织 ID/密码占位与留空提示，新增内联 **测试连接** 按钮与请求中防连击禁用状态，不落盘即可预检连通性与可访问组织。
+
+#### 4. 性能与工程架构演进
+- **大资产库树节点索引缓存**：`JumpServerTreeProvider` 按刷新周期构建 `BastionTreeIndex` 索引映射，消除深层目录展开时重复过滤遍历全量资产的开销。
+- **SFTP 4 MiB 流式分块上传**：`JumpServerSftpSession.uploadFromFile` 使用 `open()` + 固定 4 MiB 复用缓冲区逐片读取并上传，避免大文件一次性读入内存导致峰值暴涨。
+- **工程卫生与模块化拆分**：加固 `nls.test.ts` 未用键与危险 payload 守卫、清理冗余 l10n 测试条、移除 `package.json` 重复拷贝脚本；将 `JumpServerClient.ts`（拆出 `cookieJar.ts`、`assetNormalizer.ts`、`tokenPayload.ts`、`kokoEndpoints.ts` 并保留重导出）与 `extension.ts`（拆出 `src/commands/{bastionCommands,assetCommands,sftpCommands,mcpCommands}.ts`）模块化拆分，继续严格保持 `dist/extension.js`、`dist/mcpRuntime.js` 与 `dist/policy-runtime.js` 拆包隔离。
+
+---
+
 ## [v0.2.1] - 2026-10-16
 
 **CSRF 鉴权防御修复、终端会话快捷重连与交互文案精简！⚡️**

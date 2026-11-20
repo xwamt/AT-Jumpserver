@@ -577,4 +577,22 @@ describe('JumpServerConfigManager', () => {
       expect.objectContaining({ id: 'node-web', bastionId: existing.id })
     ]);
   });
+
+  it('persists and clears preferred account keys per bastion and asset', async () => {
+    const globalState = new MemoryMemento();
+    const existing = bastion();
+    const manager = new JumpServerConfigManager(globalState, new MemorySecretStore());
+    await manager.saveBastion(existing, 'secret');
+
+    expect(manager.getPreferredAccountKey(existing.id, 'asset-1')).toBeUndefined();
+    await manager.setPreferredAccountKey(existing.id, 'asset-1', 'managed:acc-2');
+    expect(manager.getPreferredAccountKey(existing.id, 'asset-1')).toBe('managed:acc-2');
+
+    // Fresh instance reads from globalState
+    const reloaded = new JumpServerConfigManager(globalState, new MemorySecretStore());
+    expect(reloaded.getPreferredAccountKey(existing.id, 'asset-1')).toBe('managed:acc-2');
+
+    await reloaded.deleteBastion(existing.id);
+    expect(reloaded.getPreferredAccountKey(existing.id, 'asset-1')).toBeUndefined();
+  });
 });

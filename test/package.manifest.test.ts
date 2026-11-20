@@ -8,7 +8,7 @@ describe('AT JumpServer Terminal manifest', () => {
   it('declares JumpServer terminal, SFTP file commands, and MCP install command', () => {
     expect(manifest.name).toBe('at-jumpserver-terminal');
     expect(manifest.displayName).toBe('%atJumpServer.displayName%');
-    expect(manifest.version).toBe('0.2.1');
+    expect(manifest.version).toBe('0.2.2');
     expect(manifest.contributes.viewsContainers.activitybar[0].id).toBe('jumpserverManager');
     expect(manifest.contributes.viewsContainers.activitybar[0].icon).toBe('media/at-terminal-activity.svg');
 
@@ -22,10 +22,12 @@ describe('AT JumpServer Terminal manifest', () => {
       'jumpserverManager.validate',
       'jumpserverManager.refresh',
       'jumpserverManager.connect',
+      'jumpserverManager.connectWithAccount',
       'jumpserverManager.copyHostIp',
       'jumpserverManager.setAssetTrust',
       'jumpserverManager.sftp.refresh',
       'jumpserverManager.sftp.goUp',
+      'jumpserverManager.sftp.goToPath',
       'jumpserverManager.sftp.upload',
       'jumpserverManager.sftp.download',
       'jumpserverManager.sftp.preview',
@@ -33,7 +35,9 @@ describe('AT JumpServer Terminal manifest', () => {
       'jumpserverManager.sftp.delete',
       'jumpserverManager.sftp.rename',
       'jumpserverManager.sftp.newFolder',
+      'jumpserverManager.sftp.newFile',
       'jumpserverManager.sftp.copyPath',
+      'jumpserverManager.sftp.cdToDirectory',
       'jumpserverManager.installMcpConfig',
       'jumpserverManager.uninstallAtSeriesMcpConfig',
       'jumpserverManager.disconnect',
@@ -58,7 +62,6 @@ describe('AT JumpServer Terminal manifest', () => {
     expect(fileMenus.every((item: { when: string }) => item.when.includes('viewItem == jumpserverSftpFile'))).toBe(true);
     expect(JSON.stringify(manifest)).not.toContain('run_remote_command');
     expect(JSON.stringify(manifest)).not.toContain('sshManager');
-    expect(JSON.stringify(manifest)).not.toContain('jumpserverManager.sftp.goToPath');
     expect(JSON.stringify(manifest)).not.toContain('media/terminal-activity.svg');
   });
 
@@ -104,16 +107,12 @@ describe('AT JumpServer Terminal manifest', () => {
     });
   });
 
-  it('shows the connect menu for SSH, MySQL, Redis, and unsupported JumpServer assets', () => {
+  it('omits the connect action from asset hover/context menus since clicking an asset connects directly', () => {
     const connectMenu = manifest.contributes.menus['view/item/context'].find(
       (item: { command: string }) => item.command === 'jumpserverManager.connect'
     );
 
-    expect(connectMenu.when).toContain('view == jumpserverManager.assets');
-    expect(connectMenu.when).toContain('jumpserverAsset');
-    expect(connectMenu.when).toContain('jumpserverMysqlAsset');
-    expect(connectMenu.when).toContain('jumpserverRedisAsset');
-    expect(connectMenu.when).toContain('jumpserverUnsupportedAsset');
+    expect(connectMenu).toBeUndefined();
   });
 
   it('shows Copy Host IP for SSH, MySQL, Redis, and unsupported JumpServer assets', () => {
@@ -144,7 +143,7 @@ describe('AT JumpServer Terminal manifest', () => {
     );
 
     expect(assetMenus.map((item: { command: string }) => item.command)).toEqual([
-      'jumpserverManager.connect',
+      'jumpserverManager.connectWithAccount',
       'jumpserverManager.copyHostIp',
       'jumpserverManager.setAssetTrust'
     ]);
@@ -176,11 +175,13 @@ describe('AT JumpServer Terminal manifest', () => {
     expect(palette).toEqual({ command: 'jumpserverManager.setAssetTrust', when: 'false' });
   });
 
-  it('titles Set Asset Trust in both nls languages', () => {
+  it('titles Set Asset Trust and context Connect Asset concisely in both nls languages', () => {
     const english = JSON.parse(readFileSync(join(__dirname, '..', 'package.nls.json'), 'utf8'));
     const chinese = JSON.parse(readFileSync(join(__dirname, '..', 'package.nls.zh-cn.json'), 'utf8'));
     expect(english['atJumpServer.command.setAssetTrust.title']).toBe('JumpServer: Set Asset Trust Level');
     expect(chinese['atJumpServer.command.setAssetTrust.title']).toBe('设置信任模式');
+    expect(english['atJumpServer.command.connectWithAccount.title']).toBe('Connect Asset');
+    expect(chinese['atJumpServer.command.connectWithAccount.title']).toBe('连接资产');
   });
 
   it('shows bastion actions when the tree item is a JumpServer bastion', () => {
@@ -211,5 +212,50 @@ describe('AT JumpServer Terminal manifest', () => {
       expect.objectContaining({ command: 'jumpserverManager.sftp.preview', group: 'open@2' })
     ]));
     expect(fileActionMenus.every((item: { group: string }) => !item.group.startsWith('inline'))).toBe(true);
+  });
+
+  it('gives every inline view/item/context command a non-empty icon so hover never shows long text', () => {
+    const commandsById = new Map<string, { command: string; icon?: unknown }>(
+      manifest.contributes.commands.map((command: { command: string; icon?: unknown }) => [command.command, command])
+    );
+    const inlineMenus = manifest.contributes.menus['view/item/context'].filter((item: { group?: string }) =>
+      typeof item.group === 'string' && item.group.startsWith('inline')
+    );
+
+    expect(inlineMenus.length).toBeGreaterThan(0);
+    for (const menu of inlineMenus) {
+      const command = commandsById.get(menu.command);
+      expect(command, menu.command).toBeDefined();
+      expect(typeof command?.icon === 'string' ? command.icon.trim() : '', menu.command).not.toBe('');
+    }
+    expect(commandsById.get('jumpserverManager.refreshBastion')?.icon).toBe('$(refresh)');
+  });
+
+  it('hides tree-context-only commands from the command palette while keeping global connect visible', () => {
+    const palette = manifest.contributes.menus.commandPalette as Array<{ command: string; when: string }>;
+    const hiddenCommands = new Set(palette.filter((item) => item.when === 'false').map((item) => item.command));
+
+    for (const command of [
+      'jumpserverManager.setAssetTrust',
+      'jumpserverManager.copyHostIp',
+      'jumpserverManager.sftp.download',
+      'jumpserverManager.sftp.preview',
+      'jumpserverManager.sftp.edit',
+      'jumpserverManager.sftp.delete',
+      'jumpserverManager.sftp.rename',
+      'jumpserverManager.sftp.copyPath',
+      'jumpserverManager.sftp.cdToDirectory',
+      'jumpserverManager.connectWithAccount'
+    ]) {
+      expect(hiddenCommands.has(command), command).toBe(true);
+    }
+    expect(hiddenCommands.has('jumpserverManager.connect')).toBe(false);
+    expect(manifest.contributes.menus['view/title']).toEqual(expect.arrayContaining([
+      expect.objectContaining({ command: 'jumpserverManager.sftp.goToPath', when: 'view == jumpserverManager.sftpFiles' })
+    ]));
+    expect(manifest.contributes.menus['view/item/context']).toEqual(expect.arrayContaining([
+      expect.objectContaining({ command: 'jumpserverManager.sftp.newFile' }),
+      expect.objectContaining({ command: 'jumpserverManager.sftp.cdToDirectory' })
+    ]));
   });
 });
