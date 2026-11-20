@@ -12,7 +12,7 @@
   "atJumpServer.command.validate.title": "JumpServer: 校验账号",
   "atJumpServer.command.refresh.title": "JumpServer: 刷新资产列表",
   "atJumpServer.command.connect.title": "JumpServer: 连接终端",
-  "atJumpServer.command.connectWithAccount.title": "JumpServer: 选择账号连接...",
+  "atJumpServer.command.connectWithAccount.title": "连接资产",
   "atJumpServer.command.copyHostIp.title": "复制主机 IP",
   "atJumpServer.command.setAssetTrust.title": "设置信任模式",
   "atJumpServer.command.sftp.refresh.title": "JumpServer 文件: 刷新",

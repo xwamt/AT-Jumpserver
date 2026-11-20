@@ -12,7 +12,7 @@
   "atJumpServer.command.validate.title": "JumpServer: Validate Account",
   "atJumpServer.command.refresh.title": "JumpServer: Refresh Assets",
   "atJumpServer.command.connect.title": "JumpServer: Connect",
-  "atJumpServer.command.connectWithAccount.title": "JumpServer: Connect with Account...",
+  "atJumpServer.command.connectWithAccount.title": "Connect Asset",
   "atJumpServer.command.copyHostIp.title": "Copy Host IP",
   "atJumpServer.command.setAssetTrust.title": "JumpServer: Set Asset Trust Level",
   "atJumpServer.command.sftp.refresh.title": "JumpServer Files: Refresh",

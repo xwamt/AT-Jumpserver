@@ -175,11 +175,13 @@ describe('AT JumpServer Terminal manifest', () => {
     expect(palette).toEqual({ command: 'jumpserverManager.setAssetTrust', when: 'false' });
   });
 
-  it('titles Set Asset Trust in both nls languages', () => {
+  it('titles Set Asset Trust and context Connect Asset concisely in both nls languages', () => {
     const english = JSON.parse(readFileSync(join(__dirname, '..', 'package.nls.json'), 'utf8'));
     const chinese = JSON.parse(readFileSync(join(__dirname, '..', 'package.nls.zh-cn.json'), 'utf8'));
     expect(english['atJumpServer.command.setAssetTrust.title']).toBe('JumpServer: Set Asset Trust Level');
     expect(chinese['atJumpServer.command.setAssetTrust.title']).toBe('设置信任模式');
+    expect(english['atJumpServer.command.connectWithAccount.title']).toBe('Connect Asset');
+    expect(chinese['atJumpServer.command.connectWithAccount.title']).toBe('连接资产');
   });
 
   it('shows bastion actions when the tree item is a JumpServer bastion', () => {
