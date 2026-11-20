@@ -6,19 +6,23 @@ AT JumpServer Terminal is a VS Code / Cursor extension for opening browser-style
 
 ## Supported In This Version
 
-- Username and password login to JumpServer
-- Multiple JumpServer bastions in one asset tree
-- Reused REST Bearer token and KoKo web session for later connects on the same bastion
-- Listing the current user's permitted assets
-- SSH protocol assets
-- MySQL protocol assets through JumpServer `db_client`
-- Redis protocol assets through JumpServer `db_client`
-- SFTP file tree bound on SSH connect and opened on first Files refresh
-- SFTP upload, download, new folder, rename, delete, copy path, and directory navigation through JumpServer KoKo
-- SFTP preview for small text files
-- SFTP edit sessions with first-save sync confirmation and conflict prompts
+- Username and password login to JumpServer with inline **Test Connection** validation in the bastion config panel
+- Multiple JumpServer bastions in one asset tree with per-bastion Refresh, Edit, Remove, and Validate actions
+- Reused REST Bearer token and KoKo web session across connects, plus JumpServer 5.0 alignment:
+  - Dynamic `connect-methods` negotiation (`web_cli`, `db_client`, `web_sftp`)
+  - KoKo 5.0 capability probe & cookie-less handshake (with opt-in `jumpserverManager.kokoBearerHandshake` and automatic ticket fallback on HTTP 401)
+  - Alias account modes (`@USER`, interactive `@INPUT` credential prompt, `@ANON`, `@ALL`, `@SPEC`) and per-asset remembered account preference
+  - Reusable terminal-to-SFTP connection token sharing with fallback when token reuse fails
+- Listing permitted assets with per-bastion group-tree indexing cache, distinct protocol icons, and Command Palette `JumpServer: Connect` global QuickPick search
+- Asset command trust levels (`Untrusted`, `Limited trust` via `@at-series/command-policy`, and `Full trust`)
+- SSH, MySQL / MariaDB (via JumpServer `db_client`), and Redis (via JumpServer `db_client`) protocol terminals
+- Right-click **Connect Asset** (or **连接资产** in Chinese UI) on multi-account assets to pick or switch accounts, while single-click auto-reuses the remembered preferred account
+- SFTP lazy loading on explicit Files interaction (click the pending Files placeholder or Refresh to open)
+- SFTP WebSocket heartbeat (20s/15s) and automatic reconnect/rebuild after disconnect
+- SFTP upload (streaming 4 MiB chunked transfer from disk without buffering whole files in memory), download, new folder, new file, rename, delete, copy path, go to path, and **Open in Terminal** (`cd` active SSH terminal to directory)
+- Single-click SFTP file preview and managed remote edit sessions with first-save sync confirmation and conflict detection
 - Copy Host IP from the asset list context menu
-- xterm.js terminal UI
+- xterm.js terminal UI with initial viewport sizing matched on first open and reconnect, structured localized status bar with host/protocol label and **Reconnect** action (header button & editor title bar), and live configuration hot-reload (font size, font family, scrollback, semantic highlight, idle disconnect)
 - JumpServer KoKo WebSocket terminal sessions
 - MCP tools for JumpServer assets, terminal context, SFTP, SSH terminal commands, MySQL CLI SQL execution, and Redis CLI command execution (via AT Series hub)
 
@@ -36,12 +40,25 @@ AT JumpServer Terminal is a VS Code / Cursor extension for opening browser-style
 
 1. Open the AT JumpServer activity bar.
 2. Run `JumpServer: Configure`.
-3. Run `JumpServer: Add Bastion` (or Configure) for each JumpServer URL, username, password, and TLS setting. Display name may stay empty. Org ID may stay empty until Validate.
+3. Run `JumpServer: Add Bastion` (or Configure) for each JumpServer URL, username, password, and TLS setting. Display name may stay empty, and Org ID may stay empty until Validate. Use **Test Connection** in the panel to verify connectivity before saving.
 4. Run `JumpServer: Validate Account` and pick the bastion if more than one is saved. If the account can see more than one organization, pick one; the Default organization is saved automatically only on a reserved single-org deployment. An empty org ID with more than one organization prompts on Validate and Refresh rather than silently mixing inventories.
 5. Run `JumpServer: Refresh Assets` to refresh every bastion, or right-click a bastion root to refresh only that one.
-6. Click an SSH, MySQL, or Redis asset to connect in a terminal.
-7. Connect to an SSH asset, then use Files and Refresh to open the SFTP session.
+6. Click an SSH, MySQL / MariaDB, or Redis asset in the tree—or run `JumpServer: Connect` from the Command Palette to search cached assets via QuickPick—to open a terminal. For multi-account assets, use right-click **Connect Asset** to pick or switch accounts.
+7. After connecting to an SSH asset, click the pending item in the Files view (or click Refresh) to lazily open the SFTP session.
 8. Optional: run `Install/Repair AT Series MCP Config` to expose JumpServer tools to MCP-capable agents.
+
+## Configuration
+
+Settings under `jumpserverManager.*` (terminal settings update open panels immediately):
+
+| Setting | Default | Description |
+| --- | --- | --- |
+| `jumpserverManager.terminalFontSize` | `14` | Terminal font size in pixels (minimum `8`). |
+| `jumpserverManager.terminalFontFamily` | `"Cascadia Code, Menlo, monospace"` | CSS font family list for xterm.js. |
+| `jumpserverManager.scrollback` | `5000` | Terminal scrollback buffer line count (minimum `100`). |
+| `jumpserverManager.semanticHighlight` | `true` | Enable semantic highlighting on terminal output. |
+| `jumpserverManager.idleDisconnectMinutes` | `60` | Disconnect inactive terminals after N minutes (`0` disables idle timeout). |
+| `jumpserverManager.kokoBearerHandshake` | `false` | Directly attach `Authorization: Bearer` on KoKo 5.0 WebSocket handshake (experimental, falls back to ticket on HTTP 401). |
 
 ## AT Series MCP (split-out hub)
 
@@ -51,7 +68,7 @@ The shared MCP runtime was extracted into the npm package **[`@at-series/mcp-hub
 
 ```json
 "dependencies": {
-  "@at-series/mcp-hub": "^0.1.1"
+  "@at-series/mcp-hub": "^0.3.4"
 }
 ```
 
@@ -59,7 +76,7 @@ How it fits together:
 
 | Piece | Role |
 |-------|------|
-| `@at-series/mcp-hub` (npm) | Shared hub process Protocol v1 → one IDE MCP server named **AT Series** → `node ~/.at-series/mcp/hub.js` |
+| `@at-series/mcp-hub` (npm) | Shared hub process Protocol v2 → one IDE MCP server named **AT Series** → `node ~/.at-series/mcp/hub.js` |
 | This extension | Local Bridge on `127.0.0.1` (`GET /health`, `GET /tools`, `POST /invoke`), registry publish under `~/.at-series/bridges/<hostApp>/`, syncs packaged `dist/hub.js` on activate |
 | IDE config | `Install/Repair AT Series MCP Config` (Kiro, Cursor, Continue) |
 
