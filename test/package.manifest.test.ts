@@ -22,10 +22,12 @@ describe('AT JumpServer Terminal manifest', () => {
       'jumpserverManager.validate',
       'jumpserverManager.refresh',
       'jumpserverManager.connect',
+      'jumpserverManager.connectWithAccount',
       'jumpserverManager.copyHostIp',
       'jumpserverManager.setAssetTrust',
       'jumpserverManager.sftp.refresh',
       'jumpserverManager.sftp.goUp',
+      'jumpserverManager.sftp.goToPath',
       'jumpserverManager.sftp.upload',
       'jumpserverManager.sftp.download',
       'jumpserverManager.sftp.preview',
@@ -33,7 +35,9 @@ describe('AT JumpServer Terminal manifest', () => {
       'jumpserverManager.sftp.delete',
       'jumpserverManager.sftp.rename',
       'jumpserverManager.sftp.newFolder',
+      'jumpserverManager.sftp.newFile',
       'jumpserverManager.sftp.copyPath',
+      'jumpserverManager.sftp.cdToDirectory',
       'jumpserverManager.installMcpConfig',
       'jumpserverManager.uninstallAtSeriesMcpConfig',
       'jumpserverManager.disconnect',
@@ -58,7 +62,6 @@ describe('AT JumpServer Terminal manifest', () => {
     expect(fileMenus.every((item: { when: string }) => item.when.includes('viewItem == jumpserverSftpFile'))).toBe(true);
     expect(JSON.stringify(manifest)).not.toContain('run_remote_command');
     expect(JSON.stringify(manifest)).not.toContain('sshManager');
-    expect(JSON.stringify(manifest)).not.toContain('jumpserverManager.sftp.goToPath');
     expect(JSON.stringify(manifest)).not.toContain('media/terminal-activity.svg');
   });
 
@@ -140,6 +143,7 @@ describe('AT JumpServer Terminal manifest', () => {
     );
 
     expect(assetMenus.map((item: { command: string }) => item.command)).toEqual([
+      'jumpserverManager.connectWithAccount',
       'jumpserverManager.copyHostIp',
       'jumpserverManager.setAssetTrust'
     ]);
@@ -223,5 +227,33 @@ describe('AT JumpServer Terminal manifest', () => {
       expect(typeof command?.icon === 'string' ? command.icon.trim() : '', menu.command).not.toBe('');
     }
     expect(commandsById.get('jumpserverManager.refreshBastion')?.icon).toBe('$(refresh)');
+  });
+
+  it('hides tree-context-only commands from the command palette while keeping global connect visible', () => {
+    const palette = manifest.contributes.menus.commandPalette as Array<{ command: string; when: string }>;
+    const hiddenCommands = new Set(palette.filter((item) => item.when === 'false').map((item) => item.command));
+
+    for (const command of [
+      'jumpserverManager.setAssetTrust',
+      'jumpserverManager.copyHostIp',
+      'jumpserverManager.sftp.download',
+      'jumpserverManager.sftp.preview',
+      'jumpserverManager.sftp.edit',
+      'jumpserverManager.sftp.delete',
+      'jumpserverManager.sftp.rename',
+      'jumpserverManager.sftp.copyPath',
+      'jumpserverManager.sftp.cdToDirectory',
+      'jumpserverManager.connectWithAccount'
+    ]) {
+      expect(hiddenCommands.has(command), command).toBe(true);
+    }
+    expect(hiddenCommands.has('jumpserverManager.connect')).toBe(false);
+    expect(manifest.contributes.menus['view/title']).toEqual(expect.arrayContaining([
+      expect.objectContaining({ command: 'jumpserverManager.sftp.goToPath', when: 'view == jumpserverManager.sftpFiles' })
+    ]));
+    expect(manifest.contributes.menus['view/item/context']).toEqual(expect.arrayContaining([
+      expect.objectContaining({ command: 'jumpserverManager.sftp.newFile' }),
+      expect.objectContaining({ command: 'jumpserverManager.sftp.cdToDirectory' })
+    ]));
   });
 });

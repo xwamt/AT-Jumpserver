@@ -14,6 +14,7 @@ export class GroupTreeItem extends vscode.TreeItem {
     super(path.at(-1) || t('Default'), collapsibleState);
     this.label = path.at(-1) || t('Default');
     this.id = `group:${bastionId}/${path.join('/')}`;
+    this.iconPath = new vscode.ThemeIcon('folder');
   }
 }
 
@@ -25,6 +26,7 @@ export class AssetTreeItem extends vscode.TreeItem {
     this.id = `asset:${asset.bastionId}/${asset.id}`;
     this.label = asset.name;
     this.contextValue = contextValueForKind(openKind);
+    this.iconPath = iconForAssetKind(openKind);
     this.description = decorateDescription(assetDescription(asset, connKind), trust);
     this.tooltip = `${asset.name}${asset.address ? ` (${asset.address})` : ''}${openKind === 'mysql' ? ' - MySQL' : openKind === 'redis' ? ' - Redis' : ''}\n${t('Agent command trust')}: ${trustLabel(trust)}`;
     this.command = {
@@ -66,6 +68,16 @@ export function getAssetOpenKind(asset: CachedJumpServerAsset): 'ssh' | 'mysql' 
     return 'ssh';
   }
   return 'unsupported';
+}
+
+function iconForAssetKind(kind: 'ssh' | 'mysql' | 'redis' | 'unsupported'): vscode.ThemeIcon {
+  if (kind === 'mysql' || kind === 'redis') {
+    return new vscode.ThemeIcon('database');
+  }
+  if (kind === 'ssh') {
+    return new vscode.ThemeIcon('terminal');
+  }
+  return new vscode.ThemeIcon('circle-slash');
 }
 
 function contextValueForKind(kind: 'ssh' | 'mysql' | 'redis' | 'unsupported'): string {

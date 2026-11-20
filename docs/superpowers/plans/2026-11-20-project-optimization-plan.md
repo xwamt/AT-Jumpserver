@@ -33,10 +33,10 @@
 | Task 1.5 | 补齐配置变更与缓存失效联动（Pool / 能力探测 / 终端热更新） | P0 | Bug / 稳定性 | `src/jumpserver/JumpServerClientPool.ts`, `src/extension.ts`, `src/webview/JumpServerConfigPanel.ts` | [x] |
 | Task 1.6 | 修复 SFTP 编辑状态栏隐藏竞态、消除同步 IO 与死代码 | P0 | Bug | `src/sftp/SftpEditSessionManager.ts`, `test/sftp/SftpEditSessionManager.test.ts` | [x] |
 | Task 1.7 | 修复 MCP `terminalQueues` 内存条目泄漏 | P0 | 稳定性 | `src/agent/JumpServerAgentToolService.ts`, `test/agent/JumpServerAgentToolService.test.ts` | [x] |
-| Task 2.1 | 规范命令面板入口 + 支持全局 QuickPick 搜索直连资产 | P1 | UI / 交互 | `package.json`, `src/extension.ts`, `test/extension/ExtensionCommands.test.ts` | [ ] |
-| Task 2.2 | 补齐 SFTP 远程文件树交互体验（占位点击 & 高频操作） | P1 | UI / 交互 | `src/tree/SftpTreeProvider.ts`, `src/tree/SftpTreeItems.ts`, `src/extension.ts`, `package.json` | [ ] |
-| Task 2.3 | 资产树图标体系、多账号选择与 `@INPUT` 提示国际化 | P1 | UI / 交互 | `src/tree/TreeItems.ts`, `src/tree/BastionTreeItem.ts`, `src/jumpserver/JumpServerClient.ts`, `src/webview/TerminalPanel.ts` | [ ] |
-| Task 2.4 | 优化堡垒机配置面板体验（密码提示 / 测试连接 / 按钮状态） | P1 | UI / 交互 | `src/webview/JumpServerConfigPanel.ts`, `webview/jumpserver-config/*` | [ ] |
+| Task 2.1 | 规范命令面板入口 + 支持全局 QuickPick 搜索直连资产 | P1 | UI / 交互 | `package.json`, `src/extension.ts`, `test/extension/ExtensionCommands.test.ts` | [x] |
+| Task 2.2 | 补齐 SFTP 远程文件树交互体验（占位点击 & 高频操作） | P1 | UI / 交互 | `src/tree/SftpTreeProvider.ts`, `src/tree/SftpTreeItems.ts`, `src/extension.ts`, `package.json` | [x] |
+| Task 2.3 | 资产树图标体系、多账号选择与 `@INPUT` 提示国际化 | P1 | UI / 交互 | `src/tree/TreeItems.ts`, `src/tree/BastionTreeItem.ts`, `src/jumpserver/JumpServerClient.ts`, `src/webview/TerminalPanel.ts` | [x] |
+| Task 2.4 | 优化堡垒机配置面板体验（密码提示 / 测试连接 / 按钮状态） | P1 | UI / 交互 | `src/webview/JumpServerConfigPanel.ts`, `webview/jumpserver-config/*` | [x] |
 | Task 3.1 | 资产树节点索引缓存（大资产库展开性能优化） | P2 | 性能 | `src/tree/JumpServerTreeProvider.ts`, `test/tree/JumpServerTreeProvider.test.ts` | [ ] |
 | Task 3.2 | SFTP 大文件分块流式上传（避免整文件读入内存） | P2 | 性能 | `src/sftp/JumpServerSftpManager.ts`, `src/sftp/JumpServerSftpSession.ts`, `test/sftp/*` | [ ] |
 | Task 4.1 | 清理 l10n 生产包测试脏数据并加固 `nls.test.ts` 守卫 | P2 | 工程卫生 | `l10n/bundle.l10n.zh-cn.json`, `test/i18n/nls.test.ts` | [ ] |
@@ -160,47 +160,47 @@
 ## 3. Phase 2：前端 UI 与日常操作体验打磨（P1）
 
 ### Task 2.1：规范命令面板入口 + 支持全局 QuickPick 搜索直连资产
-- [ ] **现状与根因**：
+- [x] **现状与根因**：
   - `package.json`（第 247-252 行）的 `commandPalette` 仅隐藏了 `jumpserverManager.setAssetTrust`。
   - 但 `copyHostIp`、`sftp.download`、`sftp.preview`、`sftp.edit`、`sftp.delete`、`sftp.rename`、`sftp.copyPath` 均强依赖树节点 `item` 入参（`src/extension.ts` 第 390-546 行），从命令面板调用只会静默无反应或报错；`jumpserverManager.connect`（第 372-375 行）无 `item` 时也直接 `return`。
-- [ ] **改造方案**：
+- [x] **改造方案**：
   1. 参考姊妹工程 `at-terminal-series/package.json`（第 352-380 行），将仅面向树节点右键的单条目命令（`copyHostIp`、`sftp.download`、`sftp.preview`、`sftp.edit`、`sftp.delete`、`sftp.rename`、`sftp.copyPath`）加入 `menus.commandPalette` 并设置 `"when": "false"`。
   2. 增强 `jumpserverManager.connect`：当未传入 `item`（用户通过 `Cmd+Shift+P` 或快捷键触发）时，从 `configManager.listCachedAssets()` 与 `listBastions()` 读取资产清单，弹出支持模糊匹配的 `vscode.window.showQuickPick`（展示资产名称、IP、连接协议、所属堡垒机与分组路径），选中后直接打开终端并绑定 SFTP。
-- [ ] **涉及文件**：`package.json`、`src/extension.ts`、`l10n/bundle.l10n.zh-cn.json`、`test/package.manifest.test.ts`、`test/extension/ExtensionCommands.test.ts`。
-- [ ] **验收标准**：`Cmd+Shift+P` 不再出现无效的树上下文命令；执行 `"JumpServer: 连接终端"` 可搜索并直连任意已缓存资产。
+- [x] **涉及文件**：`package.json`、`src/extension.ts`、`l10n/bundle.l10n.zh-cn.json`、`test/package.manifest.test.ts`、`test/extension/ExtensionCommands.test.ts`。
+- [x] **验收标准**：`Cmd+Shift+P` 不再出现无效的树上下文命令；执行 `"JumpServer: 连接终端"` 可搜索并直连任意已缓存资产。
 
 ### Task 2.2：补齐 SFTP 远程文件树交互体验
-- [ ] **现状与根因**：
+- [x] **现状与根因**：
   - `src/tree/SftpTreeProvider.ts`（第 46-50 行）的 `pending` 提示节点（“Files for {name} connect on first refresh”）没有绑定 `command`，用户点击提示行没有任何反应，只能找右上角刷新按钮。
   - `src/tree/SftpTreeItems.ts`（第 33-43 行）的文件节点未绑定默认点击动作；与 `at-terminal-series` 相比，SFTP 视图还缺少直接跳转到指定远程路径（`goToPath`）、新建空文件（`newFile`）及终端切换目录（`cdToDirectory`）能力。
-- [ ] **改造方案**：
+- [x] **改造方案**：
   1. 在 `SftpTreeProvider.ts` 为 `pending` 占位项绑定 `command: { command: 'jumpserverManager.sftp.refresh', title: t('Refresh') }`，支持点击提示行立即触发 SFTP 连接并加载目录。
   2. 为 `SftpFileTreeItem` 增加单击预览动作（`command: { command: 'jumpserverManager.sftp.preview', ... }`，需避开 `disconnected` 只读快照状态或给出明确提示；与 `SftpTreeProvider.test.ts` 核对兼容性）。
   3. 增量补齐常用 SFTP 命令：`jumpserverManager.sftp.goToPath`（视图标题栏跳转路径）、`jumpserverManager.sftp.newFile`（目录右键新建文件）、`jumpserverManager.sftp.cdToDirectory`（向当前关联终端写入 `cd <quotedPath>`）。
-- [ ] **涉及文件**：`package.json`、`package.nls*.json`、`l10n/bundle.l10n*.json`、`src/tree/SftpTreeProvider.ts`、`src/tree/SftpTreeItems.ts`、`src/extension.ts`、`test/tree/SftpTreeProvider.test.ts`、`test/package.manifest.test.ts`。
-- [ ] **验收标准**：点击 SFTP `pending` 占位行可直连远端目录；新增文件树操作单测与清单校验全部通过。
+- [x] **涉及文件**：`package.json`、`package.nls*.json`、`l10n/bundle.l10n*.json`、`src/tree/SftpTreeProvider.ts`、`src/tree/SftpTreeItems.ts`、`src/extension.ts`、`test/tree/SftpTreeProvider.test.ts`、`test/package.manifest.test.ts`。
+- [x] **验收标准**：点击 SFTP `pending` 占位行可直连远端目录；新增文件树操作单测与清单校验全部通过。
 
 ### Task 2.3：资产树图标体系、多账号选择与 `@INPUT` 提示国际化
-- [ ] **现状与根因**：
+- [x] **现状与根因**：
   - `src/tree/TreeItems.ts`（第 20-36 行）与 `src/tree/BastionTreeItem.ts`（第 5-13 行）未设置 `iconPath`，SSH、MySQL、Redis、不支持资产及堡垒机/分组在视觉上缺少图标区分。
   - `src/jumpserver/JumpServerClient.ts`（第 443-490 行）的 `resolveFirstUsableAccount` 固定选取第一个可用账号，若同一个资产同时授权了 `root`、`ubuntu`、只读账号等，用户无法自由切换登录账号。
   - `src/webview/TerminalPanel.ts`（第 339-353 行）的 `@INPUT` 临时输入账号密码弹窗文案为硬编码英文，未接入 `t(...)`。
-- [ ] **改造方案**：
+- [x] **改造方案**：
   1. **图标体系**：为 `BastionTreeItem` 设置 `new vscode.ThemeIcon('server-environment')`（或 `cloud`），`GroupTreeItem` 设置 `new vscode.ThemeIcon('folder')`，`AssetTreeItem` 按 `openKind` 设置 `$(terminal)`（SSH）、`$(database)`（MySQL/Redis）、`$(circle-slash)`（Unsupported）。**注意**：同步更新 `test/tree/JumpServerTreeProvider.test.ts` 第 160、195 行的 `expect(asset.iconPath).toBeUndefined()` 断言。
   2. **多账号选择**：在 `JumpServerClient.ts` 抽取出 `resolveUsableAccounts(detail)` 返回全部可用账号列表；在连接入口或右键菜单提供「选择账号连接」或当存在 `>= 2` 个可用账号时弹出 QuickPick（并支持按 `bastionId/assetId` 在 `globalState` 中记忆上次所选账号，提供一键直连默认体验）。注意兼容 `JumpServerSession` 已有的 `resolveFirstUsableAccount` 单测。
   3. **`@INPUT` 国际化**：将 `TerminalPanel.ts` 第 341、348 行的提示文案接入 `t(...)` 并更新 `l10n` 翻译。
-- [ ] **涉及文件**：`src/tree/TreeItems.ts`、`src/tree/BastionTreeItem.ts`、`src/jumpserver/JumpServerClient.ts`、`src/jumpserver/JumpServerSession.ts`、`src/webview/TerminalPanel.ts`、`l10n/bundle.l10n.zh-cn.json`、`test/tree/JumpServerTreeProvider.test.ts`、`test/jumpserver/JumpServerClient.test.ts`、`test/jumpserver/JumpServerSession.test.ts`。
-- [ ] **验收标准**：资产树直观区分节点与协议类型；多账号资产支持选号连接；`@INPUT` 弹窗支持中文展示。
+- [x] **涉及文件**：`src/tree/TreeItems.ts`、`src/tree/BastionTreeItem.ts`、`src/jumpserver/JumpServerClient.ts`、`src/jumpserver/JumpServerSession.ts`、`src/webview/TerminalPanel.ts`、`l10n/bundle.l10n.zh-cn.json`、`test/tree/JumpServerTreeProvider.test.ts`、`test/jumpserver/JumpServerClient.test.ts`、`test/jumpserver/JumpServerSession.test.ts`。
+- [x] **验收标准**：资产树直观区分节点与协议类型；多账号资产支持选号连接；`@INPUT` 弹窗支持中文展示。
 
 ### Task 2.4：优化堡垒机配置面板体验
-- [ ] **现状与根因**：
+- [x] **现状与根因**：
   - `src/webview/JumpServerConfigPanel.ts`（第 122-138 行）与 `webview/jumpserver-config/index.ts`、`index.css` 表单过于极简：编辑模式密码框留空可保留原密码，但界面没有任何提示；无“测试连接”功能，报错时仅靠外部错误弹窗反馈；按钮缺乏悬停/禁用态。
-- [ ] **改造方案**：
+- [x] **改造方案**：
   1. 在编辑模式为密码框补充 placeholder（如 `t('Leave blank to keep current password')`），为 `baseUrl` / `orgId` 补充示例与说明文字。
   2. 新增 `type: 'test'` 消息与“测试连接”按钮，在不落盘、不关闭面板的前提下创建临时 `JumpServerClient` 执行 `healthCheck() + ensureAuthToken() + getUserProfile()`（若未填 `orgId` 顺带探测可访问组织列表），并将结果内联显示在表单下方状态条中。
   3. 美化 `webview/jumpserver-config/index.css`：增加输入框 focus 轮廓、按钮 `cursor: pointer`、`:hover`、`:disabled`（请求中防连击）、成功/错误提示条样式。
-- [ ] **涉及文件**：`src/webview/JumpServerConfigPanel.ts`、`webview/jumpserver-config/index.ts`、`webview/jumpserver-config/index.css`、`l10n/bundle.l10n.zh-cn.json`、`test/webview/JumpServerConfigPanel.test.ts`。
-- [ ] **验收标准**：`JumpServerConfigPanel.test.ts` 覆盖测试连接消息、表单提示与保存路径。
+- [x] **涉及文件**：`src/webview/JumpServerConfigPanel.ts`、`webview/jumpserver-config/index.ts`、`webview/jumpserver-config/index.css`、`l10n/bundle.l10n.zh-cn.json`、`test/webview/JumpServerConfigPanel.test.ts`。
+- [x] **验收标准**：`JumpServerConfigPanel.test.ts` 覆盖测试连接消息、表单提示与保存路径。
 
 ---
 

@@ -4,6 +4,7 @@ import * as vscode from 'vscode';
 import { JumpServerAgentToolService } from './agent/JumpServerAgentToolService';
 import { JumpServerConfigManager } from './config/JumpServerConfigManager';
 import type { AssetCommandTrust, CachedJumpServerAsset, JumpServerBastion } from './config/schema';
+import { connectionKindLabel, getAssetConnectionKind } from './jumpserver/connectionTypes';
 import { assetPathsFromNodes, JumpServerClient } from './jumpserver/JumpServerClient';
 import { JumpServerClientPool } from './jumpserver/JumpServerClientPool';
 import { createWebSessionSecretStore } from './jumpserver/webSessionStore';
@@ -76,6 +77,7 @@ export function activate(context: vscode.ExtensionContext): void {
   clientPool?.dropAll();
   clientPool = new JumpServerClientPool();
   const configManager = new JumpServerConfigManager(context.globalState, context.secrets);
+  TerminalPanel.setAccountPreferenceStore(configManager);
   const terminalContext = new TerminalContextRegistry();
   const treeProvider = new JumpServerTreeProvider(configManager);
   const sftpManager = new JumpServerSftpManager({
@@ -231,6 +233,26 @@ export function activate(context: vscode.ExtensionContext): void {
     showCollapseAll: true
   });
 
+  async function connectAsset(item: AssetTreeItem | undefined, forceAccountPick: boolean): Promise<void> {
+    const asset = item?.asset ?? await pickAssetForConnect(configManager);
+    if (!asset) {
+      return;
+    }
+    const kind = getAssetOpenKind(asset);
+    if (kind === 'unsupported') {
+      showTimedNotification(
+        t('Asset type is not supported yet: {name}', { name: asset.name }),
+        'error'
+      );
+      return;
+    }
+    const client = await createClient(configManager, asset.bastionId, context.secrets);
+    const terminal = forceAccountPick
+      ? TerminalPanel.open(context, asset, client, terminalContext, { forceAccountPick: true })
+      : TerminalPanel.open(context, asset, client, terminalContext);
+    await tryOpenSftpFiles(sftpManager, sftpTreeProvider, asset, terminal.getTerminalId(), false);
+  }
+
   context.subscriptions.push(
     assetsView,
     assetsView.onDidChangeSelection((event) => {
@@ -378,21 +400,13 @@ export function activate(context: vscode.ExtensionContext): void {
       });
     }),
     vscode.commands.registerCommand('jumpserverManager.connect', async (item?: AssetTreeItem) => {
-      if (!item) {
-        return;
-      }
       await runCommand(async () => {
-        const kind = getAssetOpenKind(item.asset);
-        if (kind === 'unsupported') {
-          showTimedNotification(
-            t('Asset type is not supported yet: {name}', { name: item.asset.name }),
-            'error'
-          );
-          return;
-        }
-        const client = await createClient(configManager, item.asset.bastionId, context.secrets);
-        const terminal = TerminalPanel.open(context, item.asset, client, terminalContext);
-        await tryOpenSftpFiles(sftpManager, sftpTreeProvider, item.asset, terminal.getTerminalId(), false);
+        await connectAsset(item, false);
+      });
+    }),
+    vscode.commands.registerCommand('jumpserverManager.connectWithAccount', async (item?: AssetTreeItem) => {
+      await runCommand(async () => {
+        await connectAsset(item, true);
       });
     }),
     vscode.commands.registerCommand('jumpserverManager.copyHostIp', async (item?: AssetTreeItem) => {
@@ -441,6 +455,26 @@ export function activate(context: vscode.ExtensionContext): void {
           return;
         }
         await sftpManager.changeToParentDirectory();
+        sftpTreeProvider.refresh();
+      });
+    }),
+    vscode.commands.registerCommand('jumpserverManager.sftp.goToPath', async () => {
+      await runCommand(async () => {
+        if (!await ensureSftpAssetOpen(sftpManager)) {
+          return;
+        }
+        const state = sftpManager.getState();
+        const currentPath = state.kind === 'active' || state.kind === 'disconnected' ? state.rootPath : '/';
+        const targetPath = await vscode.window.showInputBox({
+          prompt: t('Remote directory path'),
+          value: currentPath,
+          ignoreFocusOut: true
+        });
+        const trimmed = targetPath?.trim();
+        if (!trimmed) {
+          return;
+        }
+        await sftpManager.changeDirectory(trimmed);
         sftpTreeProvider.refresh();
       });
     }),
@@ -543,6 +577,19 @@ export function activate(context: vscode.ExtensionContext): void {
         sftpTreeProvider.refresh();
       });
     }),
+    vscode.commands.registerCommand('jumpserverManager.sftp.newFile', async (item?: SftpDirectoryTreeItem | SftpFileTreeItem) => {
+      await runCommand(async () => {
+        if (!await ensureSftpAssetOpen(sftpManager)) {
+          return;
+        }
+        const name = await vscode.window.showInputBox({ prompt: t('File name') });
+        if (!name) {
+          return;
+        }
+        await sftpManager.createFile(joinRemotePath(getSftpTargetDirectory(sftpManager, item), name));
+        sftpTreeProvider.refresh();
+      });
+    }),
     vscode.commands.registerCommand('jumpserverManager.sftp.copyPath', async (item?: SftpDirectoryTreeItem | SftpFileTreeItem) => {
       if (!item) {
         return;
@@ -550,6 +597,19 @@ export function activate(context: vscode.ExtensionContext): void {
       await runCommand(async () => {
         await vscode.env.clipboard.writeText(item.entry.path);
         showTimedNotification(t('Remote path copied.'));
+      });
+    }),
+    vscode.commands.registerCommand('jumpserverManager.sftp.cdToDirectory', async (item?: SftpDirectoryTreeItem) => {
+      if (!item) {
+        return;
+      }
+      await runCommand(async () => {
+        const active = terminalContext.getActive();
+        if (!active || !active.connected || getAssetOpenKind(active.asset) !== 'ssh') {
+          showTimedNotification(t('Connect an SSH JumpServer terminal first.'), 'warning');
+          return;
+        }
+        active.write(`cd ${quotePosixShellArg(item.entry.path)}\r`);
       });
     }),
     vscode.commands.registerCommand('jumpserverManager.installMcpConfig', async () => {
@@ -621,6 +681,43 @@ type BastionCommandArg = string | { bastion?: { id?: string } };
 type BastionRefreshResult =
   | { cancelled: true }
   | { cancelled: false; truncated: boolean; count: number; total: number };
+
+async function pickAssetForConnect(
+  configManager: JumpServerConfigManager
+): Promise<CachedJumpServerAsset | undefined> {
+  const [bastions, assets] = await Promise.all([
+    configManager.listBastions(),
+    configManager.listCachedAssets()
+  ]);
+  if (assets.length === 0) {
+    showTimedNotification(t('No cached JumpServer assets found. Refresh assets first.'), 'warning');
+    return undefined;
+  }
+  const bastionNames = new Map(bastions.map((bastion) => [bastion.id, bastion.name]));
+  const picked = await vscode.window.showQuickPick(
+    assets.map((asset) => {
+      const kind = connectionKindLabel(getAssetConnectionKind(asset));
+      const description = [asset.address, kind].filter(Boolean).join(' · ');
+      const bastionName = bastionNames.get(asset.bastionId);
+      const groupPath = asset.nodePath.join(' / ') || asset.zoneName;
+      const detail = [bastionName, groupPath].filter(Boolean).join(' — ');
+      return {
+        label: asset.name,
+        description,
+        detail: detail || undefined,
+        asset
+      };
+    }),
+    {
+      title: t('Connect to JumpServer asset'),
+      placeHolder: t('Search by asset name, IP, bastion, or group'),
+      matchOnDescription: true,
+      matchOnDetail: true,
+      ignoreFocusOut: true
+    }
+  );
+  return picked?.asset;
+}
 
 async function pickBastion(
   configManager: JumpServerConfigManager,
@@ -958,5 +1055,9 @@ function getSftpTargetDirectory(
 
 function localBasename(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).pop() || remoteBasename(path);
+}
+
+function quotePosixShellArg(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
 }
 

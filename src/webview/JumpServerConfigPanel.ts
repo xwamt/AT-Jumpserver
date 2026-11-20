@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import * as vscode from 'vscode';
 import { ZodError } from 'zod';
-import { bastionDisplayName, type JumpServerBastion } from '../config/schema';
+import { bastionDisplayName, parseJumpServerBastion, type JumpServerBastion } from '../config/schema';
+import { JumpServerClient } from '../jumpserver/JumpServerClient';
 import { clearKokoCapabilityCache } from '../jumpserver/kokoCapability';
+import type { JumpServerSettingsWithPassword } from '../jumpserver/types';
 import { formatError } from '../utils/errors';
 import { renderWebviewHtml, type WebviewAsset } from './html';
 import { t } from '../i18n/t';
@@ -10,21 +12,32 @@ import { t } from '../i18n/t';
 export interface JumpServerConfigPanelStore {
   getBastion(id: string): Promise<JumpServerBastion | undefined>;
   saveBastion(bastion: JumpServerBastion, password?: string): Promise<void>;
+  getPassword?(id: string): Promise<string | undefined>;
+}
+
+export interface ConfigTestClient {
+  healthCheck(): Promise<unknown>;
+  ensureAuthToken(): Promise<unknown>;
+  getUserProfile(): Promise<Record<string, unknown>>;
+  listAccessibleOrgs(): Promise<Array<{ id: string; name: string }>>;
+  dispose?(): void;
 }
 
 export type JumpServerConfigPanelInput = { mode: 'add' } | { mode: 'edit'; bastionId: string };
 
+type ConfigFormPayload = {
+  displayName: string;
+  bastionId: string;
+  baseUrl: string;
+  orgId: string;
+  username: string;
+  password: string;
+  verifyTls: boolean;
+};
+
 type ConfigMessage = {
-  type: 'save';
-  payload: {
-    displayName: string;
-    bastionId: string;
-    baseUrl: string;
-    orgId: string;
-    username: string;
-    password: string;
-    verifyTls: boolean;
-  };
+  type: 'save' | 'test';
+  payload: ConfigFormPayload;
 };
 
 export class JumpServerConfigPanel {
@@ -32,7 +45,9 @@ export class JumpServerConfigPanel {
     context: vscode.ExtensionContext,
     store: JumpServerConfigPanelStore,
     input: JumpServerConfigPanelInput,
-    idFactory: () => string = randomUUID
+    idFactory: () => string = randomUUID,
+    clientFactory: (settings: JumpServerSettingsWithPassword) => ConfigTestClient = (settings) =>
+      new JumpServerClient(settings)
   ): Promise<void> {
     const panel = vscode.window.createWebviewPanel(
       'jumpserverConfig',
@@ -51,7 +66,18 @@ export class JumpServerConfigPanel {
         input.mode === 'edit' ? (bastion ?? { id: input.bastionId }) : undefined
       )
     );
+    const postToWebview = (message: unknown): void => {
+      try {
+        void Promise.resolve(panel.webview.postMessage?.(message)).catch(() => undefined);
+      } catch {
+        // Test doubles or disposed panels may reject postMessage.
+      }
+    };
     panel.webview.onDidReceiveMessage(async (message: ConfigMessage) => {
+      if (message?.type === 'test') {
+        await handleTestConnection(message.payload, store, idFactory, clientFactory, postToWebview);
+        return;
+      }
       if (message?.type !== 'save') {
         return;
       }
@@ -60,9 +86,9 @@ export class JumpServerConfigPanel {
       // rejected, which is strictly worse than an error the user can act on.
       const payload = message.payload;
       if (!payload || typeof payload !== 'object') {
-        await vscode.window.showErrorMessage(
-          t('JumpServer configuration was not saved: the form sent no values.')
-        );
+        const errorText = t('JumpServer configuration was not saved: the form sent no values.');
+        postToWebview({ type: 'saveError', message: errorText });
+        await vscode.window.showErrorMessage(errorText);
         return;
       }
       const savedId = payload.bastionId || idFactory();
@@ -81,9 +107,11 @@ export class JumpServerConfigPanel {
         );
         clearKokoCapabilityCache(savedId);
       } catch (error) {
-        await vscode.window.showErrorMessage(
-          t('JumpServer configuration was not saved. {message}', { message: formatSettingsError(error) })
-        );
+        const errorText = t('JumpServer configuration was not saved. {message}', {
+          message: formatSettingsError(error)
+        });
+        postToWebview({ type: 'saveError', message: errorText });
+        await vscode.window.showErrorMessage(errorText);
         return;
       }
       // The save itself is done: close the form right away. Refreshing the
@@ -97,6 +125,83 @@ export class JumpServerConfigPanel {
       ).catch(() => undefined);
       void vscode.window.showInformationMessage(t('JumpServer configuration saved.'));
     });
+  }
+}
+
+async function handleTestConnection(
+  payload: ConfigFormPayload | undefined,
+  store: JumpServerConfigPanelStore,
+  idFactory: () => string,
+  clientFactory: (settings: JumpServerSettingsWithPassword) => ConfigTestClient,
+  postToWebview: (message: unknown) => void
+): Promise<void> {
+  if (!payload || typeof payload !== 'object') {
+    postToWebview({
+      type: 'testResult',
+      ok: false,
+      message: t('JumpServer configuration was not saved: the form sent no values.')
+    });
+    return;
+  }
+
+  let bastion: JumpServerBastion;
+  try {
+    bastion = parseJumpServerBastion({
+      id: payload.bastionId || idFactory(),
+      name: bastionDisplayName(payload.displayName, payload.baseUrl),
+      baseUrl: payload.baseUrl,
+      orgId: payload.orgId,
+      username: payload.username,
+      verifyTls: payload.verifyTls,
+      updatedAt: Date.now()
+    });
+  } catch (error) {
+    postToWebview({
+      type: 'testResult',
+      ok: false,
+      message: t('Connection test failed: {message}', { message: formatSettingsError(error) })
+    });
+    return;
+  }
+
+  const password = payload.password || (payload.bastionId ? await store.getPassword?.(payload.bastionId) : undefined);
+  if (!password) {
+    postToWebview({
+      type: 'testResult',
+      ok: false,
+      message: t('Password is required to test the connection.')
+    });
+    return;
+  }
+
+  const client = clientFactory({
+    baseUrl: bastion.baseUrl,
+    orgId: bastion.orgId,
+    username: bastion.username,
+    password,
+    verifyTls: bastion.verifyTls
+  });
+  try {
+    await client.healthCheck();
+    await client.ensureAuthToken();
+    const profile = await client.getUserProfile();
+    const orgs = bastion.orgId.trim() ? [] : await client.listAccessibleOrgs().catch(() => []);
+    const userLabel = typeof profile?.username === 'string' && profile.username ? profile.username : bastion.username;
+    const successMessage = orgs.length > 0
+      ? t('Connection succeeded as {user}. Accessible organizations: {orgs}.', {
+          user: userLabel,
+          orgs: orgs.map((org) => org.name || org.id).join(', ')
+        })
+      : t('Connection succeeded as {user}.', { user: userLabel });
+    postToWebview({ type: 'testResult', ok: true, message: successMessage });
+  } catch (error) {
+    postToWebview({
+      type: 'testResult',
+      ok: false,
+      message: t('Connection test failed: {message}', { message: formatSettingsError(error) })
+    });
+  } finally {
+    client.dispose?.();
   }
 }
 
@@ -122,19 +227,27 @@ export function createConfigAssets(extensionUri: vscode.Uri): WebviewAsset {
 }
 
 export function renderJumpServerConfigBody(bastion?: Partial<JumpServerBastion>): string {
+  const isEdit = Boolean(bastion?.id);
   const hiddenBastionId = bastion?.id
     ? `<input type="hidden" name="bastionId" value="${escapeAttr(bastion.id)}" />`
     : '';
+  const passwordAttrs = isEdit
+    ? `placeholder="${escapeAttr(t('Leave blank to keep current password'))}"`
+    : 'required';
   return `<main class="config-shell">
   <form id="configForm" class="config-form">
     ${hiddenBastionId}
     <label>${escapeAttr(t('Display name'))}<input name="displayName" value="${escapeAttr(bastion?.name ?? '')}" /></label>
-    <label>${escapeAttr(t('Base URL'))}<input name="baseUrl" required value="${escapeAttr(bastion?.baseUrl ?? '')}" /></label>
-    <label>${escapeAttr(t('Org ID'))}<input name="orgId" value="${escapeAttr(bastion?.orgId ?? '')}" /></label>
+    <label>${escapeAttr(t('Base URL'))}<input name="baseUrl" required placeholder="https://jumpserver.example.com" value="${escapeAttr(bastion?.baseUrl ?? '')}" /><span class="field-hint">${escapeAttr(t('Example: https://jumpserver.example.com'))}</span></label>
+    <label>${escapeAttr(t('Org ID'))}<input name="orgId" placeholder="${escapeAttr(t('Optional — leave blank to detect automatically'))}" value="${escapeAttr(bastion?.orgId ?? '')}" /><span class="field-hint">${escapeAttr(t('Leave blank to auto-detect or select an organization on refresh.'))}</span></label>
     <label>${escapeAttr(t('Username'))}<input name="username" required value="${escapeAttr(bastion?.username ?? '')}" /></label>
-    <label>${escapeAttr(t('Password'))}<input name="password" type="password" autocomplete="current-password" /></label>
+    <label>${escapeAttr(t('Password'))}<input name="password" type="password" autocomplete="current-password" ${passwordAttrs} /></label>
     <label class="config-row"><input name="verifyTls" type="checkbox" ${bastion?.verifyTls === false ? '' : 'checked'} /> ${escapeAttr(t('Verify TLS'))}</label>
-    <button type="submit">${escapeAttr(t('Save'))}</button>
+    <div class="config-actions">
+      <button type="submit" id="saveBtn">${escapeAttr(t('Save'))}</button>
+      <button type="button" id="testBtn" class="button-secondary" data-testing-label="${escapeAttr(t('Testing...'))}">${escapeAttr(t('Test Connection'))}</button>
+    </div>
+    <div id="statusBanner" class="status-banner" role="status" aria-live="polite" hidden></div>
   </form>
 </main>`;
 }

@@ -7,6 +7,7 @@ const terminalPanelMock = vi.hoisted(() => ({
   disconnectAll: vi.fn(),
   disposeSessionsForBastion: vi.fn((): string[] => []),
   syncConfiguration: vi.fn(),
+  setAccountPreferenceStore: vi.fn(),
   resolveTerminalSettings: vi.fn(() => ({
     scrollback: 5000,
     fontSize: 14,
@@ -50,6 +51,7 @@ const sftpManagerMock = vi.hoisted(() => ({
   changeToParentDirectory: vi.fn(),
   changeDirectory: vi.fn(),
   mkdir: vi.fn(),
+  createFile: vi.fn(),
   uploadFile: vi.fn(),
   downloadFile: vi.fn(),
   deleteEntry: vi.fn(),
@@ -122,6 +124,7 @@ import {
   isKokoCookieLess
 } from '../../src/jumpserver/kokoCapability';
 import { BastionTreeItem } from '../../src/tree/BastionTreeItem';
+import { SftpDirectoryTreeItem } from '../../src/tree/SftpTreeItems';
 import { AssetTreeItem } from '../../src/tree/TreeItems';
 
 const PROD_BASTION_ID = '11111111-1111-1111-1111-111111111111';
@@ -279,6 +282,7 @@ beforeEach(() => {
   sftpManagerMock.changeToParentDirectory.mockResolvedValue('/');
   sftpManagerMock.changeDirectory.mockResolvedValue('/');
   sftpManagerMock.mkdir.mockResolvedValue(undefined);
+  sftpManagerMock.createFile.mockResolvedValue(undefined);
   sftpManagerMock.uploadFile.mockResolvedValue(undefined);
   sftpManagerMock.downloadFile.mockResolvedValue(undefined);
   sftpManagerMock.deleteEntry.mockResolvedValue(undefined);
@@ -294,6 +298,7 @@ beforeEach(() => {
     changeToParentDirectory: sftpManagerMock.changeToParentDirectory,
     changeDirectory: sftpManagerMock.changeDirectory,
     mkdir: sftpManagerMock.mkdir,
+    createFile: sftpManagerMock.createFile,
     uploadFile: sftpManagerMock.uploadFile,
     downloadFile: sftpManagerMock.downloadFile,
     deleteEntry: sftpManagerMock.deleteEntry,
@@ -1072,6 +1077,7 @@ describe('extension command wiring', () => {
         changeToParentDirectory: sftpManagerMock.changeToParentDirectory,
         changeDirectory: sftpManagerMock.changeDirectory,
         mkdir: sftpManagerMock.mkdir,
+        createFile: sftpManagerMock.createFile,
         uploadFile: sftpManagerMock.uploadFile,
         downloadFile: sftpManagerMock.downloadFile,
         deleteEntry: sftpManagerMock.deleteEntry,
@@ -1121,6 +1127,103 @@ describe('extension command wiring', () => {
 
     listener?.({ affectsConfiguration: (section) => section === 'jumpserverManager' });
     expect(terminalPanelMock.syncConfiguration).toHaveBeenCalledTimes(1);
+  });
+
+  it('lets the user pick and connect a cached asset via QuickPick when connect runs from the command palette', async () => {
+    const context = contextWithBastions([prodBastion()]);
+    const cachedAsset = sshAsset({ id: 'palette-1', name: 'palette-web', address: '10.9.8.7', nodePath: ['Prod', 'Web'] });
+    await context.globalState.update('jumpserverManager.cachedAssets', [cachedAsset]);
+    vi.mocked(vscode.window.showQuickPick).mockImplementationOnce(async (items) => {
+      const list = items as unknown as Array<{ label: string; description?: string; detail?: string; asset: CachedJumpServerAsset }>;
+      expect(list[0].label).toBe('palette-web');
+      expect(list[0].description).toContain('10.9.8.7');
+      expect(list[0].detail).toContain('Prod JMS');
+      expect(list[0].detail).toContain('Prod / Web');
+      return list[0] as never;
+    });
+    activate(context);
+
+    await registeredCommand('jumpserverManager.connect')();
+
+    expect(vscode.window.showQuickPick).toHaveBeenCalledWith(
+      expect.any(Array),
+      expect.objectContaining({ matchOnDescription: true, matchOnDetail: true })
+    );
+    expect(terminalPanelMock.open).toHaveBeenCalledWith(context, cachedAsset, expect.any(Object), expect.any(Object));
+    expect(sftpManagerMock.openAsset).toHaveBeenCalledWith(cachedAsset, expect.any(String));
+  });
+
+  it('warns instead of opening QuickPick when connect runs without cached assets', async () => {
+    activate(contextWithBastions([prodBastion()]));
+
+    await registeredCommand('jumpserverManager.connect')();
+
+    expect(vscode.window.showQuickPick).not.toHaveBeenCalled();
+    expect(terminalPanelMock.open).not.toHaveBeenCalled();
+    expect(notificationsMock.showTimedNotification).toHaveBeenCalledWith(
+      'No cached JumpServer assets found. Refresh assets first.',
+      'warning'
+    );
+  });
+
+  it('does nothing when the palette connect QuickPick is dismissed', async () => {
+    const context = contextWithBastions([prodBastion()]);
+    await context.globalState.update('jumpserverManager.cachedAssets', [sshAsset()]);
+    vi.mocked(vscode.window.showQuickPick).mockResolvedValueOnce(undefined);
+    activate(context);
+
+    await registeredCommand('jumpserverManager.connect')();
+
+    expect(terminalPanelMock.open).not.toHaveBeenCalled();
+  });
+
+  it('supports sftp.goToPath, sftp.newFile, and sftp.cdToDirectory', async () => {
+    const context = contextWithBastions([prodBastion()]);
+    activate(context);
+    sftpManagerMock.getState.mockReturnValue({ kind: 'active', asset: sshAsset(), rootPath: '/home/root' });
+
+    vi.mocked(vscode.window.showInputBox).mockResolvedValueOnce('/var/log');
+    await registeredCommand('jumpserverManager.sftp.goToPath')();
+    expect(sftpManagerMock.changeDirectory).toHaveBeenCalledWith('/var/log');
+
+    vi.mocked(vscode.window.showInputBox).mockResolvedValueOnce('notes.txt');
+    const dirItem = new SftpDirectoryTreeItem({ name: 'logs', path: '/var/log', type: 'directory' });
+    await registeredCommand('jumpserverManager.sftp.newFile')(dirItem);
+    expect(sftpManagerMock.createFile).toHaveBeenCalledWith('/var/log/notes.txt');
+
+    // Connect an SSH terminal context so cdToDirectory can write to it.
+    await registeredCommand('jumpserverManager.connect')({ asset: sshAsset() });
+    const registry = terminalPanelMock.open.mock.calls[0]?.[3];
+    const write = vi.fn();
+    registry.setActive({ terminalId: 'term-1', asset: sshAsset(), connected: true, write });
+
+    await registeredCommand('jumpserverManager.sftp.cdToDirectory')(
+      new SftpDirectoryTreeItem({ name: "my'dir", path: "/var/my'dir", type: 'directory' })
+    );
+    expect(write).toHaveBeenCalledWith("cd '/var/my'\\''dir'\r");
+
+    registry.markDisconnected('term-1');
+    await registeredCommand('jumpserverManager.sftp.cdToDirectory')(dirItem);
+    expect(notificationsMock.showTimedNotification).toHaveBeenCalledWith(
+      'Connect an SSH JumpServer terminal first.',
+      'warning'
+    );
+  });
+
+  it('connectWithAccount opens TerminalPanel with forceAccountPick enabled', async () => {
+    const context = contextWithBastions([prodBastion()]);
+    activate(context);
+    const targetAsset = sshAsset();
+
+    await registeredCommand('jumpserverManager.connectWithAccount')({ asset: targetAsset });
+
+    expect(terminalPanelMock.open).toHaveBeenCalledWith(
+      context,
+      targetAsset,
+      expect.any(Object),
+      expect.any(Object),
+      { forceAccountPick: true }
+    );
   });
 });
 

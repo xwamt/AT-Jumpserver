@@ -11,6 +11,10 @@ export enum ViewColumn {
   Active = -1
 }
 
+export class ThemeIcon {
+  constructor(readonly id: string) {}
+}
+
 export class TreeItem {
   label?: string;
   id?: string;
@@ -18,6 +22,7 @@ export class TreeItem {
   tooltip?: string;
   contextValue?: string;
   command?: unknown;
+  iconPath?: unknown;
 
   constructor(label?: string, public collapsibleState: TreeItemCollapsibleState = TreeItemCollapsibleState.None) {
     this.label = label;

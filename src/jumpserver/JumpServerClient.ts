@@ -440,53 +440,75 @@ export function extractProtocolNames(item: Record<string, any>): string[] {
     .filter((name: string) => name.length > 0);
 }
 
-export function resolveFirstUsableAccount(detail: Record<string, any>): JumpServerAccountRef {
+function toManagedAccountRef(account: Record<string, any>): JumpServerManagedAccountRef {
+  const res: JumpServerManagedAccountRef = {
+    kind: 'managed',
+    id: String(account.id),
+    username: String(account.username || account.name || account.alias || ''),
+    hasSecret: typeof account.has_secret === 'boolean' ? account.has_secret : undefined
+  };
+  if (account.alias) {
+    res.alias = String(account.alias);
+  }
+  return res;
+}
+
+export function resolveUsableAccounts(detail: Record<string, any>): JumpServerAccountRef[] {
   const accounts = Array.isArray(detail.permed_accounts)
     ? detail.permed_accounts
     : Array.isArray(detail.accounts)
       ? detail.accounts
       : [];
 
-  const preferred = accounts.find((account) => account?.has_secret === true && !String(account?.alias ?? '').startsWith('@'));
-  if (preferred && preferred.id) {
-    const res: JumpServerManagedAccountRef = {
-      kind: 'managed',
-      id: String(preferred.id),
-      username: String(preferred.username || preferred.name || preferred.alias || ''),
-      hasSecret: typeof preferred.has_secret === 'boolean' ? preferred.has_secret : undefined
-    };
-    if (preferred.alias) {
-      res.alias = String(preferred.alias);
+  const result: JumpServerAccountRef[] = [];
+  const seenManagedIds = new Set<string>();
+  const seenAliases = new Set<string>();
+
+  for (const account of accounts) {
+    if (account?.has_secret === true && !String(account?.alias ?? '').startsWith('@') && account?.id) {
+      const id = String(account.id);
+      if (!seenManagedIds.has(id)) {
+        seenManagedIds.add(id);
+        result.push(toManagedAccountRef(account));
+      }
     }
-    return res;
   }
 
-  const managedFallback = accounts.find((account) => !String(account?.alias ?? '').startsWith('@') && account?.id);
-  if (managedFallback && managedFallback.id) {
-    const res: JumpServerManagedAccountRef = {
-      kind: 'managed',
-      id: String(managedFallback.id),
-      username: String(managedFallback.username || managedFallback.name || managedFallback.alias || ''),
-      hasSecret: typeof managedFallback.has_secret === 'boolean' ? managedFallback.has_secret : undefined
-    };
-    if (managedFallback.alias) {
-      res.alias = String(managedFallback.alias);
+  for (const account of accounts) {
+    if (!String(account?.alias ?? '').startsWith('@') && account?.id) {
+      const id = String(account.id);
+      if (!seenManagedIds.has(id)) {
+        seenManagedIds.add(id);
+        result.push(toManagedAccountRef(account));
+      }
     }
-    return res;
   }
 
-  const aliasAccount = accounts.find((account) => String(account?.alias ?? '').startsWith('@'));
-  if (aliasAccount && aliasAccount.alias) {
-    return {
-      kind: 'alias',
-      alias: String(aliasAccount.alias).toUpperCase() as JumpServerAliasAccount,
-      id: aliasAccount.id ? String(aliasAccount.id) : undefined,
-      username: aliasAccount.username ? String(aliasAccount.username) : undefined,
-      hasSecret: typeof aliasAccount.has_secret === 'boolean' ? aliasAccount.has_secret : undefined
-    };
+  for (const account of accounts) {
+    if (String(account?.alias ?? '').startsWith('@') && account?.alias) {
+      const alias = String(account.alias).toUpperCase() as JumpServerAliasAccount;
+      if (!seenAliases.has(alias)) {
+        seenAliases.add(alias);
+        result.push({
+          kind: 'alias',
+          alias,
+          id: account.id ? String(account.id) : undefined,
+          username: account.username ? String(account.username) : undefined,
+          hasSecret: typeof account.has_secret === 'boolean' ? account.has_secret : undefined
+        });
+      }
+    }
   }
 
-  throw new Error('No usable JumpServer account was returned for this asset.');
+  return result;
+}
+
+export function resolveFirstUsableAccount(detail: Record<string, any>): JumpServerAccountRef {
+  const [first] = resolveUsableAccounts(detail);
+  if (!first) {
+    throw new Error('No usable JumpServer account was returned for this asset.');
+  }
+  return first;
 }
 
 

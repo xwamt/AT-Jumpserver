@@ -24,9 +24,10 @@ describe('SftpTreeProvider', () => {
     const children = await provider.getChildren();
     expect(children[0]).toBeInstanceOf(SftpPlaceholderTreeItem);
     expect(children[0].label).toBe('Files for web-1 connect on first refresh');
+    expect(children[0].command).toEqual({ command: 'jumpserverManager.sftp.refresh', title: 'Refresh' });
   });
 
-  it('renders active root entries with a parent entry', async () => {
+  it('renders active root entries with a parent entry and binds preview click on active files', async () => {
     const provider = new SftpTreeProvider({
       getState: () => ({ kind: 'active', rootPath: '/home/root', asset: {} as never }),
       listDirectory: async () => entries
@@ -37,6 +38,11 @@ describe('SftpTreeProvider', () => {
     expect(children[0].label).toBe('..');
     expect(children[1]).toBeInstanceOf(SftpDirectoryTreeItem);
     expect(children[2]).toBeInstanceOf(SftpFileTreeItem);
+    expect(children[2].command).toEqual({
+      command: 'jumpserverManager.sftp.preview',
+      title: 'Preview',
+      arguments: [children[2]]
+    });
   });
 
   it('formats file sizes with scaled units', async () => {
@@ -64,6 +70,7 @@ describe('SftpTreeProvider', () => {
     const children = await provider.getChildren();
 
     expect(children.map((child) => child.contextValue)).toEqual(['jumpserverSftpDisconnectedDirectory', 'jumpserverSftpDisconnectedFile']);
+    expect(children[1].command).toBeUndefined();
   });
 
   it('bypasses the list cache only on the first listing after an explicit refresh', async () => {

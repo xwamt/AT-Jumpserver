@@ -596,5 +596,89 @@ describe('TerminalPanel rendering helpers', () => {
       }
     });
   });
+
+  it('remembers and auto-selects preferred accounts unless forceAccountPick is requested', async () => {
+    const preferred = new Map<string, string>();
+    TerminalPanel.setAccountPreferenceStore({
+      getPreferredAccountKey: (bastionId, assetId) => preferred.get(`${bastionId}/${assetId}`),
+      setPreferredAccountKey: async (bastionId, assetId, key) => {
+        if (key) {
+          preferred.set(`${bastionId}/${assetId}`, key);
+        } else {
+          preferred.delete(`${bastionId}/${assetId}`);
+        }
+      }
+    });
+
+    const accounts = [
+      { kind: 'managed' as const, id: 'acc-1', username: 'ubuntu', hasSecret: true },
+      { kind: 'managed' as const, id: 'acc-2', username: 'root', hasSecret: true }
+    ];
+    vi.mocked(vscode.window.showQuickPick).mockImplementationOnce(async (items) => {
+      const list = items as unknown as Array<{ label: string; account: unknown }>;
+      return list[1] as never;
+    });
+
+    const host1 = createPanel();
+    vi.mocked(vscode.window.createWebviewPanel).mockReturnValueOnce(host1.panel);
+    TerminalPanel.open(extensionContext(), asset('web-1'), jumpServerClient());
+    const input1 = sessionInputs.at(-1) as {
+      selectAccount?: (list: typeof accounts, target: CachedJumpServerAsset) => Promise<unknown>;
+    };
+    const chosen1 = await input1.selectAccount?.(accounts, asset('web-1'));
+    expect(chosen1).toEqual(accounts[1]);
+    expect(preferred.get('b1/web-1')).toBe('managed:acc-2');
+
+    // Second open without forceAccountPick reuses remembered account without QuickPick
+    vi.mocked(vscode.window.showQuickPick).mockClear();
+    const host2 = createPanel();
+    vi.mocked(vscode.window.createWebviewPanel).mockReturnValueOnce(host2.panel);
+    TerminalPanel.open(extensionContext(), asset('web-1'), jumpServerClient());
+    const input2 = sessionInputs.at(-1) as {
+      selectAccount?: (list: typeof accounts, target: CachedJumpServerAsset) => Promise<unknown>;
+    };
+    const chosen2 = await input2.selectAccount?.(accounts, asset('web-1'));
+    expect(chosen2).toEqual(accounts[1]);
+    expect(vscode.window.showQuickPick).not.toHaveBeenCalled();
+
+    // forceAccountPick prompts again and marks remembered entry
+    vi.mocked(vscode.window.showQuickPick).mockImplementationOnce(async (items) => {
+      const list = items as unknown as Array<{ label: string; description?: string; account: unknown }>;
+      expect(list[1].description).toContain('Last used');
+      return list[0] as never;
+    });
+    const host3 = createPanel();
+    vi.mocked(vscode.window.createWebviewPanel).mockReturnValueOnce(host3.panel);
+    TerminalPanel.open(extensionContext(), asset('web-1'), jumpServerClient(), undefined, { forceAccountPick: true });
+    const input3 = sessionInputs.at(-1) as {
+      selectAccount?: (list: typeof accounts, target: CachedJumpServerAsset) => Promise<unknown>;
+    };
+    const chosen3 = await input3.selectAccount?.(accounts, asset('web-1'));
+    expect(chosen3).toEqual(accounts[0]);
+    expect(preferred.get('b1/web-1')).toBe('managed:acc-1');
+  });
+
+  it('passes localized @INPUT prompts with asset and username context', async () => {
+    const host = createPanel();
+    vi.mocked(vscode.window.createWebviewPanel).mockReturnValueOnce(host.panel);
+    TerminalPanel.open(extensionContext(), asset('db-prod'), jumpServerClient());
+    const lastInput = sessionInputs.at(-1) as {
+      resolveInputAccount?: (target: CachedJumpServerAsset) => Promise<{ username: string; password?: string } | undefined>;
+    };
+    vi.mocked(vscode.window.showInputBox)
+      .mockResolvedValueOnce('ops-admin')
+      .mockResolvedValueOnce('s3cr3t');
+
+    const creds = await lastInput.resolveInputAccount?.(asset('db-prod'));
+
+    expect(creds).toEqual({ username: 'ops-admin', password: 's3cr3t' });
+    expect(vscode.window.showInputBox).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      prompt: 'Enter username for @INPUT account on db-prod'
+    }));
+    expect(vscode.window.showInputBox).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      prompt: 'Enter password for ops-admin on db-prod',
+      password: true
+    }));
+  });
 });
 

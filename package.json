@@ -77,6 +77,11 @@
         "title": "%atJumpServer.command.connect.title%"
       },
       {
+        "command": "jumpserverManager.connectWithAccount",
+        "title": "%atJumpServer.command.connectWithAccount.title%",
+        "icon": "$(account)"
+      },
+      {
         "command": "jumpserverManager.copyHostIp",
         "title": "%atJumpServer.command.copyHostIp.title%",
         "icon": "$(copy)"
@@ -94,6 +99,11 @@
         "command": "jumpserverManager.sftp.goUp",
         "title": "%atJumpServer.command.sftp.goUp.title%",
         "icon": "$(arrow-up)"
+      },
+      {
+        "command": "jumpserverManager.sftp.goToPath",
+        "title": "%atJumpServer.command.sftp.goToPath.title%",
+        "icon": "$(go-to-file)"
       },
       {
         "command": "jumpserverManager.sftp.upload",
@@ -131,9 +141,19 @@
         "icon": "$(new-folder)"
       },
       {
+        "command": "jumpserverManager.sftp.newFile",
+        "title": "%atJumpServer.command.sftp.newFile.title%",
+        "icon": "$(new-file)"
+      },
+      {
         "command": "jumpserverManager.sftp.copyPath",
         "title": "%atJumpServer.command.sftp.copyPath.title%",
         "icon": "$(copy)"
+      },
+      {
+        "command": "jumpserverManager.sftp.cdToDirectory",
+        "title": "%atJumpServer.command.sftp.cdToDirectory.title%",
+        "icon": "$(terminal)"
       },
       {
         "command": "jumpserverManager.installMcpConfig",
@@ -178,6 +198,11 @@
           "command": "jumpserverManager.sftp.goUp",
           "when": "view == jumpserverManager.sftpFiles",
           "group": "navigation@3"
+        },
+        {
+          "command": "jumpserverManager.sftp.goToPath",
+          "when": "view == jumpserverManager.sftpFiles",
+          "group": "navigation@4"
         }
       ],
       "view/item/context": [
@@ -195,6 +220,11 @@
           "command": "jumpserverManager.removeBastion",
           "when": "view == jumpserverManager.assets && viewItem == jumpserverBastion",
           "group": "2_manage@2"
+        },
+        {
+          "command": "jumpserverManager.connectWithAccount",
+          "when": "view == jumpserverManager.assets && (viewItem == jumpserverAsset || viewItem == jumpserverMysqlAsset || viewItem == jumpserverRedisAsset)",
+          "group": "1_connect@1"
         },
         {
           "command": "jumpserverManager.copyHostIp",
@@ -232,6 +262,16 @@
           "group": "inline@2"
         },
         {
+          "command": "jumpserverManager.sftp.newFile",
+          "when": "view == jumpserverManager.sftpFiles && viewItem == jumpserverSftpDirectory",
+          "group": "1_create@1"
+        },
+        {
+          "command": "jumpserverManager.sftp.cdToDirectory",
+          "when": "view == jumpserverManager.sftpFiles && viewItem == jumpserverSftpDirectory",
+          "group": "1_terminal@1"
+        },
+        {
           "command": "jumpserverManager.sftp.rename",
           "when": "view == jumpserverManager.sftpFiles && (viewItem == jumpserverSftpFile || viewItem == jumpserverSftpDirectory)",
           "group": "2_manage@1"
@@ -250,6 +290,42 @@
       "commandPalette": [
         {
           "command": "jumpserverManager.setAssetTrust",
+          "when": "false"
+        },
+        {
+          "command": "jumpserverManager.copyHostIp",
+          "when": "false"
+        },
+        {
+          "command": "jumpserverManager.sftp.download",
+          "when": "false"
+        },
+        {
+          "command": "jumpserverManager.sftp.preview",
+          "when": "false"
+        },
+        {
+          "command": "jumpserverManager.sftp.edit",
+          "when": "false"
+        },
+        {
+          "command": "jumpserverManager.sftp.delete",
+          "when": "false"
+        },
+        {
+          "command": "jumpserverManager.sftp.rename",
+          "when": "false"
+        },
+        {
+          "command": "jumpserverManager.sftp.copyPath",
+          "when": "false"
+        },
+        {
+          "command": "jumpserverManager.sftp.cdToDirectory",
+          "when": "false"
+        },
+        {
+          "command": "jumpserverManager.connectWithAccount",
           "when": "false"
         }
       ]

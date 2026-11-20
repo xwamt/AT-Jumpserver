@@ -696,4 +696,67 @@ describe('JumpServerSession dispose during an in-flight connect', () => {
     await new Promise((r) => setTimeout(r, 10));
     expect(ensureWebSession).toHaveBeenCalledTimes(1);
   });
+
+  it('invokes selectAccount when multiple usable accounts exist and skips it when only one exists', async () => {
+    const multiClient = client(socket);
+    multiClient.getAssetDetail.mockResolvedValue({
+      id: 'asset-1',
+      permed_accounts: [
+        { id: 'acc-1', username: 'ubuntu', has_secret: true },
+        { id: 'acc-2', username: 'root', has_secret: true }
+      ],
+      permed_protocols: [{ name: 'ssh' }]
+    });
+    const selectAccount = vi.fn(async (accounts) => accounts[1]);
+    const session = new JumpServerSession({
+      asset: { id: 'asset-1', name: 'web-1' },
+      connectionKind: 'ssh',
+      client: multiClient,
+      events,
+      selectAccount
+    });
+
+    await session.connect();
+
+    expect(selectAccount).toHaveBeenCalledTimes(1);
+    expect(multiClient.createConnectionToken).toHaveBeenCalledWith(
+      expect.objectContaining({
+        account: expect.objectContaining({ id: 'acc-2', username: 'root' })
+      })
+    );
+
+    const singleSelect = vi.fn();
+    const singleSession = new JumpServerSession({
+      asset: { id: 'asset-1', name: 'web-1' },
+      connectionKind: 'ssh',
+      client: client(socket),
+      events,
+      selectAccount: singleSelect
+    });
+
+    await singleSession.connect();
+    expect(singleSelect).not.toHaveBeenCalled();
+  });
+
+  it('aborts connect when selectAccount returns undefined', async () => {
+    const multiClient = client(socket);
+    multiClient.getAssetDetail.mockResolvedValue({
+      id: 'asset-1',
+      permed_accounts: [
+        { id: 'acc-1', username: 'ubuntu', has_secret: true },
+        { id: 'acc-2', username: 'root', has_secret: true }
+      ],
+      permed_protocols: [{ name: 'ssh' }]
+    });
+    const session = new JumpServerSession({
+      asset: { id: 'asset-1', name: 'web-1' },
+      connectionKind: 'ssh',
+      client: multiClient,
+      events,
+      selectAccount: async () => undefined
+    });
+
+    await expect(session.connect()).rejects.toThrow(/cancelled/i);
+    expect(multiClient.createConnectionToken).not.toHaveBeenCalled();
+  });
 });

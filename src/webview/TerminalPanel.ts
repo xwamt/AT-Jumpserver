@@ -4,7 +4,7 @@ import type { CachedJumpServerAsset } from '../config/schema';
 import { JumpServerClient } from '../jumpserver/JumpServerClient';
 import { connectionKindLabel, getAssetConnectionKind, type JumpServerConnectionKind } from '../jumpserver/connectionTypes';
 import { JumpServerSession } from '../jumpserver/JumpServerSession';
-import type { TerminalConnectionState } from '../jumpserver/types';
+import type { JumpServerAccountRef, TerminalConnectionState } from '../jumpserver/types';
 import type { TerminalContextRegistry } from '../terminal/TerminalContext';
 import { formatError } from '../utils/errors';
 import { showTimedNotification } from '../utils/notifications';
@@ -105,9 +105,19 @@ function isTerminalDimension(value: number): boolean {
   return Number.isInteger(value) && value > 0;
 }
 
+export interface AccountPreferenceStore {
+  getPreferredAccountKey(bastionId: string, assetId: string): string | undefined;
+  setPreferredAccountKey(bastionId: string, assetId: string, accountKey: string | undefined): Promise<void>;
+}
+
+export function accountRefKey(account: JumpServerAccountRef): string {
+  return account.kind === 'alias' ? `alias:${account.alias}` : `managed:${account.id}`;
+}
+
 export class TerminalPanel {
   private static active: TerminalPanel | undefined;
   private static readonly panels = new Set<TerminalPanel>();
+  private static accountPreferenceStore: AccountPreferenceStore | undefined;
   private readonly terminalId = randomUUID();
   private readonly connectionKind: JumpServerConnectionKind;
   private session: JumpServerSession;
@@ -121,24 +131,32 @@ export class TerminalPanel {
   private idleDisconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private lastActivityAt = Date.now();
   private lastSize: { rows: number; cols: number } | undefined;
+  private forceNextAccountPick: boolean;
 
   private constructor(
     private readonly panel: vscode.WebviewPanel,
     private readonly asset: CachedJumpServerAsset,
     private readonly jumpServerClient: JumpServerClient,
     private settings: TerminalSettings,
-    private readonly terminalContext?: TerminalContextRegistry
+    private readonly terminalContext?: TerminalContextRegistry,
+    options?: { forceAccountPick?: boolean }
   ) {
     this.connectionKind = getAssetConnectionKind(asset);
+    this.forceNextAccountPick = Boolean(options?.forceAccountPick);
     this.session = this.createSession(this.connectionGeneration);
     TerminalPanel.panels.add(this);
+  }
+
+  static setAccountPreferenceStore(store?: AccountPreferenceStore): void {
+    TerminalPanel.accountPreferenceStore = store;
   }
 
   static open(
     context: vscode.ExtensionContext,
     asset: CachedJumpServerAsset,
     jumpServerClient: JumpServerClient,
-    terminalContext?: TerminalContextRegistry
+    terminalContext?: TerminalContextRegistry,
+    options?: { forceAccountPick?: boolean }
   ): TerminalPanel {
     const connectionKind = getAssetConnectionKind(asset);
     const panel = vscode.window.createWebviewPanel(
@@ -153,7 +171,7 @@ export class TerminalPanel {
     );
 
     const settings = resolveTerminalSettings(vscode.workspace.getConfiguration('jumpserverManager'));
-    const terminal = new TerminalPanel(panel, asset, jumpServerClient, settings, terminalContext);
+    const terminal = new TerminalPanel(panel, asset, jumpServerClient, settings, terminalContext, options);
     const hostLabel = `${asset.address || asset.name} · ${connectionKindLabel(connectionKind)}`;
     TerminalPanel.active = terminal;
     panel.webview.html = renderWebviewHtml(
@@ -211,6 +229,7 @@ export class TerminalPanel {
     }
     TerminalPanel.panels.clear();
     TerminalPanel.active = undefined;
+    TerminalPanel.accountPreferenceStore = undefined;
   }
 
   static syncConfiguration(settings: TerminalSettings): void {
@@ -357,16 +376,68 @@ export class TerminalPanel {
           this.currentTokenId = tokenId;
         }
       },
+      selectAccount: async (accounts, asset) => {
+        const forcePick = this.forceNextAccountPick;
+        this.forceNextAccountPick = false;
+        const bastionId = asset.bastionId ?? '';
+        const rememberedKey = bastionId
+          ? TerminalPanel.accountPreferenceStore?.getPreferredAccountKey(bastionId, asset.id)
+          : undefined;
+        if (!forcePick && rememberedKey) {
+          const remembered = accounts.find((candidate) => accountRefKey(candidate) === rememberedKey);
+          if (remembered) {
+            return remembered;
+          }
+        }
+        const picked = await vscode.window.showQuickPick(
+          accounts.map((candidate) => {
+            const key = accountRefKey(candidate);
+            const label = candidate.kind === 'alias'
+              ? (candidate.username ? `${candidate.alias} (${candidate.username})` : candidate.alias)
+              : (candidate.username || candidate.alias || candidate.id);
+            const tags: string[] = [];
+            if (key === rememberedKey) {
+              tags.push(t('Last used'));
+            }
+            if (candidate.kind === 'alias') {
+              tags.push(t('Alias account'));
+            } else if (candidate.hasSecret === false) {
+              tags.push(t('No secret saved'));
+            }
+            return {
+              label,
+              description: tags.join(' · ') || undefined,
+              account: candidate
+            };
+          }),
+          {
+            title: t('Select account for {name}', { name: asset.name }),
+            placeHolder: t('Choose the JumpServer account to connect with'),
+            ignoreFocusOut: true
+          }
+        );
+        if (!picked) {
+          return undefined;
+        }
+        if (bastionId && TerminalPanel.accountPreferenceStore) {
+          await TerminalPanel.accountPreferenceStore.setPreferredAccountKey(
+            bastionId,
+            asset.id,
+            accountRefKey(picked.account)
+          );
+        }
+        return picked.account;
+      },
       resolveInputAccount: async (asset) => {
         const username = await vscode.window.showInputBox({
-          prompt: `Enter username for @INPUT account on ${asset.name}`,
+          prompt: t('Enter username for @INPUT account on {name}', { name: asset.name }),
           ignoreFocusOut: true
         });
         if (!username) {
           return undefined;
         }
         const password = await vscode.window.showInputBox({
-          prompt: `Enter password for ${username} on ${asset.name}`,
+          prompt: t('Enter password for {username} on {name}', { username, name: asset.name }),
           password: true,
           ignoreFocusOut: true
         });

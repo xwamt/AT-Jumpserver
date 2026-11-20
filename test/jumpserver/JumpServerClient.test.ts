@@ -28,7 +28,8 @@ import {
   isKokoLoginRedirect,
   normalizeJumpServerAsset,
   parseCsrfMiddlewareToken,
-  resolveFirstUsableAccount
+  resolveFirstUsableAccount,
+  resolveUsableAccounts
 } from '../../src/jumpserver/JumpServerClient';
 import { DEFAULT_ORG_ID, GLOBAL_ORG_ID } from '../../src/jumpserver/orgs';
 
@@ -173,6 +174,25 @@ describe('JumpServerClient pure helpers', () => {
         ]
       })
     ).toEqual({ kind: 'alias', alias: '@INPUT' });
+  });
+
+  it('returns all usable managed and alias accounts in priority order without duplicates', () => {
+    expect(
+      resolveUsableAccounts({
+        permed_accounts: [
+          { id: 'acc-no-secret', username: 'readonly', has_secret: false },
+          { id: 'acc-secret', alias: 'ops', username: 'ubuntu', has_secret: true },
+          { id: 'acc-secret', alias: 'ops', username: 'ubuntu', has_secret: true },
+          { alias: '@INPUT' },
+          { alias: '@USER', id: 'user-alias', username: 'alan' }
+        ]
+      })
+    ).toEqual([
+      { kind: 'managed', id: 'acc-secret', alias: 'ops', username: 'ubuntu', hasSecret: true },
+      { kind: 'managed', id: 'acc-no-secret', username: 'readonly', hasSecret: false },
+      { kind: 'alias', alias: '@INPUT' },
+      { kind: 'alias', alias: '@USER', id: 'user-alias', username: 'alan' }
+    ]);
   });
 
   it('builds connection-token payload for @INPUT with account and input_username', () => {

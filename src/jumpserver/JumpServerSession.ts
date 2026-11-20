@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { t } from '../i18n/t';
 import { UserVisibleError } from '../utils/errors';
 import { log } from '../utils/logger';
-import { extractProtocolNames, resolveFirstUsableAccount, type KokoWebSocket } from './JumpServerClient';
+import { extractProtocolNames, resolveUsableAccounts, type KokoWebSocket } from './JumpServerClient';
 import { connectionKindLabel, connectionKindProtocol, type JumpServerConnectionKind } from './connectionTypes';
 import type { JumpServerAccountRef, JumpServerConnectionProtocol, TerminalEvents } from './types';
 import { selectConnectMethod, type ConnectMethod } from './connectMethods';
@@ -93,6 +93,7 @@ export class JumpServerSession {
     client: JumpServerSessionClient;
     events: TerminalEvents;
     onTokenReady?(tokenId: string, info?: { reusable: boolean; kind?: string }): void;
+    selectAccount?(accounts: JumpServerAccountRef[], asset: JumpServerSessionAsset): Promise<JumpServerAccountRef | undefined>;
     resolveInputAccount?(asset: JumpServerSessionAsset): Promise<{ username: string; password?: string } | undefined>;
   }) {}
 
@@ -147,7 +148,18 @@ export class JumpServerSession {
           throw new Error(`Selected asset does not expose ${connectionKindLabel(this.input.connectionKind)} protocol.`);
         }
       }
-      const account = resolveFirstUsableAccount(detail);
+      const accounts = resolveUsableAccounts(detail);
+      if (accounts.length === 0) {
+        throw new Error('No usable JumpServer account was returned for this asset.');
+      }
+      let account = accounts[0];
+      if (accounts.length > 1 && typeof this.input.selectAccount === 'function') {
+        const chosen = await this.input.selectAccount(accounts, this.input.asset);
+        if (!chosen) {
+          throw new UserVisibleError(t('Account selection was cancelled.'));
+        }
+        account = chosen;
+      }
       if (account.kind === 'alias' && account.alias === '@INPUT' && typeof this.input.resolveInputAccount === 'function') {
         const credentials = await this.input.resolveInputAccount(this.input.asset);
         if (credentials) {
