@@ -368,7 +368,7 @@
     "copy:hub": "node scripts/copy-hub.mjs",
     "copy:policy-assets": "node scripts/copy-policy-assets.mjs",
     "sync:l10n": "node scripts/sync-l10n-aliases.mjs",
-    "build": "npm run sync:l10n && node esbuild.config.mjs && npm run copy:hub && npm run copy:policy-assets",
+    "build": "npm run sync:l10n && node esbuild.config.mjs && npm run copy:hub",
     "probe:sftp": "node tools/probe-jumpserver-sftp.mjs",
     "watch": "node esbuild.config.mjs --watch",
     "typecheck": "tsc --noEmit",

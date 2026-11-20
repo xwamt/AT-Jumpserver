@@ -39,9 +39,9 @@
 | Task 2.4 | 优化堡垒机配置面板体验（密码提示 / 测试连接 / 按钮状态） | P1 | UI / 交互 | `src/webview/JumpServerConfigPanel.ts`, `webview/jumpserver-config/*` | [x] |
 | Task 3.1 | 资产树节点索引缓存（大资产库展开性能优化） | P2 | 性能 | `src/tree/JumpServerTreeProvider.ts`, `test/tree/JumpServerTreeProvider.test.ts` | [x] |
 | Task 3.2 | SFTP 大文件分块流式上传（避免整文件读入内存） | P2 | 性能 | `src/sftp/JumpServerSftpManager.ts`, `src/sftp/JumpServerSftpSession.ts`, `test/sftp/*` | [x] |
-| Task 4.1 | 清理 l10n 生产包测试脏数据并加固 `nls.test.ts` 守卫 | P2 | 工程卫生 | `l10n/bundle.l10n.zh-cn.json`, `test/i18n/nls.test.ts` | [ ] |
-| Task 4.2 | 构建脚本去重与历史残留文件/目录清理 | P3 | 工程卫生 | `package.json`, 工作区历史 `.vsix` / `.tmp-*` / `.worktrees` | [ ] |
-| Task 4.3 | 巨石文件渐进式拆分（`JumpServerClient.ts` & `extension.ts`） | P3 | 架构 | `src/jumpserver/*`, `src/extension.ts`, `src/commands/*` | [ ] |
+| Task 4.1 | 清理 l10n 生产包测试脏数据并加固 `nls.test.ts` 守卫 | P2 | 工程卫生 | `l10n/bundle.l10n.zh-cn.json`, `test/i18n/nls.test.ts` | [x] |
+| Task 4.2 | 构建脚本去重与历史残留文件/目录清理 | P3 | 工程卫生 | `package.json`, 工作区历史 `.vsix` / `.tmp-*` / `.worktrees` | [x] |
+| Task 4.3 | 巨石文件渐进式拆分（`JumpServerClient.ts` & `extension.ts`） | P3 | 架构 | `src/jumpserver/*`, `src/extension.ts`, `src/commands/*` | [x] |
 
 ---
 
@@ -231,7 +231,7 @@
 ## 5. Phase 4：架构演进与工程卫生（P2 / P3）
 
 ### Task 4.1：清理 l10n 生产包测试脏数据并加固测试守卫
-- [ ] **现状与根因**：
+- [x] **现状与根因**：
   - `l10n/bundle.l10n.zh-cn.json`（第 4-10 行）混入了仅用于 `test/i18n/t.test.ts` 的测试字符串与 XSS 测试样本：
     - `"{path} -> {path}"`
     - `"{count} items, verifyTls: {verifyTls}"`
@@ -239,28 +239,28 @@
     - `"Configure: {label}"`
     - `"</script><img src=x onerror=alert(1)>"`
     以及部分已不再调用的历史翻译条目（例如 `"JumpServer assets refreshed: {count}"` 等）。
-- [ ] **改造方案**：
+- [x] **改造方案**：
   1. 梳理并清理 `l10n/bundle.l10n.zh-cn.json` 中所有源码 `src/` 与 `webview/` 未使用的冗余/测试 key，执行 `npm run sync:l10n` 自动刷新 `zh-hans` 与 `zh` 文件。
   2. 注意核对 `test/i18n/t.test.ts`（该测试使用 mock 透传逻辑，不依赖磁盘上的 `bundle.l10n.*.json`）及 `test/i18n/nls.test.ts`。
   3. 在 `test/i18n/nls.test.ts` 中增加「无冗余未使用 key」或「禁止危险测试 payload 进入生产 l10n 包」的断言（类似该文件第 190-194 行对 `package.nls.json` 的反向检查）。
-- [ ] **涉及文件**：`l10n/bundle.l10n.zh-cn.json`、`l10n/bundle.l10n.zh-hans.json`、`l10n/bundle.l10n.zh.json`、`test/i18n/nls.test.ts`。
-- [ ] **验收标准**：`npm run sync:l10n && npm test` 全绿；`bundle.l10n.*.json` 不含测试脏数据。
+- [x] **涉及文件**：`l10n/bundle.l10n.zh-cn.json`、`l10n/bundle.l10n.zh-hans.json`、`l10n/bundle.l10n.zh.json`、`test/i18n/nls.test.ts`。
+- [x] **验收标准**：`npm run sync:l10n && npm test` 全绿；`bundle.l10n.*.json` 不含测试脏数据。
 
 ### Task 4.2：构建脚本去重与历史残留文件清理
-- [ ] **现状与根因**：
+- [x] **现状与根因**：
   - `package.json`（第 292 行）的 `"build"` 脚本在 `node esbuild.config.mjs` 之后又执行了一次 `npm run copy:policy-assets`；但 `esbuild.config.mjs`（第 120-121 行）在非 watch 模式下已经执行了 `await copyPolicyRuntimeAssets()`，属于重复拷贝。
   - 工程根目录留存了 11 个历史 `.vsix` 安装包（`0.1.3` ~ `0.2.0`），以及本地临时目录 `.tmp-jumpserver-bridge-discovery-remove`、`.tmp-jumpserver-mcp-installer`、`.worktrees/jumpserver-redis-terminal`。
-- [ ] **改造方案**：
+- [x] **改造方案**：
   1. 统一 `policy-assets` 复制归口：从 `package.json` 的 `build` 脚本移除多余的 `&& npm run copy:policy-assets`（或由 `package.json` 显式串行而移除 `esbuild.config.mjs` 非 watch 重复调用，推荐保留 `esbuild.config.mjs` 内聚处理并精简 `package.json` 脚本）。
   2. 核实 `.worktrees/jumpserver-redis-terminal` 与 `.tmp-*` 分支/改动已合并进 `main` 后，通过 `git worktree remove` 与手动清理移除本地陈旧工作树、临时目录和过时的历史 `.vsix` 包。
-- [ ] **涉及文件**：`package.json`（或 `esbuild.config.mjs`）、本地未追踪临时产物。
-- [ ] **验收标准**：`npm run build` 无重复步骤且 `dist/` 产物与之前一致（`test/package.policyBundle.test.ts` 通过）。
+- [x] **涉及文件**：`package.json`（或 `esbuild.config.mjs`）、本地未追踪临时产物。
+- [x] **验收标准**：`npm run build` 无重复步骤且 `dist/` 产物与之前一致（`test/package.policyBundle.test.ts` 通过）。
 
 ### Task 4.3：巨石文件渐进式拆分
-- [ ] **现状与根因**：
+- [x] **现状与根因**：
   - `src/jumpserver/JumpServerClient.ts` 达 2255 行，混杂 Cookie 解析与持久化、分页与资产/树节点归一化、Connection Token payload 拼装、KoKo Endpoint/Ticket/WebSocket 握手及 REST 重试逻辑。
   - `src/extension.ts` 达 954 行，所有命令注册、选堡垒机/组织上下文逻辑、SFTP 操作辅助集中在一个入口文件。
-- [ ] **改造方案**：
+- [x] **改造方案**：
   1. **拆分 `src/jumpserver/`**：
      - `src/jumpserver/cookieJar.ts`（`parseSetCookieHeader`、`cookiesForUrl`、`parseStoredWebSession` 等）
      - `src/jumpserver/assetNormalizer.ts`（`normalizeJumpServerAsset`、`extractNodePath`、`extractAssetTreeNodes`、`resolveFirstUsableAccount` 等）
@@ -272,8 +272,8 @@
      - `src/commands/assetCommands.ts`（connect / copyHostIp / setAssetTrust / disconnect / reconnect）
      - `src/commands/sftpCommands.ts`（全部 `sftp.*` 命令及保护/目标目录解析 helper）
      - `src/commands/mcpCommands.ts`（`installMcpConfig` / `uninstallAtSeriesMcpConfig`）
-- [ ] **涉及文件**：`src/jumpserver/*`、`src/extension.ts`、`src/commands/*`。
-- [ ] **验收标准**：`npm run typecheck && npm test && npm run build` 零报错、全测试集无需大幅改路径即可全部通过。
+- [x] **涉及文件**：`src/jumpserver/*`、`src/extension.ts`、`src/commands/*`。
+- [x] **验收标准**：`npm run typecheck && npm test && npm run build` 零报错、全测试集无需大幅改路径即可全部通过。
 
 ---
 
@@ -281,11 +281,11 @@
 
 完成上述所有期望 Phase 后，按顺序执行完整发布门禁：
 
-- [ ] `npm run sync:l10n`（确认多语言文件严格一致）
-- [ ] `npm run typecheck`（确认 TypeScript 严格检查通过）
-- [ ] `npm test`（确认全部 Vitest 单元测试 & 集成守卫通过）
-- [ ] `npm run build`（确认生成干净的 `dist/` 各独立 bundle）
-- [ ] `npm run package`（生成新的 `.vsix` 安装包）
+- [x] `npm run sync:l10n`（确认多语言文件严格一致）
+- [x] `npm run typecheck`（确认 TypeScript 严格检查通过）
+- [x] `npm test`（确认全部 Vitest 单元测试 & 集成守卫通过）
+- [x] `npm run build`（确认生成干净的 `dist/` 各独立 bundle）
+- [x] `npm run package`（生成新的 `.vsix` 安装包）
 - [ ] **真机 / 真实 JumpServer 冒烟验证（v3 / v4 / v5 至少各覆盖一套）**：
   - [ ] 资产树与堡垒机悬停不再出现遮挡 IP/域名的长文字按钮，协议与状态图标清晰可辨
   - [ ] 中文与英文语言包下：终端连接中（黄灯）→ 已连接（绿灯）→ 主动/超时断连（红灯）颜色与文案完全一致，点击重连按钮可恢复会话

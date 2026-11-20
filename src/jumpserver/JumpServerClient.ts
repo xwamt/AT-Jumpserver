@@ -1,5 +1,5 @@
 import type { CachedJumpServerAsset, CachedJumpServerNode } from '../config/schema';
-import type { JumpServerAccountRef, JumpServerAliasAccount, JumpServerManagedAccountRef, JumpServerConnectionProtocol, JumpServerEndpoint, JumpServerSettingsWithPassword } from './types';
+import type { JumpServerAccountRef, JumpServerConnectionProtocol, JumpServerEndpoint, JumpServerSettingsWithPassword } from './types';
 export type { JumpServerEndpoint };
 import { log } from '../utils/logger';
 import { apiErrorMessageFromPayload, classifyRestFailure, JumpServerApiError } from './apiError';
@@ -10,16 +10,97 @@ import { buildOrigin } from './urls';
 import { type ConnectMethod, normalizeConnectMethods } from './connectMethods';
 import { detectKokoCapabilities } from './kokoCapability';
 import { Agent as HttpsAgent } from 'node:https';
-import WebSocket from 'ws';
-/**
- * `ping`/`terminate`/`bufferedAmount` are here for the session heartbeat and
- * its send backpressure. They are deliberately the RFC 6455 control frame and
- * the transport's own queue depth rather than anything KoKo-specific: a peer
- * that has stopped running its read loop cannot answer a protocol ping, and
- * `close()` on such a peer waits for a close frame that will never arrive.
- */
-export type KokoWebSocket = Pick<WebSocket, 'send' | 'close' | 'on' | 'ping' | 'terminate' | 'bufferedAmount'>;
-export type WebSocketFactory = (url: string, options: WebSocket.ClientOptions) => Promise<KokoWebSocket>;
+import {
+  cookiesForUrl,
+  type JumpServerCookie,
+  parseSetCookieHeader,
+  parseStoredWebSession,
+  resolveJumpServerUrl
+} from './cookieJar';
+import {
+  type AssetPathMap,
+  assetPathsFromNodes,
+  extractAssetTreeNodes,
+  extractAssetTreePaths,
+  extractNodePath,
+  extractProtocolNames,
+  normalizeJumpServerAsset,
+  resolveFirstUsableAccount,
+  resolveUsableAccounts
+} from './assetNormalizer';
+import {
+  buildConnectionTokenPayload,
+  buildMysqlConnectionTokenPayload,
+  buildRedisConnectionTokenPayload,
+  buildSftpConnectionTokenPayload,
+  currentOsParam,
+  DEFAULT_CONNECT_OPTIONS,
+  DEFAULT_MYSQL_CONNECT_OPTIONS,
+  DEFAULT_REDIS_CONNECT_OPTIONS,
+  DEFAULT_SFTP_CONNECT_OPTIONS
+} from './tokenPayload';
+import {
+  buildKokoBaseUrl,
+  buildKokoConnectUrl,
+  buildKokoSftpWsUrl,
+  buildKokoWsUrl,
+  DEFAULT_JUMPSERVER_TIMEOUTS,
+  defaultWebSocketFactory,
+  isKokoLoginRedirect,
+  type JumpServerTimeoutBudget,
+  type JumpServerTimeouts,
+  type KokoWebSocket,
+  kokoWsAgentForEndpoint,
+  logRoute,
+  parseCsrfMiddlewareToken,
+  type WebSocketFactory
+} from './kokoEndpoints';
+
+export type { JumpServerCookie } from './cookieJar';
+export {
+  cookiesForUrl,
+  parseSetCookieHeader,
+  resolveJumpServerUrl
+} from './cookieJar';
+export type { AssetPathMap } from './assetNormalizer';
+export {
+  assetPathsFromNodes,
+  extractAssetTreeNodes,
+  extractAssetTreePaths,
+  extractNodePath,
+  extractProtocolNames,
+  normalizeJumpServerAsset,
+  resolveFirstUsableAccount,
+  resolveUsableAccounts
+} from './assetNormalizer';
+export {
+  buildConnectionTokenPayload,
+  buildMysqlConnectionTokenPayload,
+  buildRedisConnectionTokenPayload,
+  buildSftpConnectionTokenPayload,
+  currentOsParam,
+  DEFAULT_CONNECT_OPTIONS,
+  DEFAULT_MYSQL_CONNECT_OPTIONS,
+  DEFAULT_REDIS_CONNECT_OPTIONS,
+  DEFAULT_SFTP_CONNECT_OPTIONS
+} from './tokenPayload';
+export type {
+  JumpServerTimeoutBudget,
+  JumpServerTimeouts,
+  KokoWebSocket,
+  WebSocketFactory
+} from './kokoEndpoints';
+export {
+  buildKokoBaseUrl,
+  buildKokoConnectUrl,
+  buildKokoSftpWsUrl,
+  buildKokoWsUrl,
+  DEFAULT_JUMPSERVER_TIMEOUTS,
+  defaultWebSocketFactory,
+  isKokoLoginRedirect,
+  kokoWsAgentForEndpoint,
+  parseCsrfMiddlewareToken
+} from './kokoEndpoints';
 
 interface ListPage {
   results?: unknown[];
@@ -29,8 +110,6 @@ interface ListPage {
   total?: number;
   next?: string | null;
 }
-
-type AssetPathMap = Map<string, string[]>;
 
 export interface JumpServerAssetInventory {
   assets: CachedJumpServerAsset[];
@@ -52,18 +131,6 @@ export const MAX_SYNCED_ASSETS = 10_000;
 export const ASSET_PAGE_CONCURRENCY = 4;
 /** Initial listing try plus two retries after HTTP 429. */
 const LISTING_RETRY_LIMIT = 3;
-
-export interface JumpServerTimeouts {
-  /** Auth, connection tokens, endpoints, KoKo warmup: single lookups. */
-  requestMs: number;
-  /** Bulk permission listings, which a large deployment answers slowly. */
-  listingMs: number;
-  /** KoKo WebSocket handshake. */
-  webSocketMs: number;
-}
-
-/** Which of the three budgets a call is spending. Also the label used in logs. */
-export type JumpServerTimeoutBudget = 'request' | 'listing';
 
 /**
  * Where the KoKo web-session cookies (sessionid + csrftoken) survive a window
@@ -92,255 +159,6 @@ export function rfc1123Date(now = new Date()): string {
   return now.toUTCString().replace(/UTC$/, 'GMT');
 }
 
-/** The path alone. Query strings here carry connection tokens. */
-function logRoute(url: string): string {
-  try {
-    return new URL(url).pathname;
-  } catch {
-    return '(unparsable url)';
-  }
-}
-
-/**
- * Without these, a JumpServer that accepts the TCP connection and then stops
- * talking leaves the tree view, the terminal and every MCP tool call pending
- * forever, with no cancel affordance anywhere in the UI.
- */
-export const DEFAULT_JUMPSERVER_TIMEOUTS: JumpServerTimeouts = {
-  requestMs: 15_000,
-  listingMs: 60_000,
-  webSocketMs: 15_000
-};
-
-export const DEFAULT_CONNECT_OPTIONS = {
-  charset: 'default',
-  disableautohash: false,
-  token_reusable: false,
-  resolution: 'auto',
-  backspaceAsCtrlH: false,
-  appletConnectMethod: 'web',
-  virtualappConnectMethod: 'web',
-  reusable: false,
-  rdp_connection_speed: 'auto'
-} as const;
-
-export const DEFAULT_MYSQL_CONNECT_OPTIONS = {
-  token_reusable: false,
-  disableautohash: false
-} as const;
-
-export const DEFAULT_REDIS_CONNECT_OPTIONS = {
-  token_reusable: false,
-  disableautohash: false
-} as const;
-
-export const DEFAULT_SFTP_CONNECT_OPTIONS = {
-  token_reusable: false,
-  disableautohash: false
-} as const;
-
-export interface JumpServerCookie {
-  name: string;
-  value: string;
-  domain: string;
-  hostOnly: boolean;
-  path: string;
-  secure: boolean;
-}
-
-export function resolveJumpServerUrl(baseUrl: string, pathOrUrl: string, allowedOrigins: string[] = []): string {
-  const origin = buildOrigin(baseUrl);
-  const url = pathOrUrl.startsWith('http') ? pathOrUrl : `${origin}${pathOrUrl}`;
-  const target = new URL(url);
-  if (target.origin !== origin && !allowedOrigins.includes(target.origin)) {
-    throw new Error(`Refusing cross-origin JumpServer request to ${target.origin} (expected ${origin}).`);
-  }
-  return url;
-}
-
-export function parseSetCookieHeader(header: string, requestUrl: string): JumpServerCookie[] {
-  const request = new URL(requestUrl);
-  const cookies: JumpServerCookie[] = [];
-  for (const rawCookie of splitSetCookieHeader(header)) {
-    const [nameValue, ...attributes] = rawCookie.split(';');
-    const separator = nameValue.indexOf('=');
-    if (separator <= 0) {
-      continue;
-    }
-    const domainAttribute = cookieAttribute(attributes, 'domain');
-    const pathAttribute = cookieAttribute(attributes, 'path');
-    cookies.push({
-      name: nameValue.slice(0, separator).trim(),
-      value: nameValue.slice(separator + 1).trim(),
-      domain: (domainAttribute ? domainAttribute.replace(/^\./, '') : request.hostname).toLowerCase(),
-      hostOnly: !domainAttribute,
-      // JumpServer (Django) always sends Path=/. RFC 6265 §5.1.4 would instead derive the
-      // default from the request path, which would strand a /koko-issued cookie away from
-      // the /api calls that share the same session.
-      path: pathAttribute && pathAttribute.startsWith('/') ? pathAttribute : '/',
-      secure: hasCookieFlag(attributes, 'secure')
-    });
-  }
-  return cookies;
-}
-
-export function cookiesForUrl(cookies: JumpServerCookie[], url: string): string {
-  const target = new URL(url);
-  const host = target.hostname.toLowerCase();
-  const isSecureTransport = target.protocol === 'https:';
-  return cookies
-    .filter((cookie) => (cookie.secure ? isSecureTransport : true))
-    .filter((cookie) => domainMatches(host, cookie))
-    .filter((cookie) => pathMatches(target.pathname, cookie.path))
-    .map((cookie) => `${cookie.name}=${cookie.value}`)
-    .join('; ');
-}
-
-function domainMatches(host: string, cookie: JumpServerCookie): boolean {
-  return cookie.hostOnly ? host === cookie.domain : host === cookie.domain || host.endsWith(`.${cookie.domain}`);
-}
-
-/**
- * Deserializes a persisted web session defensively: only the two cookie names
- * the KoKo handshake needs are accepted, and only when they still belong to
- * this bastion's host - the store is keyed by bastion id, but the base URL can
- * have been edited since the session was saved.
- */
-function parseStoredWebSession(raw: string, baseUrl: string): JumpServerCookie[] {
-  let host: string;
-  try {
-    host = new URL(buildOrigin(baseUrl)).hostname.toLowerCase();
-  } catch {
-    return [];
-  }
-  let parsed: { cookies?: unknown };
-  try {
-    parsed = JSON.parse(raw) as { cookies?: unknown };
-  } catch {
-    return [];
-  }
-  if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.cookies)) {
-    return [];
-  }
-  const cookies: JumpServerCookie[] = [];
-  for (const item of parsed.cookies) {
-    if (!item || typeof item !== 'object') {
-      continue;
-    }
-    const record = item as Record<string, unknown>;
-    if (typeof record.name !== 'string' || typeof record.value !== 'string') {
-      continue;
-    }
-    if (record.name !== 'sessionid' && record.name !== 'csrftoken') {
-      continue;
-    }
-    const cookie: JumpServerCookie = {
-      name: record.name,
-      value: record.value,
-      domain: typeof record.domain === 'string' && record.domain ? record.domain.toLowerCase() : host,
-      hostOnly: record.hostOnly !== false,
-      path: typeof record.path === 'string' && record.path.startsWith('/') ? record.path : '/',
-      secure: record.secure === true
-    };
-    if (!domainMatches(host, cookie)) {
-      continue;
-    }
-    cookies.push(cookie);
-  }
-  return cookies;
-}
-
-function pathMatches(requestPath: string, cookiePath: string): boolean {
-  if (requestPath === cookiePath) {
-    return true;
-  }
-  if (!requestPath.startsWith(cookiePath)) {
-    return false;
-  }
-  return cookiePath.endsWith('/') || requestPath.charAt(cookiePath.length) === '/';
-}
-
-function cookieAttribute(attributes: string[], name: string): string | undefined {
-  for (const attribute of attributes) {
-    const separator = attribute.indexOf('=');
-    if (separator > 0 && attribute.slice(0, separator).trim().toLowerCase() === name) {
-      return attribute.slice(separator + 1).trim();
-    }
-  }
-  return undefined;
-}
-
-function hasCookieFlag(attributes: string[], name: string): boolean {
-  return attributes.some((attribute) => attribute.trim().toLowerCase() === name);
-}
-
-export function buildKokoConnectUrl(baseUrl: string, tokenId: string, timestamp = Date.now()): string {
-  const origin = buildOrigin(baseUrl);
-  return `${origin}/koko/connect/?disableautohash=false&token=${encodeURIComponent(tokenId)}&_=${timestamp}`;
-}
-
-export function buildKokoBaseUrl(baseUrl: string, endpoint: JumpServerEndpoint): string {
-  const parsed = new URL(baseUrl);
-  const protocol = parsed.protocol;
-  const host = endpoint.host || parsed.hostname;
-  const port = parsed.protocol === 'https:' ? endpoint.https_port : endpoint.http_port;
-  const authority = port && !((protocol === 'https:' && port === 443) || (protocol === 'http:' && port === 80))
-    ? `${host}:${port}`
-    : host;
-  return `${protocol}//${authority}`;
-}
-
-export function buildKokoWsUrl(
-  baseUrl: string,
-  endpoint: JumpServerEndpoint,
-  tokenId: string,
-  timestamp = Date.now(),
-  ticket?: string
-): string {
-  const parsed = new URL(baseUrl);
-  const scheme = parsed.protocol === 'https:' ? 'wss' : 'ws';
-  const host = endpoint.host || parsed.hostname;
-  const port = parsed.protocol === 'https:' ? endpoint.https_port : endpoint.http_port;
-  const authority = port && !((scheme === 'wss' && port === 443) || (scheme === 'ws' && port === 80))
-    ? `${host}:${port}`
-    : host;
-  const ticketParam = ticket ? `&ticket=${encodeURIComponent(ticket)}` : '';
-  return `${scheme}://${authority}/koko/ws/terminal/?disableautohash=false&token=${encodeURIComponent(tokenId)}&_=${timestamp}${ticketParam}`;
-}
-
-export function buildKokoSftpWsUrl(
-  baseUrl: string,
-  endpoint: JumpServerEndpoint,
-  tokenId: string,
-  timestamp = Date.now(),
-  ticket?: string
-): string {
-  const parsed = new URL(baseUrl);
-  const scheme = parsed.protocol === 'https:' ? 'wss' : 'ws';
-  const host = endpoint.host || parsed.hostname;
-  const port = parsed.protocol === 'https:' ? endpoint.https_port : endpoint.http_port;
-  const authority = port && !((scheme === 'wss' && port === 443) || (scheme === 'ws' && port === 80))
-    ? `${host}:${port}`
-    : host;
-  const ticketParam = ticket ? `&ticket=${encodeURIComponent(ticket)}` : '';
-  return `${scheme}://${authority}/koko/ws/sftp/?token=${encodeURIComponent(tokenId)}&_=${timestamp}${ticketParam}`;
-}
-
-export function parseCsrfMiddlewareToken(html: string): string {
-  const match = html.match(/name="csrfmiddlewaretoken"[^>]*value="([^"]+)"/i);
-  if (!match) {
-    throw new Error('Unable to find csrfmiddlewaretoken in JumpServer login page.');
-  }
-  return match[1];
-}
-
-export function isKokoLoginRedirect(location: string | null): boolean {
-  if (!location) {
-    return false;
-  }
-  return /\/(?:core\/)?auth\/login(?:\/|\?|$)/i.test(location);
-}
-
 function normalizeJumpServerOrgs(records: unknown[]): JumpServerOrg[] {
   const orgs: JumpServerOrg[] = [];
   for (const item of records) {
@@ -355,374 +173,6 @@ function normalizeJumpServerOrgs(records: unknown[]): JumpServerOrg[] {
     orgs.push({ id: String(id), name: String(name || id) });
   }
   return orgs;
-}
-
-export function normalizeJumpServerAsset(item: Record<string, any>): CachedJumpServerAsset {
-  const platform = item.platform;
-  const category = item.category;
-  const type = item.type;
-  const zone = item.zone;
-  const nodePath = extractNodePath(item);
-  const zoneName = typeof zone === 'object' && zone ? String(zone.name || '') : String(zone || '');
-
-  return {
-    id: String(item.id || ''),
-    name: String(item.name || item.address || item.id || ''),
-    bastionId: '',
-    address: String(item.address || ''),
-    platform: typeof platform === 'object' && platform ? String(platform.name || '') : String(platform || ''),
-    category: typeof category === 'object' && category ? String(category.value || '') : String(category || ''),
-    type: typeof type === 'object' && type ? String(type.value || '') : String(type || ''),
-    zoneName: zoneName || nodePath.at(-1) || '',
-    nodePath,
-    protocolNames: extractProtocolNames(item),
-    raw: item
-  };
-}
-
-export function extractNodePath(item: Record<string, any>): string[] {
-  const candidates: string[][] = [];
-  for (const field of ['node_path', 'nodePath', 'nodes_display', 'nodesDisplay']) {
-    candidates.push(parseNodePathValue(item[field]));
-  }
-  const nodes = Array.isArray(item.nodes) ? item.nodes : [];
-  candidates.push(nodes.flatMap((node) => parseNodeName(node)));
-  for (const node of nodes) {
-    if (!node || typeof node !== 'object') {
-      continue;
-    }
-    for (const field of ['full_value', 'fullValue', 'full_name', 'fullName', 'path', 'value', 'name']) {
-      candidates.push(parseNodePathValue((node as Record<string, unknown>)[field]));
-    }
-  }
-  return candidates.reduce<string[]>((best, candidate) => candidate.length > best.length ? candidate : best, []);
-}
-
-function parseNodeName(node: unknown): string[] {
-  if (!node || typeof node !== 'object') {
-    return [];
-  }
-  const name = (node as Record<string, unknown>).name;
-  return typeof name === 'string' && name.trim() ? [name.trim()] : [];
-}
-
-function parseNodePathValue(value: unknown): string[] {
-  if (Array.isArray(value)) {
-    return value.flatMap((entry) => parseNodePathValue(entry));
-  }
-  if (!value) {
-    return [];
-  }
-  if (typeof value === 'object') {
-    const record = value as Record<string, unknown>;
-    for (const field of ['full_value', 'fullValue', 'full_name', 'fullName', 'path', 'value', 'name']) {
-      const parsed = parseNodePathValue(record[field]);
-      if (parsed.length > 0) {
-        return parsed;
-      }
-    }
-    return [];
-  }
-  return String(value)
-    .split(/[\\/]+/)
-    .map((part) => part.trim())
-    .filter((part) => part.length > 0);
-}
-
-export function extractProtocolNames(item: Record<string, any>): string[] {
-  const rawProtocols = Array.isArray(item.permed_protocols)
-    ? item.permed_protocols
-    : Array.isArray(item.protocols)
-      ? item.protocols
-      : [];
-  return rawProtocols
-    .map((protocol: any) => String(protocol?.name || ''))
-    .filter((name: string) => name.length > 0);
-}
-
-function toManagedAccountRef(account: Record<string, any>): JumpServerManagedAccountRef {
-  const res: JumpServerManagedAccountRef = {
-    kind: 'managed',
-    id: String(account.id),
-    username: String(account.username || account.name || account.alias || ''),
-    hasSecret: typeof account.has_secret === 'boolean' ? account.has_secret : undefined
-  };
-  if (account.alias) {
-    res.alias = String(account.alias);
-  }
-  return res;
-}
-
-export function resolveUsableAccounts(detail: Record<string, any>): JumpServerAccountRef[] {
-  const accounts = Array.isArray(detail.permed_accounts)
-    ? detail.permed_accounts
-    : Array.isArray(detail.accounts)
-      ? detail.accounts
-      : [];
-
-  const result: JumpServerAccountRef[] = [];
-  const seenManagedIds = new Set<string>();
-  const seenAliases = new Set<string>();
-
-  for (const account of accounts) {
-    if (account?.has_secret === true && !String(account?.alias ?? '').startsWith('@') && account?.id) {
-      const id = String(account.id);
-      if (!seenManagedIds.has(id)) {
-        seenManagedIds.add(id);
-        result.push(toManagedAccountRef(account));
-      }
-    }
-  }
-
-  for (const account of accounts) {
-    if (!String(account?.alias ?? '').startsWith('@') && account?.id) {
-      const id = String(account.id);
-      if (!seenManagedIds.has(id)) {
-        seenManagedIds.add(id);
-        result.push(toManagedAccountRef(account));
-      }
-    }
-  }
-
-  for (const account of accounts) {
-    if (String(account?.alias ?? '').startsWith('@') && account?.alias) {
-      const alias = String(account.alias).toUpperCase() as JumpServerAliasAccount;
-      if (!seenAliases.has(alias)) {
-        seenAliases.add(alias);
-        result.push({
-          kind: 'alias',
-          alias,
-          id: account.id ? String(account.id) : undefined,
-          username: account.username ? String(account.username) : undefined,
-          hasSecret: typeof account.has_secret === 'boolean' ? account.has_secret : undefined
-        });
-      }
-    }
-  }
-
-  return result;
-}
-
-export function resolveFirstUsableAccount(detail: Record<string, any>): JumpServerAccountRef {
-  const [first] = resolveUsableAccounts(detail);
-  if (!first) {
-    throw new Error('No usable JumpServer account was returned for this asset.');
-  }
-  return first;
-}
-
-
-export function currentOsParam(): string {
-  if (process.platform === 'win32') {
-    return 'windows';
-  }
-  if (process.platform === 'darwin') {
-    return 'macos';
-  }
-  return 'linux';
-}
-
-export function buildConnectionTokenPayload(input: {
-  assetId: string;
-  account: JumpServerAccountRef;
-  protocol: JumpServerConnectionProtocol;
-  connectMethod?: string;
-}): Record<string, unknown> {
-  if (input.protocol === 'mysql') {
-    return buildMysqlConnectionTokenPayload(input);
-  }
-  if (input.protocol === 'redis') {
-    return buildRedisConnectionTokenPayload(input);
-  }
-  if (input.protocol === 'sftp') {
-    return buildSftpConnectionTokenPayload(input);
-  }
-
-  if (input.account.kind === 'alias') {
-    const payload: Record<string, unknown> = {
-      asset: input.assetId,
-      account: input.account.alias,
-      protocol: input.protocol,
-      connect_method: input.connectMethod || 'web_cli',
-      connect_options: DEFAULT_CONNECT_OPTIONS
-    };
-    if (input.account.alias === '@INPUT') {
-      payload.input_username = input.account.inputUsername || input.account.username || '';
-      payload.input_secret = input.account.inputSecret || '';
-    }
-    return payload;
-  }
-
-  return {
-    asset: input.assetId,
-    account: input.account.id,
-    protocol: input.protocol,
-    input_username: input.account.username,
-    input_secret: '',
-    connect_method: input.connectMethod || 'web_cli',
-    connect_options: DEFAULT_CONNECT_OPTIONS
-  };
-}
-
-export function buildSftpConnectionTokenPayload(input: {
-  assetId: string;
-  account: JumpServerAccountRef;
-  connectMethod?: string;
-}): Record<string, unknown> {
-  if (input.account.kind === 'alias') {
-    const payload: Record<string, unknown> = {
-      asset: input.assetId,
-      account: input.account.alias,
-      protocol: 'sftp',
-      connect_method: input.connectMethod || 'web_sftp',
-      connect_options: DEFAULT_SFTP_CONNECT_OPTIONS
-    };
-    if (input.account.alias === '@INPUT') {
-      payload.input_username = input.account.inputUsername || input.account.username || '';
-      payload.input_secret = input.account.inputSecret || '';
-    }
-    return payload;
-  }
-
-  return {
-    asset: input.assetId,
-    account: input.account.id,
-    protocol: 'sftp',
-    input_username: input.account.username,
-    input_secret: '',
-    connect_method: input.connectMethod || 'web_sftp',
-    connect_options: DEFAULT_SFTP_CONNECT_OPTIONS
-  };
-}
-
-export function buildMysqlConnectionTokenPayload(input: {
-  assetId: string;
-  account: JumpServerAccountRef;
-  connectMethod?: string;
-}): Record<string, unknown> {
-  if (input.account.kind === 'alias') {
-    const payload: Record<string, unknown> = {
-      asset: input.assetId,
-      account: input.account.alias,
-      protocol: 'mysql',
-      connect_method: input.connectMethod || 'db_client',
-      connect_options: DEFAULT_MYSQL_CONNECT_OPTIONS
-    };
-    if (input.account.alias === '@INPUT') {
-      payload.input_username = input.account.inputUsername || input.account.username || '';
-      payload.input_secret = input.account.inputSecret || '';
-    }
-    return payload;
-  }
-
-  return {
-    asset: input.assetId,
-    account: input.account.alias || input.account.id,
-    protocol: 'mysql',
-    input_username: input.account.username,
-    input_secret: '',
-    connect_method: input.connectMethod || 'db_client',
-    connect_options: DEFAULT_MYSQL_CONNECT_OPTIONS
-  };
-}
-
-export function buildRedisConnectionTokenPayload(input: {
-  assetId: string;
-  account: JumpServerAccountRef;
-  connectMethod?: string;
-}): Record<string, unknown> {
-  if (input.account.kind === 'alias') {
-    const payload: Record<string, unknown> = {
-      asset: input.assetId,
-      account: input.account.alias,
-      protocol: 'redis',
-      connect_method: input.connectMethod || 'db_client',
-      connect_options: DEFAULT_REDIS_CONNECT_OPTIONS
-    };
-    if (input.account.alias === '@INPUT') {
-      payload.input_username = input.account.inputUsername || input.account.username || '';
-      payload.input_secret = input.account.inputSecret || '';
-    }
-    return payload;
-  }
-
-  return {
-    asset: input.assetId,
-    account: input.account.alias || input.account.id,
-    protocol: 'redis',
-    input_username: input.account.username,
-    input_secret: '',
-    connect_method: input.connectMethod || 'db_client',
-    connect_options: DEFAULT_REDIS_CONNECT_OPTIONS
-  };
-}
-
-
-/**
- * The REST keep-alive agent, but only when the KoKo endpoint resolves to the
- * same https authority the REST calls use - that is when the WebSocket
- * handshake can resume the already-warm TLS session. A different host or port
- * must not borrow the agent: its pooled sockets carry the wrong SNI and would
- * pin the handshake to the wrong peer. Plain-http endpoints get nothing
- * either, since an https agent would try to speak TLS to them.
- */
-export function kokoWsAgentForEndpoint(
-  baseUrl: string,
-  endpoint: JumpServerEndpoint,
-  agent: HttpsAgent | undefined
-): HttpsAgent | undefined {
-  if (!agent) {
-    return undefined;
-  }
-  let parsed: URL;
-  try {
-    parsed = new URL(baseUrl);
-  } catch {
-    return undefined;
-  }
-  if (parsed.protocol !== 'https:') {
-    return undefined;
-  }
-  const wsHost = (endpoint.host || parsed.hostname).toLowerCase();
-  if (wsHost !== parsed.hostname.toLowerCase()) {
-    return undefined;
-  }
-  // Mirrors buildKokoWsUrl: no https_port means the default wss port.
-  const basePort = parsed.port ? Number(parsed.port) : 443;
-  const wsPort = endpoint.https_port ?? 443;
-  return wsPort === basePort ? agent : undefined;
-}
-
-export async function defaultWebSocketFactory(
-  url: string,
-  options: WebSocket.ClientOptions,
-  timeoutMs = DEFAULT_JUMPSERVER_TIMEOUTS.webSocketMs
-): Promise<WebSocket> {
-  const socket = new WebSocket(url, ['JMS-KOKO'], options);
-  await new Promise<void>((resolve, reject) => {
-    // Both handshake listeners have to come off on settle: the session attaches
-    // its own 'error' handler afterwards, and a stale one here would keep
-    // rejecting a promise that nobody awaits by then. A no-op sink takes
-    // their place because ws throws when an 'error' event has no listener at
-    // all - including the one terminate() raises below.
-    const settle = (finish: () => void): void => {
-      clearTimeout(timer);
-      socket.off('open', onOpen);
-      socket.off('error', onError);
-      socket.on('error', () => undefined);
-      finish();
-    };
-    const onOpen = (): void => settle(resolve);
-    const onError = (error: Error): void => settle(() => reject(error));
-    const timer = setTimeout(() => settle(() => {
-      log.warn(`KoKo WebSocket handshake timed out after ${timeoutMs}ms: ${logRoute(url)}`);
-      socket.terminate();
-      reject(new Error(`JumpServer WebSocket handshake timed out after ${timeoutMs}ms.`));
-    }), timeoutMs);
-    socket.once('open', onOpen);
-    socket.once('error', onError);
-  });
-  return socket;
 }
 
 /**
@@ -1168,7 +618,7 @@ export class JumpServerClient {
   }
 
   async listAssetTreePaths(): Promise<AssetPathMap> {
-    return nodesToAssetPathMap(await this.listAssetNodes());
+    return assetPathsFromNodes(await this.listAssetNodes());
   }
 
   async listAssetNodes(): Promise<CachedJumpServerNode[]> {
@@ -2031,232 +1481,6 @@ function dedupeAssetsById(assets: CachedJumpServerAsset[]): CachedJumpServerAsse
 
 function boundedCount(value: number | undefined, fallback: number): number {
   return Number.isInteger(value) && (value as number) > 0 ? value as number : fallback;
-}
-
-export function extractAssetTreePaths(payload: unknown): AssetPathMap {
-  return nodesToAssetPathMap(extractAssetTreeNodes(payload));
-}
-
-export function extractAssetTreeNodes(payload: unknown): CachedJumpServerNode[] {
-  const items = treeItems(payload);
-  if (isFlatAssetTree(items)) {
-    return flatAssetTreeNodes(items);
-  }
-  const nodes: CachedJumpServerNode[] = [];
-  for (const item of items) {
-    walkAssetTreeNode(item, [], nodes);
-  }
-  return nodes;
-}
-
-/** Lets a caller reuse a node tree it already paid for. */
-export function assetPathsFromNodes(nodes: CachedJumpServerNode[]): AssetPathMap {
-  return nodesToAssetPathMap(nodes);
-}
-
-function nodesToAssetPathMap(nodes: CachedJumpServerNode[]): AssetPathMap {
-  const paths: AssetPathMap = new Map();
-  for (const node of nodes) {
-    for (const assetId of node.assetIds) {
-      paths.set(assetId, node.path);
-    }
-  }
-  return paths;
-}
-
-function treeItems(payload: unknown): unknown[] {
-  if (Array.isArray(payload)) {
-    return payload;
-  }
-  if (!payload || typeof payload !== 'object') {
-    return [];
-  }
-  const record = payload as Record<string, unknown>;
-  for (const field of ['results', 'items', 'data', 'children']) {
-    if (Array.isArray(record[field])) {
-      return record[field];
-    }
-  }
-  return [payload];
-}
-
-function isFlatAssetTree(items: unknown[]): boolean {
-  return items.some((item) => Boolean(item && typeof item === 'object' && parentKey(item as Record<string, unknown>)));
-}
-
-function flatAssetTreeNodes(items: unknown[]): CachedJumpServerNode[] {
-  const records = items.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'));
-  const nodeRecords = records.filter((record) => !isAssetTreeLeaf(record));
-  const nodesByKey = new Map<string, Record<string, unknown>>();
-  const assetsByParentKey = new Map<string, string[]>();
-
-  for (const record of nodeRecords) {
-    const key = treeItemKey(record);
-    if (key) {
-      nodesByKey.set(key, record);
-    }
-  }
-
-  for (const record of records.filter(isAssetTreeLeaf)) {
-    const parent = parentKey(record);
-    const assetId = stringField(record, ['id', 'key', 'value']);
-    if (!parent || !assetId) {
-      continue;
-    }
-    const assetIds = assetsByParentKey.get(parent) ?? [];
-    assetIds.push(assetId);
-    assetsByParentKey.set(parent, assetIds);
-  }
-
-  const pathCache = new Map<string, string[]>();
-  const buildPath = (record: Record<string, unknown>, seen = new Set<string>()): string[] => {
-    const key = treeItemKey(record);
-    if (key && pathCache.has(key)) {
-      return pathCache.get(key) ?? [];
-    }
-    const label = treeNodeLabel(record);
-    const parent = parentKey(record);
-    const parentRecord = parent ? nodesByKey.get(parent) : undefined;
-    const path = parentRecord && (!key || !seen.has(key))
-      ? [...buildPath(parentRecord, key ? new Set([...seen, key]) : seen), label]
-      : [label];
-    const normalized = path.filter((part) => part.length > 0);
-    if (key) {
-      pathCache.set(key, normalized);
-    }
-    return normalized;
-  };
-
-  return nodeRecords
-    .map((record) => {
-      const key = treeItemKey(record);
-      const path = buildPath(record);
-      return {
-        id: nestedStringField(record, ['meta.data.id']) || key || path.join('/'),
-        name: path.at(-1) || treeNodeLabel(record),
-        bastionId: '',
-        path,
-        assetIds: key ? assetsByParentKey.get(key) ?? [] : [],
-        raw: record
-      };
-    })
-    .filter((node) => node.path.length > 0);
-}
-
-function treeItemKey(record: Record<string, unknown>): string {
-  return nestedStringField(record, ['key', 'id', 'value', 'meta.data.key']);
-}
-
-function parentKey(record: Record<string, unknown>): string {
-  return nestedStringField(record, [
-    'pId',
-    'pid',
-    'parent',
-    'parent_key',
-    'parentKey',
-    'parent_id',
-    'parentId',
-    'meta.parent',
-    'meta.parent_key',
-    'meta.parentKey',
-    'meta.data.parent',
-    'meta.data.parent_key',
-    'meta.data.parentKey'
-  ]);
-}
-
-function treeNodeLabel(record: Record<string, unknown>): string {
-  return nestedStringField(record, ['name', 'title', 'label', 'value', 'meta.data.value']);
-}
-
-function walkAssetTreeNode(node: unknown, parentPath: string[], nodes: CachedJumpServerNode[]): void {
-  if (!node || typeof node !== 'object') {
-    return;
-  }
-  const record = node as Record<string, unknown>;
-  if (isAssetTreeLeaf(record)) {
-    return;
-  }
-
-  const label = stringField(record, ['name', 'title', 'label', 'value']);
-  const currentPath = label ? [...parentPath, label] : parentPath;
-  const children = treeItems(record.children);
-  const assetIds = [
-    ...assetIdsFromValue(record.assets),
-    ...assetIdsFromValue(record.asset),
-    ...children
-      .filter((child) => child && typeof child === 'object' && isAssetTreeLeaf(child as Record<string, unknown>))
-      .map((child) => stringField(child as Record<string, unknown>, ['id', 'key', 'value']))
-      .filter((id) => id.length > 0)
-  ];
-  if (label && currentPath.length > 0) {
-    nodes.push({
-      id: stringField(record, ['id', 'key']) || currentPath.join('/'),
-      name: label,
-      bastionId: '',
-      path: currentPath,
-      assetIds,
-      raw: record
-    });
-  }
-  for (const child of children) {
-    if (!child || typeof child !== 'object' || isAssetTreeLeaf(child as Record<string, unknown>)) {
-      continue;
-    }
-    walkAssetTreeNode(child, currentPath, nodes);
-  }
-}
-
-function assetIdsFromValue(value: unknown): string[] {
-  const ids: string[] = [];
-  for (const asset of treeItems(value)) {
-    if (asset && typeof asset === 'object') {
-      const id = stringField(asset as Record<string, unknown>, ['id', 'key', 'value']);
-      if (id) {
-        ids.push(id);
-      }
-    }
-  }
-  return ids;
-}
-
-function isAssetTreeLeaf(record: Record<string, unknown>): boolean {
-  const meta = record.meta && typeof record.meta === 'object' ? record.meta as Record<string, unknown> : {};
-  const type = String(record.type || record.kind || record.node_type || meta.type || '').toLowerCase();
-  return record.is_asset === true || type === 'asset' || type === 'host';
-}
-
-function stringField(record: Record<string, unknown>, fields: string[]): string {
-  for (const field of fields) {
-    const value = record[field];
-    if (typeof value === 'string' && value.trim()) {
-      return value.trim();
-    }
-    if (typeof value === 'number') {
-      return String(value);
-    }
-  }
-  return '';
-}
-
-function nestedStringField(record: Record<string, unknown>, paths: string[]): string {
-  for (const path of paths) {
-    let value: unknown = record;
-    for (const segment of path.split('.')) {
-      value = value && typeof value === 'object' ? (value as Record<string, unknown>)[segment] : undefined;
-    }
-    if (typeof value === 'string' && value.trim()) {
-      return value.trim();
-    }
-    if (typeof value === 'number') {
-      return String(value);
-    }
-  }
-  return '';
-}
-
-function splitSetCookieHeader(value: string): string[] {
-  return value.split(/,(?=\s*[^;,]+=)/g).map((cookie) => cookie.trim()).filter(Boolean);
 }
 
 function headersToRecord(headers: HeadersInit | undefined): Record<string, string> {

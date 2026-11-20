@@ -134,6 +134,18 @@ describe('every string the extension translates at runtime', () => {
       expect(Object.keys(bundle), `${path}: ${JSON.stringify(key)}`).toContain(key);
     }
   });
+
+  it('leaves no unused or test-only keys in bundle.l10n.zh-cn.json', () => {
+    const usedKeys = new Set(keys.keys());
+    const unusedKeys = Object.keys(bundle).filter((key) => !usedKeys.has(key));
+    expect(unusedKeys).toEqual([]);
+  });
+
+  it('contains no script or event-handler payloads in production l10n bundles', () => {
+    const serialized = JSON.stringify(bundle).toLowerCase();
+    expect(serialized).not.toContain('<script');
+    expect(serialized).not.toContain('onerror=');
+  });
 });
 
 /**
