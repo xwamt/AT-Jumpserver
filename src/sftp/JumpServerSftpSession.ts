@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { open } from 'node:fs/promises';
 import { extractProtocolNames, resolveFirstUsableAccount, type KokoWebSocket } from '../jumpserver/JumpServerClient';
 import type { JumpServerAccountRef, JumpServerConnectionProtocol } from '../jumpserver/types';
 import {
@@ -282,6 +283,70 @@ export class JumpServerSftpSession {
       }
       await this.dispatchCommand('upload', { path, size: 0, offSet: 0, merge: true }, { id, raw: '' });
     }).then(() => undefined);
+  }
+
+  async uploadFromFile(path: string, localPath: string, onProgress?: SftpUploadProgress): Promise<void> {
+    if (!this.socket || !this.connected) {
+      throw new Error('SFTP connection is not available.');
+    }
+    this.listCache.clear();
+    const fh = await open(localPath, 'r');
+    try {
+      const totalBytes = (await fh.stat()).size;
+      if (totalBytes <= SFTP_UPLOAD_CHUNK_BYTES) {
+        const buffer = Buffer.allocUnsafe(totalBytes);
+        let filled = 0;
+        while (filled < totalBytes) {
+          const { bytesRead } = await fh.read(buffer, filled, totalBytes - filled, filled);
+          if (bytesRead === 0) {
+            break;
+          }
+          filled += bytesRead;
+        }
+        await this.sendCommand(
+          'upload',
+          { path, size: filled, offSet: 0, chunk: false },
+          { id: createKokoUploadId(), raw: encodeSftpRaw(buffer.subarray(0, filled)) }
+        );
+        onProgress?.(filled, totalBytes);
+        return;
+      }
+
+      const id = createKokoUploadId();
+      const chunkBuffer = Buffer.allocUnsafe(SFTP_UPLOAD_CHUNK_BYTES);
+      await this.enqueue(async () => {
+        let offset = 0;
+        while (offset < totalBytes) {
+          let filled = 0;
+          const targetChunkSize = Math.min(SFTP_UPLOAD_CHUNK_BYTES, totalBytes - offset);
+          while (filled < targetChunkSize) {
+            const { bytesRead } = await fh.read(
+              chunkBuffer,
+              filled,
+              targetChunkSize - filled,
+              offset + filled
+            );
+            if (bytesRead === 0) {
+              break;
+            }
+            filled += bytesRead;
+          }
+          if (filled === 0) {
+            break;
+          }
+          await this.dispatchCommand(
+            'upload',
+            { path, size: totalBytes, offSet: offset, chunk: true },
+            { id, raw: encodeSftpRaw(chunkBuffer.subarray(0, filled)) }
+          );
+          offset += filled;
+          onProgress?.(offset, totalBytes);
+        }
+        await this.dispatchCommand('upload', { path, size: 0, offSet: 0, merge: true }, { id, raw: '' });
+      });
+    } finally {
+      await fh.close();
+    }
   }
 
   async stat(path: string): Promise<{ size: number; modifiedAt: number }> {

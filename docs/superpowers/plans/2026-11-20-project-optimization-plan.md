@@ -37,8 +37,8 @@
 | Task 2.2 | 补齐 SFTP 远程文件树交互体验（占位点击 & 高频操作） | P1 | UI / 交互 | `src/tree/SftpTreeProvider.ts`, `src/tree/SftpTreeItems.ts`, `src/extension.ts`, `package.json` | [x] |
 | Task 2.3 | 资产树图标体系、多账号选择与 `@INPUT` 提示国际化 | P1 | UI / 交互 | `src/tree/TreeItems.ts`, `src/tree/BastionTreeItem.ts`, `src/jumpserver/JumpServerClient.ts`, `src/webview/TerminalPanel.ts` | [x] |
 | Task 2.4 | 优化堡垒机配置面板体验（密码提示 / 测试连接 / 按钮状态） | P1 | UI / 交互 | `src/webview/JumpServerConfigPanel.ts`, `webview/jumpserver-config/*` | [x] |
-| Task 3.1 | 资产树节点索引缓存（大资产库展开性能优化） | P2 | 性能 | `src/tree/JumpServerTreeProvider.ts`, `test/tree/JumpServerTreeProvider.test.ts` | [ ] |
-| Task 3.2 | SFTP 大文件分块流式上传（避免整文件读入内存） | P2 | 性能 | `src/sftp/JumpServerSftpManager.ts`, `src/sftp/JumpServerSftpSession.ts`, `test/sftp/*` | [ ] |
+| Task 3.1 | 资产树节点索引缓存（大资产库展开性能优化） | P2 | 性能 | `src/tree/JumpServerTreeProvider.ts`, `test/tree/JumpServerTreeProvider.test.ts` | [x] |
+| Task 3.2 | SFTP 大文件分块流式上传（避免整文件读入内存） | P2 | 性能 | `src/sftp/JumpServerSftpManager.ts`, `src/sftp/JumpServerSftpSession.ts`, `test/sftp/*` | [x] |
 | Task 4.1 | 清理 l10n 生产包测试脏数据并加固 `nls.test.ts` 守卫 | P2 | 工程卫生 | `l10n/bundle.l10n.zh-cn.json`, `test/i18n/nls.test.ts` | [ ] |
 | Task 4.2 | 构建脚本去重与历史残留文件/目录清理 | P3 | 工程卫生 | `package.json`, 工作区历史 `.vsix` / `.tmp-*` / `.worktrees` | [ ] |
 | Task 4.3 | 巨石文件渐进式拆分（`JumpServerClient.ts` & `extension.ts`） | P3 | 架构 | `src/jumpserver/*`, `src/extension.ts`, `src/commands/*` | [ ] |
@@ -207,24 +207,24 @@
 ## 4. Phase 3：性能优化（P2）
 
 ### Task 3.1：资产树节点索引缓存（大资产库展开性能优化）
-- [ ] **现状与根因**：
+- [x] **现状与根因**：
   - `src/tree/JumpServerTreeProvider.ts`（第 43-50、92-133 行）在每次展开任意分组节点时，都会重新异步读取全部 `nodes`、`assets`、`trustOverlay`，按 `bastionId` 全量过滤并在 `normalizedNodePaths` 中重建整棵树路径表。当堡垒机资产达到数千至上限 `10_000` 条时，展开子目录存在重复计算开销。
-- [ ] **改造方案**：
+- [x] **改造方案**：
   1. 在 `JumpServerTreeProvider` 内增加按 `bastionId` 维度缓存的索引结构（`Map<string, BastionTreeIndex>`），预构建 `childNodePathsByParentKey` 与 `assetsByPathKey`，展开节点时做到 $O(1)$ 取子节点、仅按需构造展示项。
   2. 在 `refresh()` 被调用时清空索引缓存；保持对外 `JumpServerAssetSource` 接口不变，确保所有现有 tree tests 零破坏迁移。
-- [ ] **涉及文件**：`src/tree/JumpServerTreeProvider.ts`、`test/tree/JumpServerTreeProvider.test.ts`。
-- [ ] **验收标准**：`JumpServerTreeProvider.test.ts` 全绿，新增断言验证同一次树未刷新前多次展开子分组不会重复触发底层 `listCachedAssets()` 全量拉取。
+- [x] **涉及文件**：`src/tree/JumpServerTreeProvider.ts`、`test/tree/JumpServerTreeProvider.test.ts`。
+- [x] **验收标准**：`JumpServerTreeProvider.test.ts` 全绿，新增断言验证同一次树未刷新前多次展开子分组不会重复触发底层 `listCachedAssets()` 全量拉取。
 
 ### Task 3.2：SFTP 大文件分块流式上传
-- [ ] **现状与根因**：
+- [x] **现状与根因**：
   - 下载已通过 `JumpServerSftpSession.downloadFileToWriter` + `createWriteStream` 实现流式落盘（`src/sftp/JumpServerSftpManager.ts` 第 200-216 行），不整文件占用堆内存。
   - 但上传在 `src/sftp/JumpServerSftpManager.ts`（第 189-197 行）仍先执行 `const bytes = await readFile(localPath)` 将整个文件一次读入单个 `Buffer`，然后才交给 `uploadBytes` 按 4 MiB（`SFTP_UPLOAD_CHUNK_BYTES`）切片发送。上传数百 MB 文件时仍会短暂峰值占用同等内存。
-- [ ] **改造方案**：
+- [x] **改造方案**：
   1. 为 `JumpServerSftpSession` 与 `JumpServerSftpSessionLike` 增加可选方法 `uploadFromFile?(remotePath: string, localPath: string, onProgress?: SftpUploadProgress): Promise<void>`（或接收分块 `readChunk` 回调）。
   2. 内部使用 `node:fs/promises` 的 `open(localPath, 'r')` + 固定 `4 MiB` 复用缓冲区循环 `fh.read(...)` 并发送 `chunk: true` 帧，最后发送 `merge: true`（≤ `SFTP_UPLOAD_CHUNK_BYTES` 的小文件走单帧 `chunk: false` 保持单次往返）；在 `finally` 中确保关闭文件句柄 `fh.close()`。
   3. `JumpServerSftpManager.uploadFile` 优先调用 `session.uploadFromFile`，对未实现该方法的测试替身保持回退到 `readFile + uploadBytes`。
-- [ ] **涉及文件**：`src/sftp/JumpServerSftpSession.ts`、`src/sftp/JumpServerSftpManager.ts`、`test/sftp/JumpServerSftpSession.test.ts`、`test/sftp/JumpServerSftpManager.test.ts`。
-- [ ] **验收标准**：新增大文件（跨多片，如 > `SFTP_UPLOAD_CHUNK_BYTES`）分块读取上传单测，验证首尾分片、进度回调、句柄关闭及失败中断语义。
+- [x] **涉及文件**：`src/sftp/JumpServerSftpSession.ts`、`src/sftp/JumpServerSftpManager.ts`、`test/sftp/JumpServerSftpSession.test.ts`、`test/sftp/JumpServerSftpManager.test.ts`。
+- [x] **验收标准**：新增大文件（跨多片，如 > `SFTP_UPLOAD_CHUNK_BYTES`）分块读取上传单测，验证首尾分片、进度回调、句柄关闭及失败中断语义。
 
 ---
 

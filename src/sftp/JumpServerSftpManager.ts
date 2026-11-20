@@ -15,6 +15,8 @@ export interface JumpServerSftpSessionLike {
   rename(oldPath: string, newPath: string): Promise<void>;
   deleteEntry(path: string): Promise<void>;
   uploadBytes(path: string, bytes: Buffer, onProgress?: SftpUploadProgress): Promise<void>;
+  /** Sessions that can stream an upload chunk-by-chunk from disk expose this; the manager then never buffers a file. */
+  uploadFromFile?(path: string, localPath: string, onProgress?: SftpUploadProgress): Promise<void>;
   downloadFile(path: string, isDir?: boolean): Promise<Buffer>;
   /** Sessions that can stream a download chunk-by-chunk expose this; the manager then never buffers a file. */
   downloadFileToWriter?(path: string, isDir: boolean, write: (chunk: Buffer) => void | Promise<void>): Promise<void>;
@@ -189,11 +191,15 @@ export class JumpServerSftpManager {
 
   async uploadFile(localPath: string, remotePath: string, connectionKey?: string): Promise<void> {
     await this.transfers.run(t('Upload {path}', { path: remotePath }), async (progress) => {
-      const bytes = await readFile(localPath);
       const session = await this.ensureSession(this.requireConnection(connectionKey));
-      await session.uploadBytes(remotePath, bytes, (transferredBytes, totalBytes) =>
-        progress.report({ transferredBytes, totalBytes })
-      );
+      const reportProgress: SftpUploadProgress = (transferredBytes, totalBytes) =>
+        progress.report({ transferredBytes, totalBytes });
+      if (session.uploadFromFile) {
+        await session.uploadFromFile(remotePath, localPath, reportProgress);
+        return;
+      }
+      const bytes = await readFile(localPath);
+      await session.uploadBytes(remotePath, bytes, reportProgress);
     });
   }
 

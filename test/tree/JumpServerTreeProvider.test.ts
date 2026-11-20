@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import * as vscode from 'vscode';
 import { BastionTreeItem } from '../../src/tree/BastionTreeItem';
 import { JumpServerTreeProvider } from '../../src/tree/JumpServerTreeProvider';
@@ -332,5 +332,37 @@ describe('JumpServerTreeProvider', () => {
     expect(service.path).toEqual(['DEFAULT', 'PROD', 'service']);
     expect(serviceChildren[0]).toBeInstanceOf(AssetTreeItem);
     expect((serviceChildren[0] as AssetTreeItem).asset.id).toBe('asset-1');
+  });
+
+  it('caches tree index across group expansions until refresh is called', async () => {
+    const listBastions = vi.fn(async () => [b1Bastion]);
+    const listCachedAssets = vi.fn(async () => assets);
+    const listCachedAssetNodes = vi.fn(async () => []);
+    const listAssetTrustOverrides = vi.fn(async () => ({}));
+    const provider = new JumpServerTreeProvider({
+      listBastions,
+      listCachedAssets,
+      listCachedAssetNodes,
+      listAssetTrustOverrides
+    });
+
+    const [bastionRoot] = await provider.getChildren();
+    const groups = await provider.getChildren(bastionRoot);
+    const production = groups.find((item) => item.label === 'Production') as GroupTreeItem;
+    const prodChildren = await provider.getChildren(production);
+    const network = prodChildren.find((item) => item.label === 'Network') as GroupTreeItem;
+    const networkChildren = await provider.getChildren(network);
+    const gateway = networkChildren.find((item) => item.label === 'Gateway') as GroupTreeItem;
+    const gatewayChildren = await provider.getChildren(gateway);
+
+    expect((gatewayChildren[0] as AssetTreeItem).asset.id).toBe('asset-5');
+    expect(listCachedAssets).toHaveBeenCalledTimes(1);
+    expect(listCachedAssetNodes).toHaveBeenCalledTimes(1);
+    expect(listAssetTrustOverrides).toHaveBeenCalledTimes(1);
+
+    provider.refresh();
+    await provider.getChildren(bastionRoot);
+    expect(listCachedAssets).toHaveBeenCalledTimes(2);
+    expect(listCachedAssetNodes).toHaveBeenCalledTimes(2);
   });
 });
