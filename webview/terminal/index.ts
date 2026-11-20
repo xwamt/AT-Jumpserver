@@ -21,7 +21,7 @@ declare const acquireVsCodeApi: () => VsCodeApi;
 const vscode = acquireVsCodeApi();
 const container = document.querySelector<HTMLElement>('#terminal');
 const status = document.querySelector<HTMLElement>('#status');
-const reconnectBtn = document.querySelector<HTMLButtonElement>('#reconnectBtn');
+const reconnectBtn = document.querySelector<HTMLButtonElement>('#reconnect-btn');
 
 if (!container) {
   throw new Error('Missing terminal container');
@@ -99,9 +99,12 @@ const resizeObserver = new ResizeObserver(() => {
 resizeObserver.observe(container);
 window.addEventListener('resize', () => scheduleFit());
 
-reconnectBtn?.addEventListener('click', () => {
-  vscode.postMessage({ type: 'reconnect' });
-});
+if (reconnectBtn) {
+  reconnectBtn.addEventListener('click', () => {
+    reconnectBtn.disabled = true;
+    vscode.postMessage({ type: 'reconnect' });
+  });
+}
 
 window.addEventListener('message', (event: MessageEvent) => {
   const message = event.data as { type?: string; payload?: unknown; state?: unknown };
@@ -119,7 +122,7 @@ window.addEventListener('message', (event: MessageEvent) => {
     status.classList.toggle('terminal-status--disconnected', statusClass === 'disconnected');
     status.classList.toggle('terminal-status--connecting', statusClass === 'connecting');
     if (reconnectBtn) {
-      reconnectBtn.hidden = statusClass !== 'disconnected';
+      reconnectBtn.disabled = statusClass === 'connecting';
     }
   }
   if (message.type === 'settings' && message.payload && typeof message.payload === 'object') {

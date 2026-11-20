@@ -4,6 +4,28 @@
 
 ---
 
+## [v0.2.1] - 2026-10-16
+
+**CSRF 鉴权防御修复、终端会话快捷重连与交互文案精简！⚡️**
+
+本版本主要修复了在特定网络或反向代理环境下 JumpServer REST API 携带会话 Cookie 触发 Django CSRF 403 拦截的问题；同时在终端标签页中新增了一键重连按钮，优化了超时或断开连接后的交互体验，并精简了资产右键菜单文案。
+
+### 🌟 核心特性与修复
+
+#### 1. JumpServer REST 请求 CSRF 拦截修复 (CSRF & Auth Header Hardening)
+- **Session Cookie 隔离**：针对 Bearer Token / Signature 认证的无状态 REST API，避免盲目注入 Web 会话 Cookie，杜绝 Django REST Framework 误切换为 `SessionAuthentication` 导致的 CSRF 校验失败。
+- **安全请求头补齐**：统一为 JumpServer HTTP 请求注入 `Referer`（指向服务根路径）和 `Origin` 请求头，并在需要 Cookie 时自动补齐 `X-CSRFToken`，解决 HTTPS 下因缺少 Referer 导致的 `HTTP 403: CSRF Failed` 错误，告别重启 IDE 才能恢复连接的限制。
+
+#### 2. 终端标签页快捷重连 (Terminal Reconnect Action)
+- **Webview 头部一键重连**：终端顶部状态栏新增 `[ 🔄 重新连接 ]` 按钮，当会话超时或断开连接时自动高亮主按钮色，点击即可快速重新建立会话，无需关闭并重新打开标签页。
+- **防重复触发保护**：重连中自动禁用重连按钮并呈现旋转动画，状态清晰明确。
+- **编辑器标签栏联动**：在活动终端标签页右上角贡献快捷操作图标 `$(sync)`，与 Webview 内部重连保持联动。
+
+#### 3. 资产菜单文案优化 (Menu Label Simplification)
+- **菜单文本简化**：将资产树右键菜单中的“JumpServer: 设置资产信任级别”精简为“设置信任模式”。
+
+---
+
 ## [v0.2.0] - 2026-08-31
 
 **命令策略体系集成、全链路性能大幅提速与 0.2.0 正式发布！⚡️**

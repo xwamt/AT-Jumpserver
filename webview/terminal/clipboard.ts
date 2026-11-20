@@ -115,7 +115,11 @@ export function resolveTerminalStatusClass(
   }
   const lowerPayload = payload.toLowerCase();
   if (
-    lowerPayload.includes('disconnected') ||
+    lowerPayload.includes('disconnect') ||
+    lowerPayload.includes('failed') ||
+    lowerPayload.includes('error') ||
+    lowerPayload.includes('unavailable') ||
+    lowerPayload.includes('rejected') ||
     payload.includes('已断开') ||
     payload.includes('断开连接')
   ) {
