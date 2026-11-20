@@ -104,6 +104,7 @@ export const workspace = {
   getConfiguration: vi.fn(() => ({
     get: <T>(_key: string, defaultValue: T): T => defaultValue
   })),
+  onDidChangeConfiguration: vi.fn(() => ({ dispose: vi.fn() })),
   onDidCloseTextDocument: vi.fn(() => ({ dispose: vi.fn() })),
   onDidSaveTextDocument: vi.fn(() => ({ dispose: vi.fn() })),
   openTextDocument: vi.fn(async (uri) => ({ uri, languageId: 'plaintext' })),

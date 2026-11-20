@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import * as vscode from 'vscode';
 import { ZodError } from 'zod';
 import { bastionDisplayName, type JumpServerBastion } from '../config/schema';
+import { clearKokoCapabilityCache } from '../jumpserver/kokoCapability';
 import { formatError } from '../utils/errors';
 import { renderWebviewHtml, type WebviewAsset } from './html';
 import { t } from '../i18n/t';
@@ -78,6 +79,7 @@ export class JumpServerConfigPanel {
           },
           payload.password || undefined
         );
+        clearKokoCapabilityCache(savedId);
       } catch (error) {
         await vscode.window.showErrorMessage(
           t('JumpServer configuration was not saved. {message}', { message: formatSettingsError(error) })

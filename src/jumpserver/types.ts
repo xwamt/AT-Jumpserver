@@ -40,9 +40,11 @@ export type JumpServerAccountRef =
   | JumpServerAliasAccountRef
   | { id: string; alias?: string; username: string; hasSecret?: boolean; kind?: 'managed' };
 
+export type TerminalConnectionState = 'connecting' | 'connected' | 'disconnected';
+
 export interface TerminalEvents {
   output(data: Buffer): void;
-  status(message: string): void;
+  status(message: string, state?: TerminalConnectionState): void;
   error(error: unknown): void;
 }
 

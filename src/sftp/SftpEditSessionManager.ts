@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto';
-import { statSync } from 'node:fs';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import * as vscode from 'vscode';
 import { formatError } from '../utils/errors';
@@ -12,7 +11,6 @@ import { t } from '../i18n/t';
 
 export type SftpEditSyncState = 'idle' | 'pending' | 'uploading' | 'conflict' | 'failed';
 export type SftpEditConflictChoice = 'overwrite' | 'cancel';
-export type SftpEditCloseChoice = 'keep' | 'discard';
 
 export interface JumpServerSftpEditClient {
   getActiveConnectionKey(): string | undefined;
@@ -28,7 +26,6 @@ export interface SftpEditUi {
   resolveConflict(remotePath: string): Promise<SftpEditConflictChoice>;
   showStatus(state: SftpEditSyncState, message: string): void;
   showError(remotePath: string, message: string): Promise<void>;
-  promptUnsyncedClose(remotePath: string): Promise<SftpEditCloseChoice>;
 }
 
 export interface SftpEditSession {
@@ -248,14 +245,14 @@ export class SftpEditSessionManager {
 
     await this.options.sftp.uploadFile(session.localUri.fsPath, session.remotePath, session.connectionKey);
     const uploadedStat = await this.options.sftp.stat(session.remotePath, session.connectionKey);
-    this.verifyUploadedContent(session, uploadedStat);
+    await this.verifyUploadedContent(session, uploadedStat);
     session.baseRemoteStat = uploadedStat;
   }
 
-  private verifyUploadedContent(session: SftpEditSession, remoteStat: JumpServerSftpFileStat): void {
+  private async verifyUploadedContent(session: SftpEditSession, remoteStat: JumpServerSftpFileStat): Promise<void> {
     // A matching size right after our own upload is proof enough; re-reading
     // the whole remote file doubled every save's transfer cost.
-    const localSize = statSync(session.localUri.fsPath).size;
+    const localSize = (await stat(session.localUri.fsPath)).size;
     if (remoteStat.size !== localSize) {
       throw new Error(`Remote sync verification failed for ${session.remotePath}: remote size is ${remoteStat.size} bytes, expected ${localSize} bytes.`);
     }
@@ -284,6 +281,8 @@ export class SftpEditSessionManager {
 }
 
 export function createVscodeSftpEditUi(statusBarItem: vscode.StatusBarItem): SftpEditUi {
+  let hideTimer: ReturnType<typeof setTimeout> | undefined;
+
   return {
     async openFile(uri, remotePath) {
       const document = await vscode.workspace.openTextDocument(uri);
@@ -315,6 +314,10 @@ export function createVscodeSftpEditUi(statusBarItem: vscode.StatusBarItem): Sft
       return answer === overwriteAction ? 'overwrite' : 'cancel';
     },
     showStatus(state, message) {
+      if (hideTimer) {
+        clearTimeout(hideTimer);
+        hideTimer = undefined;
+      }
       statusBarItem.text =
         state === 'uploading'
           ? t('$(sync~spin) Uploading remote file...')
@@ -326,7 +329,10 @@ export function createVscodeSftpEditUi(statusBarItem: vscode.StatusBarItem): Sft
       statusBarItem.tooltip = message;
       statusBarItem.show();
       if (state === 'idle') {
-        setTimeout(() => statusBarItem.hide(), 2000);
+        hideTimer = setTimeout(() => {
+          hideTimer = undefined;
+          statusBarItem.hide();
+        }, 2000);
       }
     },
     async showError(remotePath, message) {
@@ -334,9 +340,6 @@ export function createVscodeSftpEditUi(statusBarItem: vscode.StatusBarItem): Sft
         t('Remote sync failed for {remotePath}: {message}', { remotePath, message }),
         'error'
       );
-    },
-    async promptUnsyncedClose() {
-      return 'discard';
     }
   };
 }

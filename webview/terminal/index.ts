@@ -21,6 +21,7 @@ declare const acquireVsCodeApi: () => VsCodeApi;
 const vscode = acquireVsCodeApi();
 const container = document.querySelector<HTMLElement>('#terminal');
 const status = document.querySelector<HTMLElement>('#status');
+const reconnectBtn = document.querySelector<HTMLButtonElement>('#reconnectBtn');
 
 if (!container) {
   throw new Error('Missing terminal container');
@@ -98,8 +99,12 @@ const resizeObserver = new ResizeObserver(() => {
 resizeObserver.observe(container);
 window.addEventListener('resize', () => scheduleFit());
 
+reconnectBtn?.addEventListener('click', () => {
+  vscode.postMessage({ type: 'reconnect' });
+});
+
 window.addEventListener('message', (event: MessageEvent) => {
-  const message = event.data as { type?: string; payload?: unknown };
+  const message = event.data as { type?: string; payload?: unknown; state?: unknown };
   writeTerminalOutputMessage(message, term, { semanticHighlight: container.dataset.semanticHighlight === 'true' });
   if (message.type === 'status' && typeof message.payload === 'string' && status) {
     const text = status.querySelector<HTMLElement>('.terminal-status-text');
@@ -108,10 +113,35 @@ window.addEventListener('message', (event: MessageEvent) => {
     } else {
       status.textContent = message.payload;
     }
-    const statusClass = resolveTerminalStatusClass(message.payload);
+    const explicitState = typeof message.state === 'string' ? message.state : undefined;
+    const statusClass = resolveTerminalStatusClass(message.payload, explicitState);
     status.classList.toggle('terminal-status--connected', statusClass === 'connected');
     status.classList.toggle('terminal-status--disconnected', statusClass === 'disconnected');
     status.classList.toggle('terminal-status--connecting', statusClass === 'connecting');
+    if (reconnectBtn) {
+      reconnectBtn.hidden = statusClass !== 'disconnected';
+    }
+  }
+  if (message.type === 'settings' && message.payload && typeof message.payload === 'object') {
+    const settingsPayload = message.payload as {
+      scrollback?: unknown;
+      fontSize?: unknown;
+      fontFamily?: unknown;
+      semanticHighlight?: unknown;
+    };
+    if (typeof settingsPayload.scrollback === 'number') {
+      term.options.scrollback = settingsPayload.scrollback;
+    }
+    if (typeof settingsPayload.fontSize === 'number') {
+      term.options.fontSize = settingsPayload.fontSize;
+    }
+    if (typeof settingsPayload.fontFamily === 'string' && settingsPayload.fontFamily.trim()) {
+      term.options.fontFamily = settingsPayload.fontFamily;
+    }
+    if (typeof settingsPayload.semanticHighlight === 'boolean') {
+      container.dataset.semanticHighlight = String(settingsPayload.semanticHighlight);
+    }
+    scheduleFit();
   }
 });
 

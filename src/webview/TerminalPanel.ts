@@ -4,6 +4,7 @@ import type { CachedJumpServerAsset } from '../config/schema';
 import { JumpServerClient } from '../jumpserver/JumpServerClient';
 import { connectionKindLabel, getAssetConnectionKind, type JumpServerConnectionKind } from '../jumpserver/connectionTypes';
 import { JumpServerSession } from '../jumpserver/JumpServerSession';
+import type { TerminalConnectionState } from '../jumpserver/types';
 import type { TerminalContextRegistry } from '../terminal/TerminalContext';
 import { formatError } from '../utils/errors';
 import { showTimedNotification } from '../utils/notifications';
@@ -13,7 +14,8 @@ import { t } from '../i18n/t';
 type TerminalMessage =
   | { type: 'ready'; rows: number; cols: number }
   | { type: 'input'; payload: string }
-  | { type: 'resize'; rows: number; cols: number };
+  | { type: 'resize'; rows: number; cols: number }
+  | { type: 'reconnect' };
 
 interface TerminalSessionLike {
   write(data: string): void;
@@ -62,12 +64,13 @@ export function createTerminalViewColumn(): vscode.ViewColumn {
   return vscode.ViewColumn.Active;
 }
 
-export function renderTerminalBody(settings: TerminalSettings): string {
+export function renderTerminalBody(settings: TerminalSettings, hostLabel = 'xterm.js'): string {
   return `<main class="terminal-shell">
   <header class="terminal-status terminal-status--connecting" id="status" role="status" aria-live="polite">
     <span class="terminal-status-dot"></span>
     <span class="terminal-status-text">${escapeAttr(t('Starting...'))}</span>
-    <span class="terminal-host">xterm.js</span>
+    <button type="button" id="reconnectBtn" class="terminal-reconnect-btn" hidden>${escapeAttr(t('Reconnect'))}</button>
+    <span class="terminal-host">${escapeAttr(hostLabel)}</span>
   </header>
   <section id="terminal" class="terminal-surface" data-scrollback="${escapeAttr(settings.scrollback)}" data-font-size="${escapeAttr(settings.fontSize)}" data-font-family="${escapeAttr(settings.fontFamily)}" data-semantic-highlight="${escapeAttr(settings.semanticHighlight)}"></section>
 </main>`;
@@ -117,12 +120,13 @@ export class TerminalPanel {
   private outputFlushTimer: ReturnType<typeof setTimeout> | undefined;
   private idleDisconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private lastActivityAt = Date.now();
+  private lastSize: { rows: number; cols: number } | undefined;
 
   private constructor(
     private readonly panel: vscode.WebviewPanel,
     private readonly asset: CachedJumpServerAsset,
     private readonly jumpServerClient: JumpServerClient,
-    private readonly settings: TerminalSettings,
+    private settings: TerminalSettings,
     private readonly terminalContext?: TerminalContextRegistry
   ) {
     this.connectionKind = getAssetConnectionKind(asset);
@@ -150,11 +154,12 @@ export class TerminalPanel {
 
     const settings = resolveTerminalSettings(vscode.workspace.getConfiguration('jumpserverManager'));
     const terminal = new TerminalPanel(panel, asset, jumpServerClient, settings, terminalContext);
+    const hostLabel = `${asset.address || asset.name} · ${connectionKindLabel(connectionKind)}`;
     TerminalPanel.active = terminal;
     panel.webview.html = renderWebviewHtml(
       panel.webview,
       createTerminalAssets(context.extensionUri),
-      renderTerminalBody(settings)
+      renderTerminalBody(settings, hostLabel)
     );
     terminal.bind();
     terminal.publishContext();
@@ -208,6 +213,12 @@ export class TerminalPanel {
     TerminalPanel.active = undefined;
   }
 
+  static syncConfiguration(settings: TerminalSettings): void {
+    for (const terminal of TerminalPanel.panels) {
+      terminal.applySettings(settings);
+    }
+  }
+
   static disposeSessionsForBastion(bastionId: string): string[] {
     const terminalIds: string[] = [];
     for (const terminal of Array.from(TerminalPanel.panels)) {
@@ -239,7 +250,7 @@ export class TerminalPanel {
       this.connected = false;
       this.terminalContext?.markDisconnected(this.terminalId);
       this.clearIdleDisconnect();
-      this.postStatus(formatError(error));
+      this.postStatus(formatError(error), 'disconnected');
     }
   }
 
@@ -247,7 +258,7 @@ export class TerminalPanel {
     const generation = ++this.connectionGeneration;
     this.currentTokenId = undefined;
     try {
-      this.postStatus(t('Reconnecting...'));
+      this.postStatus(t('Reconnecting...'), 'connecting');
       this.session.dispose();
       this.session = this.createSession(generation);
       await this.session.connect();
@@ -266,7 +277,7 @@ export class TerminalPanel {
       this.connected = false;
       this.terminalContext?.markDisconnected(this.terminalId);
       this.clearIdleDisconnect();
-      this.postStatus(formatError(error));
+      this.postStatus(formatError(error), 'disconnected');
     }
   }
 
@@ -277,7 +288,7 @@ export class TerminalPanel {
     this.session.dispose();
     this.connected = false;
     this.terminalContext?.markDisconnected(this.terminalId);
-    this.postStatus(reason ?? t('Disconnected'));
+    this.postStatus(reason ?? t('Disconnected'), 'disconnected');
     const notice = formatTerminalNotice(reason ?? t('Connection disconnected'));
     this.terminalContext?.appendOutput(this.terminalId, notice);
     this.postWebviewMessage({ type: 'output', payload: notice });
@@ -287,14 +298,24 @@ export class TerminalPanel {
   private bind(): void {
     this.panel.webview.onDidReceiveMessage((message: TerminalMessage) => {
       try {
+        if (message?.type === 'reconnect') {
+          void this.reconnect();
+          return;
+        }
         if (handleTerminalMessage(message, this.session)) {
+          if (message.type === 'ready' || message.type === 'resize') {
+            this.lastSize = { rows: message.rows, cols: message.cols };
+          }
           this.markActivity();
         }
       } catch (error) {
         // A session that has lost its peer rejects writes rather than dropping
         // them. Typing into one is a status line, not an exception thrown back
         // into VS Code's message dispatcher.
-        this.postStatus(formatError(error));
+        const messageText = formatError(error);
+        const state: TerminalConnectionState =
+          !this.connected || /unavailable/i.test(messageText) ? 'disconnected' : 'connected';
+        this.postStatus(messageText, state);
       }
     });
 
@@ -327,7 +348,7 @@ export class TerminalPanel {
   }
 
   private createSession(generation: number): JumpServerSession {
-    return new JumpServerSession({
+    const session = new JumpServerSession({
       asset: this.asset,
       connectionKind: this.connectionKind,
       client: this.jumpServerClient,
@@ -359,14 +380,34 @@ export class TerminalPanel {
           this.markActivity();
           this.queueOutput(data);
         },
-        status: (message) => this.handleSessionStatus(message, generation),
-        error: (error) => this.postStatus(formatError(error))
+        status: (message, state) => this.handleSessionStatus(message, generation, state),
+        error: (error) => this.postStatus(formatError(error), this.connected ? 'connected' : 'disconnected')
       }
     });
+    if (this.lastSize) {
+      session.resize(this.lastSize.rows, this.lastSize.cols);
+    }
+    return session;
   }
 
-  private postStatus(message: string): void {
-    this.postWebviewMessage({ type: 'status', payload: message });
+  private applySettings(settings: TerminalSettings): void {
+    this.settings = settings;
+    this.postWebviewMessage({
+      type: 'settings',
+      payload: {
+        scrollback: settings.scrollback,
+        fontSize: settings.fontSize,
+        fontFamily: settings.fontFamily,
+        semanticHighlight: settings.semanticHighlight
+      }
+    });
+    if (this.connected) {
+      this.armIdleDisconnect();
+    }
+  }
+
+  private postStatus(message: string, state: TerminalConnectionState): void {
+    this.postWebviewMessage({ type: 'status', state, payload: message });
   }
 
   /**
@@ -415,18 +456,24 @@ export class TerminalPanel {
     this.idleDisconnectTimer = undefined;
   }
 
-  private handleSessionStatus(message: string, generation: number): void {
-    if (message.startsWith('Disconnected') && generation === this.connectionGeneration) {
+  private handleSessionStatus(
+    message: string,
+    generation: number,
+    explicitState?: TerminalConnectionState
+  ): void {
+    const state = explicitState ?? inferTerminalState(message);
+    if (state === 'disconnected' && generation === this.connectionGeneration) {
       this.currentTokenId = undefined;
       this.connected = false;
       this.terminalContext?.markDisconnected(this.terminalId);
       this.clearIdleDisconnect();
-      const detail = message.slice('Disconnected'.length).trim();
-      const notice = formatTerminalNotice(`Connection disconnected${detail ? ` ${detail}` : ''}`);
+      const detail = extractDisconnectDetail(message);
+      const baseNotice = t('Connection disconnected');
+      const notice = formatTerminalNotice(detail ? `${baseNotice} ${detail}` : baseNotice);
       this.terminalContext?.appendOutput(this.terminalId, notice);
       this.postWebviewMessage({ type: 'output', payload: notice });
     }
-    this.postStatus(message);
+    this.postStatus(message, state);
   }
 
   private publishContext(): void {
@@ -490,8 +537,35 @@ export class TerminalPanel {
   }
 }
 
-export function renderTerminalHtml(webview: vscode.Webview, assets: WebviewAsset, settings: TerminalSettings): string {
-  return renderWebviewHtml(webview, assets, renderTerminalBody(settings));
+export function renderTerminalHtml(
+  webview: vscode.Webview,
+  assets: WebviewAsset,
+  settings: TerminalSettings,
+  hostLabel?: string
+): string {
+  return renderWebviewHtml(webview, assets, renderTerminalBody(settings, hostLabel));
+}
+
+function inferTerminalState(message: string): TerminalConnectionState {
+  if (message === 'Connected' || message === t('Connected') || message === '已连接') {
+    return 'connected';
+  }
+  const lower = message.toLowerCase();
+  if (lower.includes('disconnected') || message.includes('已断开') || message.includes('断开连接')) {
+    return 'disconnected';
+  }
+  return 'connecting';
+}
+
+function extractDisconnectDetail(message: string): string {
+  const localizedPrefix = t('Disconnected');
+  if (message.startsWith(localizedPrefix)) {
+    return message.slice(localizedPrefix.length).trim();
+  }
+  if (message.startsWith('Disconnected')) {
+    return message.slice('Disconnected'.length).trim();
+  }
+  return '';
 }
 
 /**

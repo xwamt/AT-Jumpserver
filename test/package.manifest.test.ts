@@ -104,16 +104,12 @@ describe('AT JumpServer Terminal manifest', () => {
     });
   });
 
-  it('shows the connect menu for SSH, MySQL, Redis, and unsupported JumpServer assets', () => {
+  it('omits the connect action from asset hover/context menus since clicking an asset connects directly', () => {
     const connectMenu = manifest.contributes.menus['view/item/context'].find(
       (item: { command: string }) => item.command === 'jumpserverManager.connect'
     );
 
-    expect(connectMenu.when).toContain('view == jumpserverManager.assets');
-    expect(connectMenu.when).toContain('jumpserverAsset');
-    expect(connectMenu.when).toContain('jumpserverMysqlAsset');
-    expect(connectMenu.when).toContain('jumpserverRedisAsset');
-    expect(connectMenu.when).toContain('jumpserverUnsupportedAsset');
+    expect(connectMenu).toBeUndefined();
   });
 
   it('shows Copy Host IP for SSH, MySQL, Redis, and unsupported JumpServer assets', () => {
@@ -144,7 +140,6 @@ describe('AT JumpServer Terminal manifest', () => {
     );
 
     expect(assetMenus.map((item: { command: string }) => item.command)).toEqual([
-      'jumpserverManager.connect',
       'jumpserverManager.copyHostIp',
       'jumpserverManager.setAssetTrust'
     ]);
@@ -211,5 +206,22 @@ describe('AT JumpServer Terminal manifest', () => {
       expect.objectContaining({ command: 'jumpserverManager.sftp.preview', group: 'open@2' })
     ]));
     expect(fileActionMenus.every((item: { group: string }) => !item.group.startsWith('inline'))).toBe(true);
+  });
+
+  it('gives every inline view/item/context command a non-empty icon so hover never shows long text', () => {
+    const commandsById = new Map<string, { command: string; icon?: unknown }>(
+      manifest.contributes.commands.map((command: { command: string; icon?: unknown }) => [command.command, command])
+    );
+    const inlineMenus = manifest.contributes.menus['view/item/context'].filter((item: { group?: string }) =>
+      typeof item.group === 'string' && item.group.startsWith('inline')
+    );
+
+    expect(inlineMenus.length).toBeGreaterThan(0);
+    for (const menu of inlineMenus) {
+      const command = commandsById.get(menu.command);
+      expect(command, menu.command).toBeDefined();
+      expect(typeof command?.icon === 'string' ? command.icon.trim() : '', menu.command).not.toBe('');
+    }
+    expect(commandsById.get('jumpserverManager.refreshBastion')?.icon).toBe('$(refresh)');
   });
 });

@@ -223,4 +223,17 @@ describe('terminal status classes', () => {
   it('treats plain disconnect notices as disconnected status', () => {
     expect(resolveTerminalStatusClass('Disconnected after 30 minute(s) of inactivity.')).toBe('disconnected');
   });
+
+  it('prefers explicit structured state when provided', () => {
+    expect(resolveTerminalStatusClass('正在加载资产信息', 'connecting')).toBe('connecting');
+    expect(resolveTerminalStatusClass('已连接', 'connected')).toBe('connected');
+    expect(resolveTerminalStatusClass('已断开连接', 'disconnected')).toBe('disconnected');
+  });
+
+  it('recognizes Chinese connected and disconnected fallback texts', () => {
+    expect(resolveTerminalStatusClass('已连接')).toBe('connected');
+    expect(resolveTerminalStatusClass('已断开连接')).toBe('disconnected');
+    expect(resolveTerminalStatusClass('因无操作达 30 分钟已断开连接。')).toBe('disconnected');
+    expect(resolveTerminalStatusClass('正在打开 KoKo 终端')).toBe('connecting');
+  });
 });

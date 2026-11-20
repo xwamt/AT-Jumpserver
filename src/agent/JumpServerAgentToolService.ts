@@ -63,18 +63,25 @@ export class JumpServerAgentToolService {
     this.evaluateShellPolicy = dependencies.evaluateShellPolicy ?? evaluateShellCommandPolicy;
     this.evaluateMysqlPolicy = dependencies.evaluateMysqlPolicy ?? evaluateMysqlCommandPolicy;
     this.evaluateRedisPolicy = dependencies.evaluateRedisPolicy ?? evaluateRedisCommandPolicy;
+    dependencies.terminalContext.onDidRemoveContext?.((terminalId) => {
+      this.terminalQueues.delete(terminalId);
+    });
   }
 
   private enqueueTerminal<T>(terminalId: string, task: () => Promise<T>): Promise<T> {
     const previous = this.terminalQueues.get(terminalId) ?? Promise.resolve();
     const next = previous.catch(() => undefined).then(task);
-    this.terminalQueues.set(
-      terminalId,
-      next.then(
+    const tail = next
+      .then(
         () => undefined,
         () => undefined
       )
-    );
+      .finally(() => {
+        if (this.terminalQueues.get(terminalId) === tail) {
+          this.terminalQueues.delete(terminalId);
+        }
+      });
+    this.terminalQueues.set(terminalId, tail);
     return next;
   }
 

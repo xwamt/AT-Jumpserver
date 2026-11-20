@@ -104,7 +104,7 @@ describe('JumpServerSession', () => {
       type: 'TERMINAL_INIT',
       data: JSON.stringify({ cols: 80, rows: 24, code: '' })
     }));
-    expect(events.status).toHaveBeenCalledWith('Connected');
+    expect(events.status).toHaveBeenCalledWith('Connected', 'connected');
   });
 
   it('logs how long a KoKo terminal connect took', async () => {
@@ -244,7 +244,7 @@ describe('JumpServerSession', () => {
       data: JSON.stringify({ cols: 80, rows: 24, code: '' })
     }));
     expect(events.output).not.toHaveBeenCalled();
-    expect(events.status).toHaveBeenCalledWith('Connected');
+    expect(events.status).toHaveBeenCalledWith('Connected', 'connected');
   });
 
   it('handles KoKo PING heartbeats without writing JSON into the terminal', async () => {
@@ -284,6 +284,66 @@ describe('JumpServerSession', () => {
     }));
   });
 
+  it('preserves resize dimensions arrived before connect completes for openKokoWebSocket and TERMINAL_INIT', async () => {
+    const socketDeferred = deferred<FakeSocket>();
+    const fakeClient = {
+      ...client(socket),
+      openKokoWebSocket: vi.fn().mockReturnValue(socketDeferred.promise)
+    };
+    const session = new JumpServerSession({
+      asset: { id: 'asset-1', name: 'web-1' },
+      connectionKind: 'ssh',
+      client: fakeClient,
+      events
+    });
+
+    const connecting = session.connect();
+    await vi.waitFor(() => expect(fakeClient.openKokoWebSocket).toHaveBeenCalled());
+    // Ready resize arrives before the KoKo socket has finished opening.
+    session.resize(40, 160);
+    socketDeferred.resolve(socket);
+    await connecting;
+    socket.emit('message', JSON.stringify({ id: 'connect-1', type: 'CONNECT', data: '{}' }));
+
+    expect(socket.sent).toContain(JSON.stringify({
+      id: 'connect-1',
+      type: 'TERMINAL_INIT',
+      data: JSON.stringify({ cols: 160, rows: 40, code: '' })
+    }));
+  });
+
+  it('uses resize dimensions received before openKokoWebSocket starts when opening the socket', async () => {
+    const detailDeferred = deferred<Record<string, any>>();
+    const fakeClient = {
+      ...client(socket),
+      getAssetDetail: vi.fn().mockReturnValue(detailDeferred.promise)
+    };
+    const session = new JumpServerSession({
+      asset: { id: 'asset-1', name: 'web-1' },
+      connectionKind: 'ssh',
+      client: fakeClient,
+      events
+    });
+
+    const connecting = session.connect();
+    session.resize(40, 160);
+    detailDeferred.resolve(assetDetail());
+    await connecting;
+    socket.emit('message', JSON.stringify({ id: 'connect-1', type: 'CONNECT', data: '{}' }));
+
+    expect(fakeClient.openKokoWebSocket).toHaveBeenCalledWith({
+      endpoint: { host: 'koko.example.com', https_port: 443 },
+      tokenId: 'token-1',
+      cols: 160,
+      rows: 40
+    });
+    expect(socket.sent).toContain(JSON.stringify({
+      id: 'connect-1',
+      type: 'TERMINAL_INIT',
+      data: JSON.stringify({ cols: 160, rows: 40, code: '' })
+    }));
+  });
+
   it('forwards upstream bytes and closes cleanly', async () => {
     const session = new JumpServerSession({ asset: { id: 'asset-1', name: 'web-1' }, connectionKind: 'ssh', client: client(socket), events });
     await session.connect();
@@ -301,7 +361,7 @@ describe('JumpServerSession', () => {
 
     socket.emit('close', 4001, Buffer.from('idle timeout', 'utf8'));
 
-    expect(events.status).toHaveBeenCalledWith('Disconnected (code 4001: idle timeout)');
+    expect(events.status).toHaveBeenCalledWith('Disconnected (code 4001: idle timeout)', 'disconnected');
   });
 
   it('reports normal remote websocket close codes too', async () => {
@@ -310,7 +370,7 @@ describe('JumpServerSession', () => {
 
     socket.emit('close', 1000, Buffer.alloc(0));
 
-    expect(events.status).toHaveBeenCalledWith('Disconnected (code 1000)');
+    expect(events.status).toHaveBeenCalledWith('Disconnected (code 1000)', 'disconnected');
   });
 
 
@@ -533,7 +593,7 @@ describe('JumpServerSession dispose during an in-flight connect', () => {
       expect(vi.getTimerCount()).toBe(0);
       socket.emit('message', JSON.stringify({ id: 'connect-1', type: 'CONNECT', data: '{}' }));
       expect(socket.sent).toEqual([]);
-      expect(events.status).not.toHaveBeenCalledWith('Connected');
+      expect(events.status).not.toHaveBeenCalledWith('Connected', expect.anything());
       expect(session.isConnected()).toBe(false);
     } finally {
       vi.useRealTimers();
@@ -592,7 +652,7 @@ describe('JumpServerSession dispose during an in-flight connect', () => {
     expect(fakeClient.createConnectionToken).toHaveBeenCalledWith(
       expect.objectContaining({ protocol: 'ssh' })
     );
-    expect(events.status).toHaveBeenCalledWith('Opening KoKo terminal');
+    expect(events.status).toHaveBeenCalledWith('Opening KoKo terminal', 'connecting');
   });
 
   it('B1 Step 6: skips ensureWebSession when server is detected as 5.0', async () => {

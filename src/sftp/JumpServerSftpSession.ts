@@ -55,6 +55,9 @@ export const SFTP_UPLOAD_CHUNK_BYTES = 4 * 1024 * 1024;
  */
 export const SFTP_DOWNLOAD_MEMORY_CAP_BYTES = 512 * 1024 * 1024;
 
+export const SFTP_HEARTBEAT_INTERVAL_MS = 20_000;
+export const SFTP_HEARTBEAT_TIMEOUT_MS = 15_000;
+
 export interface JumpServerSftpSessionAsset {
   id: string;
   name: string;
@@ -108,6 +111,8 @@ export class JumpServerSftpSession {
   private disposed = false;
   private connectResolver: (() => void) | undefined;
   private connectRejecter: ((error: Error) => void) | undefined;
+  private heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+  private pongTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly pending = new Map<string, PendingCommand>();
   private currentPath = '/';
   private readonly listCache = new Map<string, { at: number; resolvedPath: string; entries: JumpServerSftpEntry[] }>();
@@ -335,6 +340,7 @@ export class JumpServerSftpSession {
 
   dispose(): void {
     this.disposed = true;
+    this.stopHeartbeat();
     const rejectConnect = this.connectRejecter;
     this.connectResolver = undefined;
     this.connectRejecter = undefined;
@@ -424,13 +430,73 @@ export class JumpServerSftpSession {
       () => this.sendWhenDrained(id, frame, waitedMs + SFTP_DRAIN_POLL_MS),
       SFTP_DRAIN_POLL_MS
     );
-    (timer as unknown as { unref?: () => void }).unref?.();
+    unrefTimer(timer);
   }
 
   private bindSocket(socket: KokoWebSocket): void {
     socket.on('message', (message: Buffer | string) => this.handleSocketMessage(message));
     socket.on('close', () => this.handleClose(new Error('SFTP websocket closed.')));
     socket.on('error', (error) => this.handleClose(error instanceof Error ? error : new Error(String(error))));
+    socket.on('pong', () => this.clearPongDeadline());
+    this.startHeartbeat();
+  }
+
+  private startHeartbeat(): void {
+    this.stopHeartbeat();
+    if (this.disposed) {
+      return;
+    }
+    this.heartbeatTimer = unrefTimer(setInterval(() => this.sendHeartbeat(), SFTP_HEARTBEAT_INTERVAL_MS));
+  }
+
+  private sendHeartbeat(): void {
+    if (!this.socket || this.disposed || this.pongTimer) {
+      return;
+    }
+    if (typeof (this.socket as { ping?: unknown }).ping !== 'function') {
+      return;
+    }
+    this.pongTimer = unrefTimer(setTimeout(() => this.failHeartbeat(), SFTP_HEARTBEAT_TIMEOUT_MS));
+    try {
+      this.socket.ping();
+    } catch (error) {
+      this.failHeartbeat(error);
+    }
+  }
+
+  private clearPongDeadline(): void {
+    if (!this.pongTimer) {
+      return;
+    }
+    clearTimeout(this.pongTimer);
+    this.pongTimer = undefined;
+  }
+
+  private stopHeartbeat(): void {
+    this.clearPongDeadline();
+    if (!this.heartbeatTimer) {
+      return;
+    }
+    clearInterval(this.heartbeatTimer);
+    this.heartbeatTimer = undefined;
+  }
+
+  private failHeartbeat(cause?: unknown): void {
+    if (!this.socket && !this.connected) {
+      return;
+    }
+    log.warn(
+      `KoKo SFTP for ${this.input.asset.name} stopped answering heartbeats within ${SFTP_HEARTBEAT_TIMEOUT_MS}ms` +
+        `${cause ? `: ${String(cause)}` : ''}; dropping the session.`
+    );
+    const socket = this.socket;
+    this.socket = undefined;
+    this.handleClose(
+      new Error(`SFTP websocket disconnected (no heartbeat response within ${SFTP_HEARTBEAT_TIMEOUT_MS}ms)`)
+    );
+    if (socket) {
+      closeSocketNow(socket);
+    }
   }
 
   private handleSocketMessage(raw: Buffer | string): void {
@@ -527,7 +593,9 @@ export class JumpServerSftpSession {
   }
 
   private handleClose(error: Error): void {
+    this.stopHeartbeat();
     this.connected = false;
+    this.socket = undefined;
     this.listCache.clear();
     this.connectRejecter?.(error);
     this.connectResolver = undefined;
@@ -541,6 +609,11 @@ export class JumpServerSftpSession {
     }
     this.pending.clear();
   }
+}
+
+function unrefTimer<T>(timer: T): T {
+  (timer as unknown as { unref?: () => void }).unref?.();
+  return timer;
 }
 
 function createKokoUploadId(): string {

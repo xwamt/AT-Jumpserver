@@ -23,6 +23,7 @@ export interface JumpServerSftpSessionLike {
   readFile(path: string, maxBytes: number): Promise<Buffer>;
   writeFile(path: string, content: Buffer): Promise<void>;
   createFile(path: string): Promise<void>;
+  isConnected?(): boolean;
   dispose(): void;
 }
 
@@ -247,7 +248,11 @@ export class JumpServerSftpManager {
 
   private async ensureSession(connection: ManagedConnection): Promise<JumpServerSftpSessionLike> {
     if (connection.session) {
-      return connection.session;
+      if (connection.session.isConnected?.() !== false) {
+        return connection.session;
+      }
+      connection.session.dispose();
+      connection.session = undefined;
     }
     if (connection.sessionPromise) {
       return connection.sessionPromise;

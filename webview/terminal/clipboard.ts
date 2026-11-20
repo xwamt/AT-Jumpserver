@@ -103,12 +103,22 @@ export function installTerminalClipboardPasteHandler(terminal: PasteTerminal, ta
   );
 }
 
-export function resolveTerminalStatusClass(payload: string): 'connected' | 'disconnected' | 'connecting' {
-  if (payload === 'Connected') {
+export function resolveTerminalStatusClass(
+  payload: string,
+  state?: string
+): 'connected' | 'disconnected' | 'connecting' {
+  if (state === 'connected' || state === 'disconnected' || state === 'connecting') {
+    return state;
+  }
+  if (payload === 'Connected' || payload === '已连接') {
     return 'connected';
   }
   const lowerPayload = payload.toLowerCase();
-  if (lowerPayload.includes('disconnected')) {
+  if (
+    lowerPayload.includes('disconnected') ||
+    payload.includes('已断开') ||
+    payload.includes('断开连接')
+  ) {
     return 'disconnected';
   }
   return 'connecting';

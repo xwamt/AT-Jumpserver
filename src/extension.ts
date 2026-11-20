@@ -8,7 +8,7 @@ import { assetPathsFromNodes, JumpServerClient } from './jumpserver/JumpServerCl
 import { JumpServerClientPool } from './jumpserver/JumpServerClientPool';
 import { createWebSessionSecretStore } from './jumpserver/webSessionStore';
 import { resolveOrgContext } from './jumpserver/orgContext';
-import { detectKokoCapabilities, isKokoCookieLess } from './jumpserver/kokoCapability';
+import { clearKokoCapabilityCache, detectKokoCapabilities, isKokoCookieLess } from './jumpserver/kokoCapability';
 import { confirmWithTimeout } from './mcp/confirmTimeout';
 import type { McpRuntimeHandle } from './mcp/mcpRuntime';
 import { assertTextFileEditable, DEFAULT_SFTP_EDIT_MAX_BYTES } from './sftp/SftpFileGuards';
@@ -27,7 +27,7 @@ import { log, setLogSink } from './utils/logger';
 import { showTimedNotification } from './utils/notifications';
 import { errorMessage } from './utils/redaction';
 import { JumpServerConfigPanel } from './webview/JumpServerConfigPanel';
-import { TerminalPanel } from './webview/TerminalPanel';
+import { resolveTerminalSettings, TerminalPanel } from './webview/TerminalPanel';
 import { t } from './i18n/t';
 
 let extensionCleanup: { dispose(): void } | undefined;
@@ -256,6 +256,13 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.tabGroups.onDidChangeTabs((event) => {
       void sftpPreviewStore.deletePreviewFilesForClosedTabs(event.closed);
     }),
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (event.affectsConfiguration('jumpserverManager')) {
+        TerminalPanel.syncConfiguration(
+          resolveTerminalSettings(vscode.workspace.getConfiguration('jumpserverManager'))
+        );
+      }
+    }),
     cleanup,
     vscode.commands.registerCommand('jumpserverManager.configure', async () => {
       await runCommand(async () => {
@@ -314,6 +321,7 @@ export function activate(context: vscode.ExtensionContext): void {
         }
         await configManager.deleteBastion(bastion.id);
         clientPool?.drop(bastion.id);
+        clearKokoCapabilityCache(bastion.id);
         for (const terminalId of TerminalPanel.disposeSessionsForBastion(bastion.id)) {
           sftpManager.removeTerminal(terminalId);
         }

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { t } from '../i18n/t';
 import { UserVisibleError } from '../utils/errors';
 import { log } from '../utils/logger';
 import { extractProtocolNames, resolveFirstUsableAccount, type KokoWebSocket } from './JumpServerClient';
@@ -100,7 +101,7 @@ export class JumpServerSession {
     const timings = { detail: 0, token: 0, endpoint: 0, ws: 0 };
     let wsAttempted = false;
     try {
-      this.input.events.status('Loading asset');
+      this.input.events.status(t('Loading asset'), 'connecting');
       const client = this.input.client;
       // The Django form login KoKo cookies come from needs no token and no
       // asset detail, so it overlaps the whole REST leg below. A failure is
@@ -184,7 +185,7 @@ export class JumpServerSession {
         }
       }
 
-      this.input.events.status('Creating connection token');
+      this.input.events.status(t('Creating connection token'), 'connecting');
       const tokenPromise = step(() => client.createConnectionToken({
         assetId: this.input.asset.id,
         account,
@@ -217,7 +218,7 @@ export class JumpServerSession {
         return;
       }
 
-      this.input.events.status('Opening KoKo terminal');
+      this.input.events.status(t('Opening KoKo terminal'), 'connecting');
       wsAttempted = true;
       const socket = await step(() => client.openKokoWebSocket({
         endpoint,
@@ -291,11 +292,14 @@ export class JumpServerSession {
    * user has to dismiss, and there is no message to lose.
    */
   resize(rows: number, cols: number): void {
-    if (rows <= 0 || cols <= 0 || !this.socket || this.unavailableReason) {
+    if (rows <= 0 || cols <= 0 || this.unavailableReason) {
       return;
     }
     this.rows = rows;
     this.cols = cols;
+    if (!this.socket) {
+      return;
+    }
     this.socket.send(JSON.stringify({
       id: '',
       type: 'TERMINAL_RESIZE',
@@ -323,12 +327,13 @@ export class JumpServerSession {
     socket.on('close', (code?: number, reason?: Buffer | string) => {
       this.stopHeartbeat();
       this.connected = false;
+      const rawStatus = formatRawSocketCloseStatus(code, reason);
       const status = formatSocketCloseStatus(code, reason);
-      this.markUnavailable(status.toLowerCase());
+      this.markUnavailable(rawStatus.toLowerCase());
       if (!this.disconnectReported) {
         this.disconnectReported = true;
-        log.info(`KoKo terminal for ${this.input.asset.name}: ${status}`);
-        this.input.events.status(status);
+        log.info(`KoKo terminal for ${this.input.asset.name}: ${rawStatus}`);
+        this.input.events.status(status, 'disconnected');
       }
     });
     socket.on('error', (error) => this.input.events.error(error));
@@ -394,7 +399,7 @@ export class JumpServerSession {
     if (this.unavailableReason) {
       return;
     }
-    const status = `Disconnected (no heartbeat response within ${HEARTBEAT_TIMEOUT_MS}ms)`;
+    const status = t('Disconnected (no heartbeat response within {ms}ms)', { ms: HEARTBEAT_TIMEOUT_MS });
     // The asset name is safe to print; the KoKo URL carries the connection token
     // and never reaches this class, which is why nothing here has to redact one.
     log.warn(
@@ -410,7 +415,7 @@ export class JumpServerSession {
     // `close()` politely waits for a close frame from a peer that has already
     // stopped reading. Only `terminate()` frees the socket now.
     socket?.terminate();
-    this.input.events.status(status);
+    this.input.events.status(status, 'disconnected');
   }
 
   private handleSocketMessage(message: Buffer | string, isBinary: boolean): void {
@@ -434,7 +439,7 @@ export class JumpServerSession {
       };
       this.socket?.send(JSON.stringify(init));
       this.connected = true;
-      this.input.events.status('Connected');
+      this.input.events.status(t('Connected'), 'connected');
       return true;
     }
     if (payload.type === 'PING') {
@@ -485,7 +490,7 @@ function discardSocket(socket: KokoWebSocket): void {
   socket.terminate();
 }
 
-function formatSocketCloseStatus(code?: number, reason?: Buffer | string): string {
+function closeDetails(code?: number, reason?: Buffer | string): string[] {
   const details: string[] = [];
   if (typeof code === 'number') {
     details.push(`code ${code}`);
@@ -494,7 +499,19 @@ function formatSocketCloseStatus(code?: number, reason?: Buffer | string): strin
   if (textReason?.trim()) {
     details.push(textReason.trim());
   }
+  return details;
+}
+
+function formatRawSocketCloseStatus(code?: number, reason?: Buffer | string): string {
+  const details = closeDetails(code, reason);
   return details.length > 0 ? `Disconnected (${details.join(': ')})` : 'Disconnected';
+}
+
+function formatSocketCloseStatus(code?: number, reason?: Buffer | string): string {
+  const details = closeDetails(code, reason);
+  return details.length > 0
+    ? t('Disconnected ({details})', { details: details.join(': ') })
+    : t('Disconnected');
 }
 
 function parseKokoControlMessage(message: string): { id?: string; type?: string; data?: unknown } | undefined {

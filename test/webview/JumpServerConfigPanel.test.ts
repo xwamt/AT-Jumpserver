@@ -2,6 +2,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as vscode from 'vscode';
 import { parseJumpServerBastion } from '../../src/config/schema';
 import {
+  clearKokoCapabilityCache,
+  detectKokoCapabilities,
+  isKokoCookieLess
+} from '../../src/jumpserver/kokoCapability';
+import {
   createConfigAssets,
   JumpServerConfigPanel,
   renderJumpServerConfigBody
@@ -342,5 +347,38 @@ describe('JumpServerConfigPanel', () => {
     const disposeOrder = vi.mocked(panelHost.panel.dispose).mock.invocationCallOrder[0];
     const refreshOrder = vi.mocked(vscode.commands.executeCommand).mock.invocationCallOrder[0];
     expect(disposeOrder).toBeLessThan(refreshOrder);
+  });
+
+  it('clears the cached KoKo capability for the saved bastion after editing', async () => {
+    clearKokoCapabilityCache();
+    await detectKokoCapabilities(
+      { getClientVersions: async () => ['5.0.0'] },
+      FIXED_BASTION_ID
+    );
+    expect(isKokoCookieLess(FIXED_BASTION_ID)).toBe(true);
+
+    const panelHost = createPanel();
+    vi.spyOn(vscode.window, 'createWebviewPanel').mockReturnValue(panelHost.panel);
+    await JumpServerConfigPanel.open(
+      extensionContext(),
+      { getBastion: async () => undefined, saveBastion: async () => undefined },
+      { mode: 'edit', bastionId: FIXED_BASTION_ID },
+      idFactory
+    );
+
+    await panelHost.fireMessage({
+      type: 'save',
+      payload: {
+        displayName: 'prod',
+        bastionId: FIXED_BASTION_ID,
+        baseUrl: 'https://legacy.example.com/',
+        orgId: '',
+        username: 'alan',
+        password: '',
+        verifyTls: true
+      }
+    });
+
+    expect(isKokoCookieLess(FIXED_BASTION_ID)).toBeUndefined();
   });
 });

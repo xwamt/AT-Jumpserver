@@ -38,7 +38,7 @@ export class JumpServerClientPool {
     settings: JumpServerSettingsWithPassword,
     options?: JumpServerClientAcquireOptions
   ): JumpServerClient {
-    const identity = clientCacheIdentity(settings);
+    const identity = clientCacheIdentity(settings, options);
     const cached = this.entries.get(bastionId);
     if (cached && cached.identity === identity) {
       cached.client.setOrgId(settings.orgId);
@@ -96,6 +96,15 @@ function attachWebSessionStore(client: JumpServerClient, store: JumpServerWebSes
   }
 }
 
-function clientCacheIdentity(settings: JumpServerSettingsWithPassword): string {
-  return [settings.baseUrl, settings.username, settings.password, settings.verifyTls ? '1' : '0'].join('\0');
+function clientCacheIdentity(
+  settings: JumpServerSettingsWithPassword,
+  options?: JumpServerClientAcquireOptions
+): string {
+  return [
+    settings.baseUrl,
+    settings.username,
+    settings.password,
+    settings.verifyTls ? '1' : '0',
+    options?.kokoBearerHandshake ? '1' : '0'
+  ].join('\0');
 }

@@ -5,7 +5,9 @@ import { JumpServerSftpSession } from '../../src/sftp/JumpServerSftpSession';
 class FakeSocket extends EventEmitter {
   readonly send = vi.fn();
   readonly close = vi.fn();
-  readonly ping = vi.fn();
+  readonly ping = vi.fn(() => {
+    this.emit('pong');
+  });
   readonly terminate = vi.fn();
   /** What `ws` has accepted but not yet handed to the kernel. */
   bufferedAmount = 0;

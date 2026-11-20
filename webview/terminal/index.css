@@ -58,6 +58,25 @@ body {
   font-weight: 600;
 }
 
+.terminal-reconnect-btn {
+  padding: 2px 8px;
+  font: 11px var(--vscode-font-family);
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+  border: 0;
+  border-radius: 3px;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.terminal-reconnect-btn:hover {
+  background: var(--vscode-button-hoverBackground, var(--vscode-button-background));
+}
+
+.terminal-reconnect-btn[hidden] {
+  display: none;
+}
+
 .terminal-host {
   margin-left: auto;
   overflow: hidden;

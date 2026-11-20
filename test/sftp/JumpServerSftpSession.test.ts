@@ -1,7 +1,9 @@
 import { EventEmitter } from 'node:events';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   JumpServerSftpSession,
+  SFTP_HEARTBEAT_INTERVAL_MS,
+  SFTP_HEARTBEAT_TIMEOUT_MS,
   SFTP_UPLOAD_CHUNK_BYTES,
   type JumpServerSftpSessionClient
 } from '../../src/sftp/JumpServerSftpSession';
@@ -10,6 +12,12 @@ class FakeSocket extends EventEmitter {
   readonly send = vi.fn();
   readonly close = vi.fn();
   readonly terminate = vi.fn();
+  answersPings = true;
+  readonly ping = vi.fn(() => {
+    if (this.answersPings) {
+      this.emit('pong');
+    }
+  });
   /** A socket that always claims an empty queue, so send backpressure never engages here. */
   readonly bufferedAmount = 0;
 
@@ -17,6 +25,10 @@ class FakeSocket extends EventEmitter {
     this.emit('message', JSON.stringify(message));
   }
 }
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 function client(socket: FakeSocket): JumpServerSftpSessionClient & {
   createConnectionToken: ReturnType<typeof vi.fn>;
@@ -560,6 +572,82 @@ describe('JumpServerSftpSession', () => {
     });
 
     await expect(download).rejects.toThrow(/in-memory limit/i);
+  });
+
+  it('drops the SFTP session, rejects pending commands, and clears timers when heartbeat pongs stop', async () => {
+    vi.useFakeTimers();
+    const socket = new FakeSocket();
+    socket.answersPings = false;
+    const session = new JumpServerSftpSession({ asset: { id: 'asset-1', name: 'web-1' }, client: client(socket) });
+    const connecting = session.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    socket.emitMessage({ id: 'ws-1', type: 'CONNECT', data: '{}' });
+    await connecting;
+
+    const pendingList = session.listDirectory('/tmp');
+    const rejected = pendingList.catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(SFTP_HEARTBEAT_INTERVAL_MS + SFTP_HEARTBEAT_TIMEOUT_MS + 100);
+
+    const error = await rejected;
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toMatch(/heartbeat/i);
+    expect(session.isConnected()).toBe(false);
+    expect(socket.ping).toHaveBeenCalled();
+    expect(socket.terminate).toHaveBeenCalledTimes(1);
+    session.dispose();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('keeps the SFTP session open while pong replies arrive on time', async () => {
+    vi.useFakeTimers();
+    const socket = new FakeSocket();
+    const session = new JumpServerSftpSession({ asset: { id: 'asset-1', name: 'web-1' }, client: client(socket) });
+    const connecting = session.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    socket.emitMessage({ id: 'ws-1', type: 'CONNECT', data: '{}' });
+    await connecting;
+
+    await vi.advanceTimersByTimeAsync(SFTP_HEARTBEAT_INTERVAL_MS * 3);
+
+    expect(socket.ping).toHaveBeenCalled();
+    expect(session.isConnected()).toBe(true);
+    expect(socket.terminate).not.toHaveBeenCalled();
+    session.dispose();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('falls back to a dedicated web_sftp token when a reused terminal token fails the SFTP handshake', async () => {
+    const socket = new FakeSocket();
+    const fakeClient = client(socket);
+    (fakeClient.openKokoSftpWebSocket as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce(new Error('401 reusable token expired'))
+      .mockResolvedValueOnce(socket as never);
+    const session = new JumpServerSftpSession({
+      asset: { id: 'asset-1', name: 'web-1' },
+      client: fakeClient,
+      getReusableTokenId: () => 'stale-terminal-token'
+    });
+
+    const connecting = session.connect();
+    await vi.waitFor(() => expect(fakeClient.openKokoSftpWebSocket).toHaveBeenCalledTimes(2));
+    await flushPromises();
+    socket.emitMessage({ id: 'ws-1', type: 'CONNECT', data: '{}' });
+    await connecting;
+
+    expect(fakeClient.createConnectionToken).toHaveBeenCalledTimes(1);
+    expect(fakeClient.createConnectionToken).toHaveBeenCalledWith({
+      assetId: 'asset-1',
+      account: { kind: 'managed', id: 'account-1', username: 'root', hasSecret: true },
+      protocol: 'sftp',
+      connectMethod: 'web_sftp'
+    });
+    expect(fakeClient.openKokoSftpWebSocket).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      tokenId: 'stale-terminal-token'
+    }));
+    expect(fakeClient.openKokoSftpWebSocket).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      tokenId: 'token-1'
+    }));
+    expect(session.isConnected()).toBe(true);
   });
 });
 

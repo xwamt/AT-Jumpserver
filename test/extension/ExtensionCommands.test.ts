@@ -5,7 +5,15 @@ const terminalPanelMock = vi.hoisted(() => ({
   open: vi.fn(),
   getActive: vi.fn(),
   disconnectAll: vi.fn(),
-  disposeSessionsForBastion: vi.fn((): string[] => [])
+  disposeSessionsForBastion: vi.fn((): string[] => []),
+  syncConfiguration: vi.fn(),
+  resolveTerminalSettings: vi.fn(() => ({
+    scrollback: 5000,
+    fontSize: 14,
+    fontFamily: 'Cascadia Code, Menlo, monospace',
+    semanticHighlight: true,
+    idleDisconnectMinutes: 60
+  }))
 }));
 
 const configPanelMock = vi.hoisted(() => ({
@@ -77,7 +85,8 @@ vi.mock('../../src/sftp/JumpServerSftpManager', () => ({
 }));
 
 vi.mock('../../src/webview/TerminalPanel', () => ({
-  TerminalPanel: terminalPanelMock
+  TerminalPanel: terminalPanelMock,
+  resolveTerminalSettings: terminalPanelMock.resolveTerminalSettings
 }));
 
 vi.mock('../../src/webview/JumpServerConfigPanel', () => ({
@@ -107,6 +116,11 @@ vi.mock('../../src/mcp/McpConfigInstaller', () => ({
 import { activate, deactivate } from '../../src/extension';
 import { JumpServerConfigManager } from '../../src/config/JumpServerConfigManager';
 import type { CachedJumpServerAsset, JumpServerBastion } from '../../src/config/schema';
+import {
+  clearKokoCapabilityCache,
+  detectKokoCapabilities,
+  isKokoCookieLess
+} from '../../src/jumpserver/kokoCapability';
 import { BastionTreeItem } from '../../src/tree/BastionTreeItem';
 import { AssetTreeItem } from '../../src/tree/TreeItems';
 
@@ -1076,6 +1090,37 @@ describe('extension command wiring', () => {
     await createSession?.(sshAsset());
 
     expect(jumpServerClientMock.JumpServerClient).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears the cached KoKo capability when removing a bastion', async () => {
+    clearKokoCapabilityCache();
+    await detectKokoCapabilities(
+      { getClientVersions: async () => ['5.0.0'] },
+      PROD_BASTION_ID
+    );
+    expect(isKokoCookieLess(PROD_BASTION_ID)).toBe(true);
+
+    const context = contextWithBastions([prodBastion()]);
+    vi.mocked(vscode.window.showWarningMessage).mockResolvedValueOnce('Delete' as never);
+    activate(context);
+
+    await registeredCommand('jumpserverManager.removeBastion')();
+
+    expect(isKokoCookieLess(PROD_BASTION_ID)).toBeUndefined();
+  });
+
+  it('syncs open TerminalPanels when jumpserverManager configuration changes', () => {
+    activate(contextWithSettings());
+    const listener = vi.mocked(vscode.workspace.onDidChangeConfiguration).mock.calls[0]?.[0] as
+      | ((event: { affectsConfiguration: (section: string) => boolean }) => void)
+      | undefined;
+
+    expect(listener).toEqual(expect.any(Function));
+    listener?.({ affectsConfiguration: (section) => section === 'editor' });
+    expect(terminalPanelMock.syncConfiguration).not.toHaveBeenCalled();
+
+    listener?.({ affectsConfiguration: (section) => section === 'jumpserverManager' });
+    expect(terminalPanelMock.syncConfiguration).toHaveBeenCalledTimes(1);
   });
 });
 

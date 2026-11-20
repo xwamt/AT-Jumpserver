@@ -5,6 +5,7 @@ import * as vscode from 'vscode';
 import {
   buildEditSessionKey,
   createEditCacheUri,
+  createVscodeSftpEditUi,
   remoteStatsMatch,
   SftpEditSessionManager
 } from '../../src/sftp/SftpEditSessionManager';
@@ -35,8 +36,7 @@ function ui() {
     confirmAutoSync: vi.fn(async () => true),
     resolveConflict: vi.fn(async (): Promise<'overwrite' | 'cancel'> => 'overwrite'),
     showStatus: vi.fn(),
-    showError: vi.fn(async () => undefined),
-    promptUnsyncedClose: vi.fn(async () => 'discard' as const)
+    showError: vi.fn(async () => undefined)
   };
 }
 
@@ -283,5 +283,29 @@ describe('SftpEditSessionManager', () => {
 
     expect(client.uploadFile).toHaveBeenCalledWith(session.localUri.fsPath, '/tmp/app.conf', 'terminal-1');
     await expect(readFile(session.localUri.fsPath)).rejects.toThrow();
+  });
+
+  it('cancels a pending idle hide timer when another upload status arrives before timeout', async () => {
+    vi.useFakeTimers();
+    const statusBarItem = {
+      text: '',
+      tooltip: '',
+      show: vi.fn(),
+      hide: vi.fn(),
+      dispose: vi.fn()
+    } as unknown as vscode.StatusBarItem;
+    const editUi = createVscodeSftpEditUi(statusBarItem);
+
+    editUi.showStatus('idle', 'Remote file synced');
+    await vi.advanceTimersByTimeAsync(1000);
+    editUi.showStatus('uploading', 'Uploading remote file...');
+    await vi.advanceTimersByTimeAsync(1500);
+
+    expect(statusBarItem.hide).not.toHaveBeenCalled();
+
+    editUi.showStatus('idle', 'Remote file synced');
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(statusBarItem.hide).toHaveBeenCalledTimes(1);
   });
 });

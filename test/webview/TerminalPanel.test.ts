@@ -17,7 +17,10 @@ const connect = vi.fn<() => Promise<void>>();
 const disposeSession = vi.fn<() => void>();
 const write = vi.fn<(data: string) => void>();
 const resize = vi.fn<(rows: number, cols: number) => void>();
-const sessionEvents: Array<{ output(data: Buffer): void; status(message: string): void }> = [];
+const sessionEvents: Array<{
+  output(data: Buffer): void;
+  status(message: string, state?: 'connecting' | 'connected' | 'disconnected'): void;
+}> = [];
 const sessionInputs: unknown[] = [];
 
 vi.mock('../../src/jumpserver/JumpServerSession', () => ({
@@ -429,6 +432,7 @@ describe('TerminalPanel rendering helpers', () => {
 
     expect(panelHost.panel.webview.postMessage).toHaveBeenCalledWith({
       type: 'status',
+      state: 'disconnected',
       payload: expect.stringContaining('unavailable')
     });
   });
@@ -494,6 +498,103 @@ describe('TerminalPanel rendering helpers', () => {
     panel.disconnect();
     expect(TerminalPanel.getReusableToken(panel.getTerminalId())).toBeUndefined();
     expect(TerminalPanel.getReusableToken(undefined, assetItem)).toBeUndefined();
+  });
+
+  it('carries the last viewport dimensions into the recreated session on reconnect', async () => {
+    const host = createPanel();
+    vi.mocked(vscode.window.createWebviewPanel).mockReturnValueOnce(host.panel);
+    const panel = TerminalPanel.open(extensionContext(), asset(), jumpServerClient());
+    await flushPromises();
+
+    host.sendMessage({ type: 'ready', rows: 42, cols: 132 });
+    resize.mockClear();
+
+    await panel.reconnect();
+
+    expect(resize).toHaveBeenCalledWith(42, 132);
+  });
+
+  it('renders asset host and protocol label plus a hidden reconnect button in the status bar', () => {
+    const body = renderTerminalBody(
+      {
+        scrollback: 5000,
+        fontSize: 14,
+        fontFamily: 'Menlo',
+        semanticHighlight: true,
+        idleDisconnectMinutes: 60
+      },
+      '10.0.0.10 · SSH'
+    );
+
+    expect(body).toContain('10.0.0.10 · SSH');
+    expect(body).toContain('id="reconnectBtn"');
+    expect(body).toContain('Reconnect');
+
+    const host = createPanel();
+    vi.mocked(vscode.window.createWebviewPanel).mockReturnValueOnce(host.panel);
+    TerminalPanel.open(extensionContext(), asset('web-1'), jumpServerClient());
+
+    expect(host.panel.webview.html).toContain('web-1.example.com · SSH');
+    expect(host.panel.webview.html).not.toContain('>xterm.js<');
+  });
+
+  it('sends structured connecting/connected/disconnected status states and reconnects on button click', async () => {
+    const host = createPanel();
+    vi.mocked(vscode.window.createWebviewPanel).mockReturnValueOnce(host.panel);
+    const panel = TerminalPanel.open(extensionContext(), asset('web-1'), jumpServerClient());
+    await flushPromises();
+
+    sessionEvents.at(-1)!.status('Connected', 'connected');
+    expect(host.panel.webview.postMessage).toHaveBeenCalledWith({
+      type: 'status',
+      state: 'connected',
+      payload: 'Connected'
+    });
+
+    panel.disconnect();
+    expect(host.panel.webview.postMessage).toHaveBeenCalledWith({
+      type: 'status',
+      state: 'disconnected',
+      payload: 'Disconnected'
+    });
+
+    vi.mocked(host.panel.webview.postMessage).mockClear();
+    connect.mockClear();
+    host.sendMessage({ type: 'reconnect' });
+    await flushPromises();
+
+    expect(host.panel.webview.postMessage).toHaveBeenCalledWith({
+      type: 'status',
+      state: 'connecting',
+      payload: 'Reconnecting...'
+    });
+    expect(connect).toHaveBeenCalledTimes(1);
+  });
+
+  it('pushes updated terminal settings to open panels when configuration changes', async () => {
+    const host = createPanel();
+    vi.mocked(vscode.window.createWebviewPanel).mockReturnValueOnce(host.panel);
+    TerminalPanel.open(extensionContext(), asset('web-1'), jumpServerClient());
+    await flushPromises();
+    vi.mocked(host.panel.webview.postMessage).mockClear();
+
+    TerminalPanel.syncConfiguration({
+      scrollback: 12000,
+      fontSize: 16,
+      fontFamily: 'JetBrains Mono',
+      semanticHighlight: false,
+      idleDisconnectMinutes: 15
+    });
+
+    expect(host.panel.webview.postMessage).toHaveBeenCalledWith({
+      type: 'settings',
+      payload: {
+        scrollback: 12000,
+        fontSize: 16,
+        fontFamily: 'JetBrains Mono',
+        semanticHighlight: false
+      }
+    });
   });
 });
 
